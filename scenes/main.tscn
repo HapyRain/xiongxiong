@@ -1,0 +1,362 @@
+[gd_scene format=3 uid="uid://bycokdtlb5v8d"]
+
+[ext_resource type="Script" uid="uid://d4klxb0udl3fs" path="res://scripts/ui/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://biiahgltv34lf" path="res://scripts/session/battle_controller.gd" id="2_ctrl"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_panel"]
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+bg_color = Color(0.992, 0.976, 0.945, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.165, 0.165, 0.165, 1)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_hp_bg"]
+bg_color = Color(0.906, 0.863, 0.784, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_hp_fill"]
+bg_color = Color(0.886, 0.294, 0.29, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_qi_bg"]
+bg_color = Color(0.906, 0.863, 0.784, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_qi_fill"]
+bg_color = Color(0.941, 0.706, 0.161, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_btn_zan"]
+bg_color = Color(0.941, 0.706, 0.161, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.165, 0.165, 0.165, 1)
+corner_radius_top_left = 48
+corner_radius_top_right = 48
+corner_radius_bottom_right = 48
+corner_radius_bottom_left = 48
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_btn_disabled"]
+bg_color = Color(0.78, 0.76, 0.72, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.55, 0.53, 0.5, 1)
+corner_radius_top_left = 48
+corner_radius_top_right = 48
+corner_radius_bottom_right = 48
+corner_radius_bottom_left = 48
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_btn_bo"]
+bg_color = Color(0.941, 0.478, 0.239, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.165, 0.165, 0.165, 1)
+corner_radius_top_left = 48
+corner_radius_top_right = 48
+corner_radius_bottom_right = 48
+corner_radius_bottom_left = 48
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_btn_fang"]
+bg_color = Color(0.357, 0.722, 0.788, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.165, 0.165, 0.165, 1)
+corner_radius_top_left = 48
+corner_radius_top_right = 48
+corner_radius_bottom_right = 48
+corner_radius_bottom_left = 48
+
+[node name="Main" type="Control" unique_id=1506885885]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="BattleController" type="Node" parent="." unique_id=641721374]
+script = ExtResource("2_ctrl")
+
+[node name="Bg" type="ColorRect" parent="." unique_id=932977058]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.969, 0.945, 0.902, 1)
+
+[node name="Margin" type="MarginContainer" parent="." unique_id=1283366046]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 14
+
+[node name="VBox" type="VBoxContainer" parent="Margin" unique_id=340674605]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="YouPanel" type="PanelContainer" parent="Margin/VBox" unique_id=1620946352]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBox_panel")
+
+[node name="YouBox" type="VBoxContainer" parent="Margin/VBox/YouPanel" unique_id=1180249836]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="YouTitle" type="Label" parent="Margin/VBox/YouPanel/YouBox" unique_id=102882431]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 18
+text = "对手"
+
+[node name="YouHpBar" type="HBoxContainer" parent="Margin/VBox/YouPanel/YouBox" unique_id=69329324]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="YouHp" type="ProgressBar" parent="Margin/VBox/YouPanel/YouBox/YouHpBar" unique_id=216096463]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+theme_override_styles/background = SubResource("StyleBox_hp_bg")
+theme_override_styles/fill = SubResource("StyleBox_hp_fill")
+max_value = 5.0
+value = 5.0
+show_percentage = false
+
+[node name="YouHpLabel" type="Label" parent="Margin/VBox/YouPanel/YouBox/YouHpBar" unique_id=1148924100]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "血 5/5"
+
+[node name="YouQiBar" type="HBoxContainer" parent="Margin/VBox/YouPanel/YouBox" unique_id=2125164561]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="YouQi" type="ProgressBar" parent="Margin/VBox/YouPanel/YouBox/YouQiBar" unique_id=242863032]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+theme_override_styles/background = SubResource("StyleBox_qi_bg")
+theme_override_styles/fill = SubResource("StyleBox_qi_fill")
+max_value = 5.0
+value = 2.0
+show_percentage = false
+
+[node name="YouQiLabel" type="Label" parent="Margin/VBox/YouPanel/YouBox/YouQiBar" unique_id=1768703760]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "气 2/5"
+
+[node name="YouShieldRow" type="HBoxContainer" parent="Margin/VBox/YouPanel/YouBox" unique_id=1012256660]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="YouShieldTitle" type="Label" parent="Margin/VBox/YouPanel/YouBox/YouShieldRow" unique_id=470123558]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "盾"
+
+[node name="YouShield" type="HBoxContainer" parent="Margin/VBox/YouPanel/YouBox/YouShieldRow" unique_id=1279399686]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="CenterBox" type="VBoxContainer" parent="Margin/VBox" unique_id=1831551453]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+
+[node name="TopSpacer" type="Control" parent="Margin/VBox/CenterBox" unique_id=1556037273]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="CenterLabel" type="Label" parent="Margin/VBox/CenterBox" unique_id=264855452]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 28
+text = "同步出招"
+horizontal_alignment = 1
+
+[node name="RoundLabel" type="Label" parent="Margin/VBox/CenterBox" unique_id=1044097532]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.35, 0.33, 0.3, 1)
+theme_override_font_sizes/font_size = 16
+text = "回合 1 / 40"
+horizontal_alignment = 1
+
+[node name="LogLabel" type="Label" parent="Margin/VBox/CenterBox" unique_id=500131986]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.28, 0.26, 0.24, 1)
+theme_override_font_sizes/font_size = 15
+text = "……"
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="BottomSpacer" type="Control" parent="Margin/VBox/CenterBox" unique_id=2095707689]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MePanel" type="PanelContainer" parent="Margin/VBox" unique_id=1654678774]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBox_panel")
+
+[node name="MeBox" type="VBoxContainer" parent="Margin/VBox/MePanel" unique_id=859533946]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="MeTitle" type="Label" parent="Margin/VBox/MePanel/MeBox" unique_id=1740206746]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 18
+text = "我"
+
+[node name="MeHpBar" type="HBoxContainer" parent="Margin/VBox/MePanel/MeBox" unique_id=1453370592]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="MeHp" type="ProgressBar" parent="Margin/VBox/MePanel/MeBox/MeHpBar" unique_id=1705883961]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+theme_override_styles/background = SubResource("StyleBox_hp_bg")
+theme_override_styles/fill = SubResource("StyleBox_hp_fill")
+max_value = 5.0
+value = 5.0
+show_percentage = false
+
+[node name="MeHpLabel" type="Label" parent="Margin/VBox/MePanel/MeBox/MeHpBar" unique_id=975560125]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "血 5/5"
+
+[node name="MeQiBar" type="HBoxContainer" parent="Margin/VBox/MePanel/MeBox" unique_id=531383713]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="MeQi" type="ProgressBar" parent="Margin/VBox/MePanel/MeBox/MeQiBar" unique_id=591857286]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+theme_override_styles/background = SubResource("StyleBox_qi_bg")
+theme_override_styles/fill = SubResource("StyleBox_qi_fill")
+max_value = 5.0
+show_percentage = false
+
+[node name="MeQiLabel" type="Label" parent="Margin/VBox/MePanel/MeBox/MeQiBar" unique_id=461380818]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "气 0/5"
+
+[node name="MeShieldRow" type="HBoxContainer" parent="Margin/VBox/MePanel/MeBox" unique_id=1458728281]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="MeShieldTitle" type="Label" parent="Margin/VBox/MePanel/MeBox/MeShieldRow" unique_id=963010517]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_font_sizes/font_size = 14
+text = "盾"
+
+[node name="MeShield" type="HBoxContainer" parent="Margin/VBox/MePanel/MeBox/MeShieldRow" unique_id=653855463]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Buttons" type="HBoxContainer" parent="Margin/VBox" unique_id=1599931786]
+layout_mode = 2
+theme_override_constants/separation = 18
+alignment = 1
+
+[node name="BtnZan" type="Button" parent="Margin/VBox/Buttons" unique_id=243670841]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(100, 100)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.165, 0.165, 0.165, 1)
+theme_override_colors/font_disabled_color = Color(0.35, 0.33, 0.3, 1)
+theme_override_font_sizes/font_size = 28
+theme_override_styles/normal = SubResource("StyleBox_btn_zan")
+theme_override_styles/pressed = SubResource("StyleBox_btn_zan")
+theme_override_styles/hover = SubResource("StyleBox_btn_zan")
+theme_override_styles/disabled = SubResource("StyleBox_btn_disabled")
+text = "攒"
+
+[node name="BtnBo" type="Button" parent="Margin/VBox/Buttons" unique_id=1668131520]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(100, 100)
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.97, 0.94, 1)
+theme_override_colors/font_disabled_color = Color(0.35, 0.33, 0.3, 1)
+theme_override_font_sizes/font_size = 28
+theme_override_styles/normal = SubResource("StyleBox_btn_bo")
+theme_override_styles/pressed = SubResource("StyleBox_btn_bo")
+theme_override_styles/hover = SubResource("StyleBox_btn_bo")
+theme_override_styles/disabled = SubResource("StyleBox_btn_disabled")
+text = "波"
+
+[node name="BtnFang" type="Button" parent="Margin/VBox/Buttons" unique_id=1257437880]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(100, 100)
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.97, 0.94, 1)
+theme_override_colors/font_disabled_color = Color(0.35, 0.33, 0.3, 1)
+theme_override_font_sizes/font_size = 28
+theme_override_styles/normal = SubResource("StyleBox_btn_fang")
+theme_override_styles/pressed = SubResource("StyleBox_btn_fang")
+theme_override_styles/hover = SubResource("StyleBox_btn_fang")
+theme_override_styles/disabled = SubResource("StyleBox_btn_disabled")
+text = "防"

@@ -1,0 +1,536 @@
+## net_battle_ui.gd
+## 竖版联机对局 UI：对手在上 / 状态中段 / 我方在下。
+## 热座入口已移除（底层 HOTSEAT 仅测试）；对方离开 → 人机接管提示并继续。
+extends Control
+
+var controller: NetworkedBattleController
+var _status_label: Label
+var _round_label: Label
+var _log_label: Label
+var _me_boxes: Array = []
+var _you_boxes: Array = []
+var _me_btns: Dictionary = {}
+var _takeover_banner: Label
+var _me_hp_row: HBoxContainer
+var _me_qi_row: HBoxContainer
+var _you_hp_row: HBoxContainer
+var _you_qi_row: HBoxContainer
+var _fx_layer: Control
+
+## 封存 / 同意 / 倒计时 / 终局遮罩
+var _overlay: Control
+var _overlay_title: Label
+var _overlay_body: Label
+var _btn_continue: Button
+var _btn_decline: Button
+var _btn_menu: Button
+var _overlay_mode: String = ""
+
+
+func _ready() -> void:
+	controller = NetworkedBattleController.new()
+	controller.name = "NetworkedBattleController"
+	add_child(controller)
+	controller.attach(Net)
+	_build_ui()
+	_build_overlay()
+	controller.beat.connect(_on_beat)
+	controller.preselect_changed.connect(_on_preselect)
+	controller.phase_changed.connect(_on_phase)
+	controller.round_resolved.connect(_on_resolved)
+	controller.game_over.connect(_on_game_over)
+	controller.status_text.connect(func(t: String):
+		if _status_label != null:
+			_status_label.text = t)
+	Net.actions_revealed.connect(_on_reveal_actions)
+	Net.peer_left.connect(_on_peer_left)
+	Net.ai_takeover_started.connect(_on_ai_takeover)
+	Net.net_state_changed.connect(_on_net_state)
+	Net.consent_needed.connect(_on_consent_needed)
+	Net.countdown_tick.connect(_on_countdown_tick)
+	Net.session_failed.connect(_on_session_failed)
+	Net.session_restored.connect(_on_session_restored)
+	controller.begin()
+	_refresh_all()
+
+
+func _build_ui() -> void:
+	var bg := ColorRect.new()
+	bg.color = UiTheme.BG
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(bg)
+
+	_fx_layer = Control.new()
+	_fx_layer.name = "FxLayer"
+	_fx_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_fx_layer)
+
+	# 右上角：设置/菜单（避开 QualitySettings 的 ⚙）
+	var top_menu := Button.new()
+	top_menu.text = "菜单"
+	top_menu.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	top_menu.offset_left = -108
+	top_menu.offset_top = 8
+	top_menu.offset_right = -52
+	top_menu.offset_bottom = 40
+	top_menu.add_theme_font_size_override("font_size", 14)
+	top_menu.add_theme_color_override("font_color", UiTheme.INK)
+	top_menu.pressed.connect(_on_top_menu)
+	BattleFx.bind_press(top_menu, "menu")
+	add_child(top_menu)
+
+	var margin := MarginContainer.new()
+	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_right", 12)
+	# 顶栏让出「菜单」按钮
+	margin.add_theme_constant_override("margin_top", 52)
+	margin.add_theme_constant_override("margin_bottom", 12)
+	add_child(margin)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	margin.add_child(v)
+
+	# 对手（上）
+	var you_panel := PanelContainer.new()
+	you_panel.add_theme_stylebox_override("panel", UiTheme.card_style())
+	v.add_child(you_panel)
+	var you_v := VBoxContainer.new()
+	you_panel.add_child(you_v)
+	var you_title := UiTheme.ink_label("对手", 16, UiTheme.INK)
+	you_v.add_child(you_title)
+	you_v.add_child(_make_stat_row("you", _you_boxes))
+	var you_wait := UiTheme.ink_label("（等待对方选招…）", 12, UiTheme.INK_FAINT)
+	you_wait.name = "YouWait"
+	you_v.add_child(you_wait)
+
+	# 中央
+	var center := VBoxContainer.new()
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	v.add_child(center)
+
+	_takeover_banner = Label.new()
+	_takeover_banner.text = ""
+	_takeover_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_takeover_banner.add_theme_font_size_override("font_size", 15)
+	_takeover_banner.add_theme_color_override("font_color", UiTheme.DANGER)
+	_takeover_banner.visible = false
+	center.add_child(_takeover_banner)
+
+	_round_label = UiTheme.ink_label("回合 -", 14, UiTheme.INK_SOFT)
+	_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	center.add_child(_round_label)
+	_status_label = UiTheme.ink_label("对局", 22, UiTheme.INK)
+	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	center.add_child(_status_label)
+	_log_label = UiTheme.ink_label("……", 13, UiTheme.INK_SOFT)
+	_log_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	center.add_child(_log_label)
+
+	# 我方（下）
+	var me_panel := PanelContainer.new()
+	me_panel.add_theme_stylebox_override("panel", UiTheme.card_style())
+	v.add_child(me_panel)
+	var me_v := VBoxContainer.new()
+	me_panel.add_child(me_v)
+	var me_title := UiTheme.ink_label("我", 16, UiTheme.INK)
+	me_v.add_child(me_title)
+	me_v.add_child(_make_stat_row("me", _me_boxes))
+	me_v.add_child(_make_action_row(0, _me_btns))
+
+
+func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	var hp_row := BattleFx.make_hp_row(GameRules.MAX_HP, GameRules.MAX_HP)
+	var qi_row := BattleFx.make_qi_row(GameRules.MAX_QI, 0)
+	var sh_row := BattleFx.make_shield_row(GameRules.MAX_SHIELD, 0)
+	if prefix == "me":
+		_me_hp_row = hp_row
+		_me_qi_row = qi_row
+	else:
+		_you_hp_row = hp_row
+		_you_qi_row = qi_row
+	var hp_lab := Label.new()
+	hp_lab.name = prefix + "_hp"
+	hp_lab.text = "%d/%d" % [GameRules.MAX_HP, GameRules.MAX_HP]
+	var qi_lab := Label.new()
+	qi_lab.name = prefix + "_qi"
+	qi_lab.text = "0/%d" % GameRules.MAX_QI
+	var sh_lab := Label.new()
+	sh_lab.name = prefix + "_shield"
+	sh_lab.text = "0/%d" % GameRules.MAX_SHIELD
+	boxes.append(hp_lab)
+	boxes.append(qi_lab)
+	boxes.append(sh_lab)
+	col.add_child(BattleFx.make_stat_line("血", hp_row, hp_lab))
+	col.add_child(BattleFx.make_stat_line("气", qi_row, qi_lab))
+	col.add_child(BattleFx.make_stat_line("盾", sh_row, sh_lab))
+	col.set_meta("shield_row", sh_row)
+	return col
+
+
+func _make_action_row(who: int, btns: Dictionary) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var styles := {
+		GameRules.Action.ZAN: UiTheme.ACCENT,
+		GameRules.Action.BO: UiTheme.WAVE,
+		GameRules.Action.FANG: UiTheme.SHIELD,
+	}
+	var names := {
+		GameRules.Action.ZAN: "攒",
+		GameRules.Action.BO: "波",
+		GameRules.Action.FANG: "防",
+	}
+	for a in [GameRules.Action.ZAN, GameRules.Action.BO, GameRules.Action.FANG]:
+		var b := Button.new()
+		b.text = names[a]
+		b.custom_minimum_size = Vector2(96, 72)
+		b.add_theme_font_size_override("font_size", 22)
+		b.add_theme_color_override("font_color", Color.WHITE)
+		b.add_theme_color_override("font_hover_color", Color.WHITE)
+		b.add_theme_color_override("font_pressed_color", Color.WHITE)
+		var col: Color = styles[a]
+		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 16))
+		b.add_theme_stylebox_override("hover", UiTheme.button_style(col.lightened(0.08), 16))
+		b.add_theme_stylebox_override("pressed", UiTheme.button_style(col.darkened(0.1), 16))
+		var act: int = a
+		var seat: int = who
+		b.pressed.connect(func(): _on_pick(seat, act))
+		var kind := "default"
+		if a == GameRules.Action.ZAN:
+			kind = "zan"
+		elif a == GameRules.Action.BO:
+			kind = "bo"
+		else:
+			kind = "fang"
+		BattleFx.bind_press(b, kind)
+		row.add_child(b)
+		btns[a] = b
+	return row
+
+
+func _on_top_menu() -> void:
+	var tree := get_tree()
+	if tree == null:
+		return
+	var existing := tree.root.get_node_or_null("SettingsPanelOverlay")
+	if existing != null:
+		return
+	var panel_scene: PackedScene = load("res://scenes/settings_panel.tscn")
+	if panel_scene == null:
+		return
+	var overlay := panel_scene.instantiate()
+	overlay.name = "SettingsPanelOverlay"
+	tree.root.add_child(overlay)
+
+
+# ---------- 封存 / 同意 / 倒计时 / 终局遮罩 ----------
+
+func _build_overlay() -> void:
+	_overlay = Control.new()
+	_overlay.name = "NetOverlay"
+	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_overlay.visible = false
+	add_child(_overlay)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.62)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_overlay.add_child(dim)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(320, 0)
+	center.add_child(panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 14)
+	panel.add_child(v)
+
+	_overlay_title = Label.new()
+	_overlay_title.text = ""
+	_overlay_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_overlay_title.add_theme_font_size_override("font_size", 24)
+	_overlay_title.add_theme_color_override("font_color", UiTheme.INK)
+	v.add_child(_overlay_title)
+
+	_overlay_body = Label.new()
+	_overlay_body.text = ""
+	_overlay_body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_overlay_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_overlay_body.custom_minimum_size = Vector2(280, 60)
+	_overlay_body.add_theme_color_override("font_color", UiTheme.INK_SOFT)
+	v.add_child(_overlay_body)
+
+	var btn_col := VBoxContainer.new()
+	btn_col.add_theme_constant_override("separation", 10)
+	btn_col.alignment = BoxContainer.ALIGNMENT_CENTER
+	v.add_child(btn_col)
+
+	_btn_continue = Button.new()
+	_btn_continue.text = "继续"
+	_btn_continue.custom_minimum_size = Vector2(200, 48)
+	_btn_continue.pressed.connect(func():
+		Net.submit_resume_vote(true)
+		_show_overlay("countdown", "已同意", "等待对方确认…", false, false, false))
+	BattleFx.bind_press(_btn_continue, "menu")
+	btn_col.add_child(_btn_continue)
+
+	_btn_decline = Button.new()
+	_btn_decline.text = "退出（判负）"
+	_btn_decline.custom_minimum_size = Vector2(200, 48)
+	_btn_decline.pressed.connect(func():
+		Net.submit_resume_vote(false)
+		_show_overlay("fail", "已拒绝继续", "你选择了退出，本局判负", false, false, true))
+	BattleFx.bind_press(_btn_decline, "danger")
+	btn_col.add_child(_btn_decline)
+
+	_btn_menu = Button.new()
+	_btn_menu.text = "返回菜单"
+	_btn_menu.custom_minimum_size = Vector2(200, 48)
+	_btn_menu.pressed.connect(func():
+		UiNav.return_to_menu(get_tree()))
+	BattleFx.bind_press(_btn_menu, "menu")
+	btn_col.add_child(_btn_menu)
+
+
+func _show_overlay(mode: String, title: String, body: String, show_continue: bool, show_decline: bool, show_menu: bool = false) -> void:
+	_overlay_mode = mode
+	_overlay.visible = true
+	_overlay_title.text = title
+	_overlay_body.text = body
+	_btn_continue.visible = show_continue
+	_btn_decline.visible = show_decline
+	_btn_menu.visible = show_menu
+	_set_input_buttons_enabled(false)
+
+
+func _hide_overlay() -> void:
+	_overlay_mode = ""
+	_overlay.visible = false
+	_set_input_buttons_enabled(true)
+
+
+func _set_input_buttons_enabled(on: bool) -> void:
+	for b in _me_btns.values():
+		b.disabled = not on
+
+
+func _on_peer_left(_id: int, reason: String) -> void:
+	_log("对手离开：%s" % reason)
+	# 具体接管提示由 ai_takeover_started 统一给出
+
+
+func _on_ai_takeover(reason: String) -> void:
+	_takeover_banner.text = UiNav.peer_left_text()
+	_takeover_banner.visible = true
+	_log("对方已离开（%s），由人机接管" % reason)
+	if _overlay_mode in ["sealed", "countdown", "resuming", "consent"]:
+		_hide_overlay()
+	# 短暂遮罩提示后自动继续
+	_show_overlay("takeover", "对方已离开", "由人机接管，对局继续…", false, false, false)
+	var t := get_tree()
+	if t != null:
+		t.create_timer(1.6).timeout.connect(func():
+			if _overlay_mode == "takeover":
+				_hide_overlay())
+
+
+func _on_net_state(state_name: String, reason: String) -> void:
+	match state_name:
+		"Degraded":
+			_log("网络不佳（%s）" % reason)
+		"Sealed":
+			_show_overlay("sealed", "连接中断", "已封存对局，等待链路恢复…\n（%s）" % reason, false, false, true)
+		"AwaitingConsent":
+			pass  # 由 consent_needed 弹出按钮
+		"Countdown":
+			_show_overlay("countdown", "即将恢复", "3…", false, false, false)
+		"Resuming":
+			_show_overlay("resuming", "恢复中…", "正在从快照恢复对局", false, false, false)
+		"Connected":
+			if _overlay_mode in ["sealed", "countdown", "resuming", "consent"]:
+				_hide_overlay()
+				_log("对局已恢复")
+		"Fail":
+			_show_overlay("fail", "对局结束", "因网络原因终局：%s\n可返回菜单。" % reason, false, false, true)
+
+
+func _on_consent_needed(_snap: Dictionary, _need_from: Array) -> void:
+	_show_overlay("consent", "是否继续？", "链路已恢复，双方都点「继续」才会以 3 秒倒计时恢复对局。\n一方退出或 30 秒未确认则判负。", true, true, true)
+
+
+func _on_countdown_tick(remain_ms: int) -> void:
+	if _overlay_mode != "countdown":
+		_show_overlay("countdown", "即将恢复", "", false, false, false)
+	var sec := int(ceil(remain_ms / 1000.0))
+	_overlay_body.text = "%d" % maxi(sec, 1) if remain_ms > 0 else "恢复中…"
+	_overlay_title.text = "即将恢复 · %d" % maxi(sec, 1)
+
+
+func _on_session_failed(loser_role: int, reason: String) -> void:
+	var mine: int = Net.get_local_role()
+	var body: String
+	if loser_role < 0:
+		body = "双方均未确认，平局（%s）" % reason
+	elif loser_role == mine:
+		body = "未恢复方判负：你（%s）\n可返回菜单。" % reason
+	else:
+		body = "对方未恢复，你获胜（%s）\n可返回菜单。" % reason
+	_show_overlay("fail", "对局结束", body, false, false, true)
+
+
+func _on_session_restored(_snap: Dictionary) -> void:
+	_hide_overlay()
+	_refresh_all()
+	_log("已从快照恢复")
+
+
+func _on_pick(who: int, action: int) -> void:
+	if controller.try_select(who, action):
+		_log("已选 %s" % GameRules.action_name(action))
+		_refresh_all()
+
+
+func _on_preselect(who: int, action: int) -> void:
+	var mine: int = Net.get_local_role()
+	if who == mine:
+		_log("我方已选 %s" % GameRules.action_name(action))
+	else:
+		_log("对方已选")  # 不泄露具体招式
+	_refresh_all()
+
+
+func _on_beat(n: int) -> void:
+	_status_label.text = "啪！（拍 %d）" % n
+
+
+func _on_phase(phase: int, round_no: int) -> void:
+	_round_label.text = "回合 %d / %d" % [round_no, GameRules.MAX_ROUND]
+	match phase:
+		GameRules.Phase.SELECTING:
+			_status_label.text = "同步出招"
+		GameRules.Phase.RESOLVING:
+			_status_label.text = "结算…"
+		GameRules.Phase.PRESENTING:
+			_status_label.text = "亮招"
+		GameRules.Phase.GAME_OVER:
+			_status_label.text = "结束"
+	_refresh_all()
+
+
+func _on_resolved(result: Dictionary) -> void:
+	_log(str(result.get("text", "")))
+	_refresh_all()
+	_play_impact_fx(result)
+
+
+func _play_impact_fx(result: Dictionary) -> void:
+	if _fx_layer == null or bool(result.get("opening", false)):
+		return
+	if get_tree() != null and get_tree().root.get_node_or_null("SettingsPanelOverlay") != null:
+		return
+	var hit: Array = result.get("hit", [false, false])
+	var blocked: Array = result.get("blocked", [false, false])
+	var mine: int = Net.get_local_role()
+	var me_target: Control = _me_hp_row.get_parent() as Control if _me_hp_row else self
+	var you_target: Control = _you_hp_row.get_parent() as Control if _you_hp_row else self
+	# hit[i]/blocked[i] 按座位 0/1；UI 上下是「我/对手」
+	var my_hit: bool = bool(hit[mine]) if hit.size() > mine else false
+	var other_hit: bool = bool(hit[1 - mine]) if hit.size() > (1 - mine) else false
+	var my_block: bool = bool(blocked[mine]) if blocked.size() > mine else false
+	var other_block: bool = bool(blocked[1 - mine]) if blocked.size() > (1 - mine) else false
+	if my_hit:
+		BattleFx.play_hurt(_fx_layer, me_target)
+	if other_hit:
+		BattleFx.play_hit(_fx_layer, you_target)
+	if my_block:
+		BattleFx.play_block(_fx_layer, me_target)
+	if other_block:
+		BattleFx.play_block(_fx_layer, you_target)
+
+
+func _on_reveal_actions(actions: Array, _results: Dictionary) -> void:
+	if actions.size() >= 2:
+		var mine: int = Net.get_local_role()
+		var other: int = 1 - mine
+		_log("亮招：我 %s ｜ 对方 %s" % [
+			GameRules.action_name(int(actions[mine])),
+			GameRules.action_name(int(actions[other])),
+		])
+
+
+func _on_game_over(winner: int) -> void:
+	var s: BattleState = controller.state
+	var mine: int = Net.get_local_role()
+	var body: String
+	if winner == mine:
+		_status_label.text = "我方胜利！"
+		body = "你赢了！终局 HP %s" % str(s.hp)
+	elif winner == 2 or winner < 0:
+		_status_label.text = "平局"
+		body = "平局。终局 HP %s" % str(s.hp)
+	else:
+		_status_label.text = "对方胜利"
+		body = "对方获胜。终局 HP %s" % str(s.hp)
+	for b in _me_btns.values():
+		b.disabled = true
+	# 胜负庆祝（0=左/房主，1=右/客户端；映射到本地观感）
+	var view_win: int = winner if winner == 2 or winner < 0 else (0 if winner == mine else 1)
+	if _fx_layer != null:
+		BattleFx.play_result(_fx_layer, view_win, _status_label)
+	_show_overlay("game_over", "对局结束", body + "\n可以返回菜单。", false, false, true)
+
+
+func _log(t: String) -> void:
+	if _log_label != null:
+		_log_label.text = t
+
+
+func _refresh_all() -> void:
+	if controller == null:
+		return
+	var s: BattleState = controller.state
+	_set_row(_me_boxes, s, 0)
+	_set_row(_you_boxes, s, 1)
+	var can_lock: bool = not s.is_over() and _overlay.visible == false
+	var my_role: int = Net.get_local_role()
+	for a in _me_btns.keys():
+		var b: Button = _me_btns[a]
+		b.disabled = (not can_lock) or (not s.can_use_action(my_role, int(a)))
+
+
+func _set_row(boxes: Array, s: BattleState, i: int) -> void:
+	if boxes.size() < 3:
+		return
+	boxes[0].text = "血 %d/%d" % [int(s.hp[i]), GameRules.MAX_HP]
+	boxes[1].text = "气 %d/%d" % [int(s.qi[i]), GameRules.MAX_QI]
+	boxes[2].text = "盾 %d/%d" % [int(s.shield[i]), GameRules.MAX_SHIELD]
+	var hp_row: HBoxContainer = _me_hp_row if i == 0 else _you_hp_row
+	var qi_row: HBoxContainer = _me_qi_row if i == 0 else _you_qi_row
+	if hp_row != null:
+		BattleFx.update_hp_row(hp_row, int(s.hp[i]))
+	if qi_row != null:
+		BattleFx.update_qi_row(qi_row, int(s.qi[i]))
+	# 盾行挂在 stat 列的 meta 上
+	var src: Control = boxes[0].get_parent() as Control
+	if src != null and src.has_meta("shield_row"):
+		var sh: HBoxContainer = src.get_meta("shield_row")
+		if sh != null:
+			BattleFx.update_shield_row(sh, int(s.shield[i]))
+	else:
+		var p2: Control = src.get_parent() as Control if src != null else null
+		if p2 != null and p2.has_meta("shield_row"):
+			var sh2: HBoxContainer = p2.get_meta("shield_row")
+			if sh2 != null:
+				BattleFx.update_shield_row(sh2, int(s.shield[i]))

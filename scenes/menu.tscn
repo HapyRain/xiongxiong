@@ -1,0 +1,12 @@
+[gd_scene format=3 uid="uid://balbyl52tvfux"]
+
+[ext_resource type="Script" uid="uid://c4xgdpv0ohely" path="res://scripts/ui/menu.gd" id="1_menu"]
+
+[node name="Menu" type="Control" unique_id=457023601]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_menu")

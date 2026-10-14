@@ -1,0 +1,14 @@
+# Godot 4+
+.godot/
+/android/
+
+# 本地产物 / 临时
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# 调试签名与本地密钥（勿上传）
+*.keystore
+*.jks
+*.idsig
