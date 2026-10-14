@@ -165,6 +165,9 @@ func try_select(who: int, action: int) -> bool:
 	if _window_open and _beat_fired[1] and _local_preselect[seat] < 0 and s.pending[seat] < 0:
 		# 拍 2 后未选则不能再选
 		return false
+	# 拍2 已锁定上传后禁止改招，避免本地显示与结算不一致
+	if peer != null and peer._locks != null and seat < peer._locks.size() and bool(peer._locks[seat]):
+		return false
 	if not s.can_use_action(seat, action):
 		return false
 	# 预选只写本地，锁定（拍2）才 submit

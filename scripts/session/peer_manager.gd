@@ -37,6 +37,12 @@ signal session_failed(loser_role: int, reason: String)
 signal session_restored(snap: Dictionary)
 ## 对方离开/掉线后本地改由人机接管（对局继续）
 signal ai_takeover_started(reason: String)
+## 对方申请加入，等房主「接受并开战」
+signal join_requested(peer_id: int, profile: Dictionary)
+## 对方提出再来一局
+signal rematch_offer()
+## 对方答复再来一局（true=开打，false=回菜单）
+signal rematch_answered(yes: bool)
 
 var state: BattleState = BattleState.new()
 var provider: NetworkProvider = null
@@ -61,6 +67,8 @@ var _locks: Array = [false, false]
 var _revealing: bool = false
 var _grace_left: float = 0.0
 var _opening_done: bool = false
+## 开局亮相是否已结算（防 resolve_opening 重复加资源）
+var _opening_applied: bool = false
 var _last_commit_id: String = ""
 
 ## 心跳（应用层，ENet 默认 timeout 5–30s 太慢）
@@ -71,6 +79,9 @@ var _last_hb_rx_ms: int = 0
 var _fsm_ready: bool = false
 var _countdown_sent: bool = false
 var _resume_sent: bool = false
+## 再来一局：双方意愿
+var _rematch_want: bool = false
+var _peer_rematch_want: bool = false
 
 ## 最近一份 SessionSnapshot（含 checksum / seq）
 var last_session_snap: Dictionary = {}
@@ -228,7 +239,7 @@ func leave() -> void:
 	_self_closing = true
 	if provider != null:
 		# 主动离开：尽量通知对方，由对方走人机接管
-		if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED:
+		if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED or _session == Session.GAME_OVER:
 			_broadcast(_envelope("bye", state.round, {"reason": "local_leave"}))
 		_disconnect_provider()
 		provider.close()
@@ -251,7 +262,11 @@ func begin_ai_takeover(reason: String = "peer_left") -> bool:
 		return false
 	if state.is_over():
 		return false
-	if _session != Session.IN_BATTLE and _session != Session.SEALED and _session != Session.READY_CHECK:
+	# 未开局（大厅/等待接受）不接管，避免菜单页被推进 IN_BATTLE
+	if _session != Session.IN_BATTLE and _session != Session.SEALED:
+		peer_left.emit(0, reason)
+		_set_session(Session.IDLE)
+		status_text.emit("对方已离开")
 		return false
 	ai_takeover = true
 	_self_closing = true
@@ -282,24 +297,114 @@ func stop_discover() -> void:
 		provider.stop_discover()
 
 
-## 房主在双方 ready 后调用。
+## 房主确认接受后开局（客户端发 ready 仍走此路径由房主触发）。
 func start_battle() -> Error:
 	if _mode == Mode.HOTSEAT:
 		_set_session(Session.IN_BATTLE)
 		_do_opening()
 		return OK
 	if not is_host():
-		# 客户端发 ready，等房主 battle_start
+		# 客户端发 ready，等房主 accept → battle_start
 		_send_to_host(_envelope("ready", 1, {}))
 		_set_session(Session.READY_CHECK)
 		return OK
-	# 房主：若已有对手则直接开局，否则进 READY_CHECK 等 peer_joined 后自动开
+	_local_role = 0
 	_set_session(Session.IN_BATTLE)
 	var snap := state.snapshot()
 	_broadcast(_envelope("battle_start", 1, {"snapshot": snap, "seat": {"host": 0, "client": 1}}))
 	battle_started.emit(snap)
 	_do_opening()
 	return OK
+
+
+## 房主点「接受并开启对战」
+func accept_join() -> Error:
+	if _mode == Mode.HOTSEAT or not is_host():
+		return start_battle()
+	if _session != Session.LOBBY and _session != Session.READY_CHECK:
+		return ERR_ALREADY_IN_USE
+	status_text.emit("已接受，开始对战")
+	return start_battle()
+
+
+## 房主点「拒绝」：踢掉对端
+func reject_join() -> void:
+	if not is_host():
+		return
+	_broadcast(_envelope("join_rejected", 0, {"reason": "host_declined"}))
+	status_text.emit("已拒绝加入")
+
+
+## 终局后再来一局：任一方可发起，对方确认后开打。
+func request_rematch() -> void:
+	_rematch_want = true
+	if _mode == Mode.HOTSEAT or ai_takeover:
+		_start_rematch_local()
+		return
+	if is_host():
+		_broadcast(_envelope("rematch_request", 0, {}))
+	else:
+		_send_to_host(_envelope("rematch_request", 0, {}))
+	# 对端已点过 → 双方都同意
+	if _peer_rematch_want:
+		_confirm_rematch()
+	else:
+		status_text.emit("已发出「再来一局」，等待对方…")
+
+
+## 回应对方的再来一局。yes=false 则回菜单。
+func answer_rematch(yes: bool) -> void:
+	_rematch_want = yes
+	if _mode == Mode.HOTSEAT or ai_takeover:
+		if yes:
+			_start_rematch_local()
+		return
+	if is_host():
+		_broadcast(_envelope("rematch_answer", 0, {"yes": yes}))
+	else:
+		_send_to_host(_envelope("rematch_answer", 0, {"yes": yes}))
+	if not yes:
+		rematch_answered.emit(false)
+		return
+	if _peer_rematch_want:
+		_confirm_rematch()
+
+
+func _confirm_rematch() -> void:
+	# 房主权威开局；客户端等 battle_start
+	if is_host():
+		_start_rematch_local()
+	else:
+		status_text.emit("对方同意，进入新对局…")
+
+
+func _start_rematch_local() -> void:
+	_rematch_want = false
+	_peer_rematch_want = false
+	state = BattleState.new()
+	_pending_actions = [-1, -1]
+	_locks = [false, false]
+	_revealing = false
+	_opening_done = false
+	_opening_applied = false
+	_remotify_reset()
+	# 接管/无 provider 时视为本地房主，否则 is_host()==false 导致新局永不开始
+	var was_takeover := ai_takeover
+	ai_takeover = false
+	if was_takeover or provider == null or is_host() or _mode == Mode.HOTSEAT:
+		start_battle()
+	else:
+		# 客户端仍走 ready → 房主 accept
+		start_battle()
+	rematch_answered.emit(true)
+
+
+func _remotify_reset() -> void:
+	# 心跳/状态清干净，避免沿用上一局 SEALED
+	_countdown_sent = false
+	_resume_sent = false
+	_grace_left = 0.0
+	_sync_fsm_identity()
 
 
 # ---------- 指令（对局内） ----------
@@ -446,11 +551,20 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 	_pending_actions = [int(state.pending[0]), int(state.pending[1])]
 	_locks = [_pending_actions[0] >= 0, _pending_actions[1] >= 0]
 	_revealing = false
-	_opening_done = _opening_done or bool((snap.get("session", {}) as Dictionary).get("opening_done", true))
+	# 显式字段才认；缺省当作未开局，避免误把 opening 当已完成导致结算走 resolve_turn
+	_opening_done = _opening_done or bool((snap.get("session", {}) as Dictionary).get("opening_done", false))
 	if state.is_over():
 		_set_session(Session.GAME_OVER)
 	else:
 		_set_session(Session.IN_BATTLE)
+	# 恢复后必须重开选招窗，否则按钮永久灰
+	if is_session_snap and not state.is_over():
+		if is_host() or _mode == Mode.HOTSEAT or ai_takeover:
+			round_begun.emit(state.round)
+			if is_host():
+				_broadcast(_envelope("select_window", state.round, {"round": state.round, "window_ms": 5000}))
+		else:
+			round_begun.emit(state.round)
 	if is_session_snap:
 		# Resuming → Connected，打开输入闸门
 		fsm.confirm_restore(true, Time.get_ticks_msec())
@@ -538,6 +652,13 @@ func _on_provider_disconnected(reason: String) -> void:
 	if _self_closing or ai_takeover:
 		return
 	status_text.emit("连接断开：%s" % reason)
+	if _session == Session.GAME_OVER:
+		peer_left.emit(0, reason)
+		if _rematch_want:
+			_rematch_want = false
+			rematch_answered.emit(false)
+		status_text.emit("对方已离开")
+		return
 	if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED:
 		peer_left.emit(0, reason)
 		if _mode == Mode.ENET and not state.is_over():
@@ -571,26 +692,56 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 
 	match type:
 		"hello":
-			# 对端就绪（房主收）
+			# 对端就绪（房主收）→ 等房主点「接受」再开战
 			if is_host():
 				peer_joined.emit(from_id, payload)
-				status_text.emit("对手已加入")
-				if _session == Session.LOBBY:
-					# 双方到齐，自动开局
-					start_battle()
+				# 已在对局/已接受过则忽略重复 hello，避免把状态打回 READY_CHECK
+				if _session == Session.LOBBY or _session == Session.IDLE:
+					_set_session(Session.READY_CHECK)
+					join_requested.emit(from_id, payload)
+					status_text.emit("对方已连接，是否接受并开启对战？")
+				elif _session == Session.READY_CHECK:
+					join_requested.emit(from_id, payload)
 		"ready":
 			if is_host():
 				peer_joined.emit(from_id, payload)
-				if _session == Session.LOBBY:
-					start_battle()
+				if _session == Session.LOBBY or _session == Session.IDLE:
+					_set_session(Session.READY_CHECK)
+					join_requested.emit(from_id, payload)
+					status_text.emit("对方已就绪，是否接受并开启对战？")
+		"join_rejected":
+			status_text.emit("房主拒绝了加入")
+			battle_error.emit("join_rejected", "host declined")
+			leave()
+		"rematch_request":
+			if not _rematch_want:
+				rematch_offer.emit()
+				status_text.emit("对方想再来一局")
+			_peer_rematch_want = true
+			if _rematch_want:
+				_confirm_rematch()
+		"rematch_answer":
+			var yes := bool(payload.get("yes", false))
+			_peer_rematch_want = yes
+			if yes and _rematch_want:
+				_confirm_rematch()
+			else:
+				rematch_answered.emit(yes)
+				if not yes:
+					status_text.emit("对方不想再来一局")
 		"battle_start":
 			if not is_host():
 				var snap: Dictionary = payload.get("snapshot", state.snapshot())
+				var seat: Dictionary = payload.get("seat", {})
+				# 以房主下发的座位为准，避免本地 role 猜错导致 UI 对调
+				if seat.has("client"):
+					_local_role = int(seat["client"])
+				else:
+					_local_role = 1
 				restore_from_snapshot(snap)
 				_set_session(Session.IN_BATTLE)
 				battle_started.emit(snap)
 				if not _opening_done and int(snap.get("round", 1)) == GameRules.OPENING_ROUND and int(snap.get("phase", 0)) == GameRules.Phase.OPENING:
-					# 等 opening_result
 					pass
 				elif int(snap.get("round", 1)) > GameRules.OPENING_ROUND:
 					_opening_done = true
@@ -614,7 +765,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				_try_host_reveal()
 		"timeout_request":
 			if is_host():
-				request_timeout_default()
+				# 不立即填默认：交给 grace，避免客户端催断
+				_try_host_reveal()
 		"actions_revealed":
 			if not is_host():
 				var acts: Array = payload.get("actions", [-1, -1])
@@ -713,7 +865,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				fsm.on_heartbeat_sample(now2, rtt)
 			else:
 				fsm.on_heartbeat_sample(now2, 0)
-			_apply_host_clock(payload)
+			# 仅客户端用 echo 的 host_now 校时；主机误用会污染 skew 卡死倒计时
+			if not is_host():
+				_apply_host_clock(payload)
 		"bye":
 			peer_left.emit(from_id, "bye")
 			if _mode == Mode.ENET and not ai_takeover and not state.is_over():
@@ -874,6 +1028,7 @@ func _begin_remote_round(round_no: int) -> void:
 func _do_opening() -> void:
 	# 产品：开局不再强制结算，改为双方点「攒」确认后再亮相
 	_opening_done = false
+	_opening_applied = false
 	state.round = GameRules.OPENING_ROUND
 	state.phase = GameRules.Phase.SELECTING
 	state.pending = [-1, -1]
@@ -893,8 +1048,9 @@ func _do_opening() -> void:
 
 ## 开局亮相（规则 resolve_opening，不改结算语义）。
 func _finish_opening() -> void:
-	if _opening_done:
+	if _opening_applied:
 		return
+	_opening_applied = true
 	_opening_done = true
 	_revealing = false
 	state.round = GameRules.OPENING_ROUND

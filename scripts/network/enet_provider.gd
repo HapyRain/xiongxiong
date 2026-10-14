@@ -201,18 +201,45 @@ func _append_lan_ip(out: PackedStringArray, seen: Dictionary, addr: String) -> v
 	out.append(a)
 
 
-## 优先局域网段（192.168 / 10. / 172.16-31），再其它。
+## 优先真·局域网（192.168 / 172.16-31）。10.* 常是手机卡 CGNAT（10.255 等），不当 LAN。
 func _sort_lan_first(list: PackedStringArray) -> PackedStringArray:
 	var lan := PackedStringArray()
+	var mid := PackedStringArray()
 	var rest := PackedStringArray()
 	for a in list:
-		if a.begins_with("192.168.") or a.begins_with("10.") or _is_172_private(a):
+		if a.begins_with("192.168.") or _is_172_private(a):
 			lan.append(a)
+		elif _is_cellular_ip(a):
+			mid.append(a)
 		else:
 			rest.append(a)
+	for a in mid:
+		lan.append(a)
 	for a in rest:
 		lan.append(a)
 	return lan
+
+
+## 运营商/蜂窝常见段：10.0-255、100.64-127（CGNAT）
+func _is_cellular_ip(a: String) -> bool:
+	if a.begins_with("100."):
+		var p2 := a.split(".")
+		if p2.size() >= 2:
+			var s := int(p2[1])
+			if s >= 64 and s <= 127:
+				return true
+	if a.begins_with("10."):
+		return true
+	return false
+
+
+## 仅真正可联机的局域网 IPv4（搜索/展示用）
+func get_wifi_ipv4s() -> PackedStringArray:
+	var out := PackedStringArray()
+	for a in get_local_endpoints():
+		if a.begins_with("192.168.") or _is_172_private(a):
+			out.append(a)
+	return out
 
 
 func _is_172_private(a: String) -> bool:
@@ -333,12 +360,55 @@ func poll(delta: float) -> void:
 	if _conn != null and _open:
 		_pump_service()
 		_conn.flush()
-	if _discover != null and _discover_timeout > 0.0:
-		_discover_timeout -= delta
-		if _discover_timeout <= 0.0:
-			stop_discover()
-		else:
+	# 房主监听必须一直 pump，否则永远不应答 DISCOVER（_discover_timeout 常为 0）
+	if _discover != null:
+		if _discover_listening:
 			_pump_discover()
+		elif _discover_timeout > 0.0:
+			_discover_timeout -= delta
+			if _discover_timeout <= 0.0:
+				stop_discover()
+			else:
+				_pump_discover()
+				_maybe_resend_discover(delta)
+
+
+var _discover_resend_left: float = 0.0
+
+
+func _maybe_resend_discover(delta: float) -> void:
+	_discover_resend_left -= delta
+	if _discover_resend_left > 0.0:
+		return
+	_discover_resend_left = 0.5
+	_send_discover_probe()
+
+
+func _send_discover_probe() -> void:
+	if _discover == null:
+		return
+	var probe := {
+		"v": 1,
+		"magic": DISCOVER_MAGIC,
+		"proto": 1,
+	}
+	var body := JSON.stringify(probe).to_utf8_buffer()
+	# 全局广播 + 各 Wi-Fi 子网定向广播（避开蜂窝默认路由）
+	_discover.set_dest_address("255.255.255.255", DEFAULT_DISCOVER_PORT)
+	_discover.put_packet(body)
+	for ip in get_wifi_ipv4s():
+		var bcast := _subnet_broadcast(ip)
+		if bcast == "":
+			continue
+		_discover.set_dest_address(bcast, DEFAULT_DISCOVER_PORT)
+		_discover.put_packet(body)
+
+
+func _subnet_broadcast(ip: String) -> String:
+	var p := ip.split(".")
+	if p.size() != 4:
+		return ""
+	return "%s.%s.%s.255" % [p[0], p[1], p[2]]
 
 
 # ---------- ENet 事件泵 ----------
@@ -521,6 +591,8 @@ func _android_context():
 
 
 func _start_discover_listener(port: int) -> void:
+	_acquire_android_multicast_lock()
+	_acquire_android_wifi_lock()
 	_discover = PacketPeerUDP.new()
 	_discover.set_broadcast_enabled(true)
 	var err := _discover.bind(port)
@@ -536,16 +608,21 @@ func start_discover(timeout_sec: float) -> Error:
 		# 已在监听（房主）则不重复
 		_discover_timeout = timeout_sec
 		return OK
+	_acquire_android_multicast_lock()
+	_acquire_android_wifi_lock()
 	_discover = PacketPeerUDP.new()
 	_discover.set_broadcast_enabled(true)
-	_discover.set_dest_address("255.255.255.255", DEFAULT_DISCOVER_PORT)
-	var probe := {
-		"v": 1,
-		"magic": DISCOVER_MAGIC,
-		"proto": 1,
-	}
-	_discover.put_packet(JSON.stringify(probe).to_utf8_buffer())
+	# 尽量 bind 到 Wi-Fi 网卡，避免包从蜂窝 10.255 发出
+	var bound := false
+	for ip in get_wifi_ipv4s():
+		if _discover.bind(0, ip) == OK:
+			bound = true
+			break
+	if not bound:
+		_discover.bind(0)
+	_send_discover_probe()
 	_discover_timeout = timeout_sec
+	_discover_resend_left = 0.5
 	_discover_listening = false
 	return OK
 

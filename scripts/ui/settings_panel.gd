@@ -20,6 +20,7 @@ var _confirm_mode: String = ""
 
 func _ready() -> void:
 	name = "SettingsPanel"
+	UiTheme.apply_to_tree(get_tree())
 	# 抬到亮招层(10)之上，避免每回合结算盖住设置
 	var parent := get_parent()
 	if parent != null and not parent is CanvasLayer:

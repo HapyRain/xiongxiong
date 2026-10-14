@@ -65,7 +65,7 @@ func _run_fsm_suite() -> void:
 	var t0 := 1000
 	_fsm.on_heartbeat_sample(t0, 300)  # rtt 300 >= 250
 	_exp("fsm quality_drop → Degraded", _fsm.state == NetworkSessionFSM.State.DEGRADED)
-	_exp("fsm input closed in Degraded", not _fsm.is_input_open())
+	_exp("fsm input still open in Degraded", _fsm.is_input_open())
 
 	# --- Degraded → Connected（连续 3 次达标）---
 	_fsm.on_heartbeat_sample(t0 + 1000, 80)

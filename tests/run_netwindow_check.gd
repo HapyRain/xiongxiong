@@ -40,6 +40,7 @@ func _initialize() -> void:
 	root.add_child(_ctrl)
 	_ctrl.attach(_host_pm)
 	_ctrl.begin()
+	print("DBG session=", _host_pm.get_session(), " is_host=", _host_pm.is_host(), " window=", _ctrl._window_open, " input=", _host_pm.is_input_open(), " fsm=", _host_pm.get_net_state_name(), " opening_done=", _host_pm._opening_done)
 
 	_exp("window opens after late attach", _ctrl._window_open)
 	_exp("running", _ctrl._running)

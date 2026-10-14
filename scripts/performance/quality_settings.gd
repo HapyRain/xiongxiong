@@ -77,10 +77,28 @@ func _ready() -> void:
 func _inject_settings_button() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
-	# 对局场景由「菜单」入口打开同一设置面板，避免双按钮叠在右上角
+	# 对局里由「菜单」入口打开同一面板；autoload _ready 时 current_scene 可能尚空，改在 tree 上延迟判定
+	var tree := get_tree()
+	if tree == null:
+		return
+	tree.node_added.connect(_on_node_added_for_settings, CONNECT_ONE_SHOT)
+	_try_attach_settings_btn()
+
+
+func _on_node_added_for_settings(_n: Node) -> void:
+	_try_attach_settings_btn()
+
+
+func _try_attach_settings_btn() -> void:
+	var tree := get_tree()
+	if tree == null or tree.root == null:
+		return
+	if tree.root.get_node_or_null("SettingsEntryLayer/SettingsButton") != null:
+		return
 	var scene_path := ""
-	if get_tree() != null and get_tree().current_scene != null:
-		scene_path = str(get_tree().current_scene.scene_file_path)
+	if tree.current_scene != null:
+		scene_path = str(tree.current_scene.scene_file_path)
+	# 对局场景不挂齿轮，避免与「菜单」叠按钮
 	if scene_path.ends_with("main.tscn") or scene_path.ends_with("net_battle.tscn"):
 		return
 	var layer := CanvasLayer.new()
@@ -90,7 +108,7 @@ func _inject_settings_button() -> void:
 
 	var btn := Button.new()
 	btn.name = "SettingsButton"
-	btn.text = "⚙"
+	btn.text = "设置"
 	btn.tooltip_text = "画质 / 帧率设置"
 	# 贴最右，给对局内「菜单」留出左侧位置，避免重叠
 	btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)

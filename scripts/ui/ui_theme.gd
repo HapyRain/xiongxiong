@@ -18,12 +18,50 @@ const DANGER := Color(0.760, 0.260, 0.210)      # #C24235
 const OK := Color(0.180, 0.550, 0.320)
 const SHADOW := Color(0, 0, 0, 0.08)
 
+const FONT_PATH := "res://assets/fonts/NotoSansSC-Regular.otf"
+
+static var _font: Font = null
+static var _theme: Theme = null
+
+
+## 中文/符号缺字时用打包字体；SystemFont 作兜底（安卓系统 CJK）。
+static func default_font() -> Font:
+	if _font != null:
+		return _font
+	if ResourceLoader.exists(FONT_PATH):
+		_font = load(FONT_PATH)
+	if _font == null:
+		var sf := SystemFont.new()
+		sf.font_names = PackedStringArray([
+			"Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC",
+			"Microsoft YaHei", "PingFang SC", "Droid Sans Fallback", "sans-serif",
+		])
+		_font = sf
+	return _font
+
+
+static func default_theme() -> Theme:
+	if _theme != null:
+		return _theme
+	_theme = Theme.new()
+	_theme.default_font = default_font()
+	_theme.default_font_size = 15
+	return _theme
+
+
+## 把主题挂到场景树根，所有控件继承，避免安卓缺字方块/乱码。
+static func apply_to_tree(tree: SceneTree) -> void:
+	if tree == null or tree.root == null:
+		return
+	tree.root.theme = default_theme()
+
 
 static func ink_label(text: String, size: int = 15, color: Color = INK) -> Label:
 	var lab := Label.new()
 	lab.text = text
 	lab.add_theme_font_size_override("font_size", size)
 	lab.add_theme_color_override("font_color", color)
+	lab.add_theme_font_override("font", default_font())
 	return lab
 
 
@@ -58,6 +96,7 @@ static func make_btn(text: String, bg: Color, fg: Color = Color.WHITE, size: int
 	b.text = text
 	b.custom_minimum_size = Vector2(0, height)
 	b.add_theme_font_size_override("font_size", size)
+	b.add_theme_font_override("font", default_font())
 	b.add_theme_color_override("font_color", fg)
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)

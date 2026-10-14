@@ -51,6 +51,7 @@ var _top_menu_btn: Button
 
 
 func _ready() -> void:
+	UiTheme.apply_to_tree(get_tree())
 	_build_shield_pips()
 	_build_resource_icons()
 	_setup_audio()

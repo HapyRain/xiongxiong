@@ -24,7 +24,7 @@ const HB_WINDOW := 10
 const DEGRADE_RTT_P95_MS := 250
 const DEGRADE_JITTER_MS := 80
 const DEGRADE_HB_MISS := 2
-const RECOVER_RTT_MS := 150
+const RECOVER_RTT_MS := 400
 const RECOVER_JITTER_MS := 50
 const RECOVER_OK_STREAK := 3
 const SEAL_HB_MISS := 5
@@ -91,7 +91,8 @@ func get_state_name() -> String:
 
 ## 仅 Connected 允许 try_select / 回合推进 RPC（迁移不变式 1）。
 func is_input_open() -> bool:
-	return state == State.CONNECTED
+	# Degraded 仍可出招：质量差不应把操作闸关死（假死）
+	return state == State.CONNECTED or state == State.DEGRADED
 
 
 func is_sealed_family() -> bool:
@@ -108,7 +109,9 @@ func is_terminal() -> bool:
 func on_heartbeat_sample(now_ms: int, rtt_ms: int) -> void:
 	_hb_miss = 0
 	# 尖刺后的首个达标样本不把「与坏样本的差」算进 jitter（否则滞回永远退不出）
-	if _last_rtt >= 0 and _last_rtt < RECOVER_RTT_MS:
+	# 用降级阈值判定“坏样本”，避免 RECOVER 阈值放宽后 300ms 仍被当好样本
+	var prev_ok: bool = _last_rtt >= 0 and _last_rtt < DEGRADE_RTT_P95_MS
+	if prev_ok and int(rtt_ms) < RECOVER_RTT_MS:
 		_last_jit = absi(int(rtt_ms) - _last_rtt)
 	else:
 		_last_jit = 0

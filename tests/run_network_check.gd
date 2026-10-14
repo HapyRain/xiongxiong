@@ -221,7 +221,9 @@ func _tick_enet(delta: float) -> void:
 				_enet_step = "wait_battle"
 				_enet_t = 0.0
 		"wait_battle":
-			# host 端收 hello 后 start_battle
+			# 房主需点「接受」才开局（测试直接 accept_join）
+			if _enet_host.get_session() == PeerManager.Session.READY_CHECK:
+				_enet_host.accept_join()
 			if _enet_connected or _enet_client.get_session() == PeerManager.Session.IN_BATTLE:
 				_enet_step = "play"
 				_enet_t = 0.0
