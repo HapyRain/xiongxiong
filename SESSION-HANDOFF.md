@@ -1,117 +1,96 @@
-# 会话交接 · 拍拍熊熊（xiongxiong）· 2026-10-14
+# 会话交接 · 拍拍熊熊（xiongxiong）· 2026-10-14 深夜
 
-> 给新会话用：读完本文按「下一步」继续。节奏约定见文末。
+> 新会话请读完本文再动手。工程 Godot **4.7.2**，竖版 1v1「攒/波/防」demo。
 
 ---
 
-## 1. 项目一句话
-
-童年「波波攒 / 拍拍熊熊」做成移动端 1v1 回合指令对战（攒/波/防），Godot 4.7，广告变现向；长期迁抖音小游戏。当前阶段：**单机/联机 demo 抛光**，未上架。
-
-## 2. 关键路径
+## 1. 工程与工具
 
 | 用途 | 路径 |
 |---|---|
-| **Godot 工程（主）** | `D:\xiongxiong\xiongxiong` |
-| 文档镜像 / 旧工程 | `C:\Users\pc\XiaomiMiProjects\xiongxiong\`（docs + godot 副本） |
-| Godot 引擎 | `C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`（注意 **MiMo 双 M**；用 Start-Process 调用） |
-| 已导出 APK | `D:\xiongxiong\xiongxiong\build\xiongxiong-debug.apk`（约 55MB，包名 `com.xiongxiong.demo`） |
-| 冻结规则 | `docs/rules/minimal-rules-v0.md`（**已冻结 2026-10-14**） |
-| 流程 | `docs/design/game-flow-v0.md` |
-| 网络架构 | `docs/arch/peer-manager-multipath.md` |
-| 断线封存 FSM | `docs/arch/network-session-fsm.md` |
-| 画质分档 | `docs/arch/quality-performance-tiers.md`、`quality-settings-usage.md` |
-| 规则调研 | `docs/research/game-rules-research.md` |
-| 真机清单 | `docs/testing/device-test-checklist.md` |
-| 环境 | JDK `C:\Users\pc\AppData\Local\Programs\Eclipse Adoptium\jdk-17.0.20.8-hotspot`；SDK `C:\Users\pc\AppData\Local\Android\Sdk`；debug keystore 已生成 |
+| Godot 工程 | `D:\xiongxiong\xiongxiong` |
+| Godot 控制台 | `C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe` |
+| 导出脚本 | `pwsh -File build\export_android.ps1` |
+| APK | `build\xiongxiong-debug.apk`（约 70MB，含 CJK 字体） |
+| 远端 | `https://github.com/HapyRain/xiongxiong`（**必须走本机代理 `127.0.0.1:7897`**） |
+| 镜像 | `C:\Users\pc\XiaomiMiProjects\xiongxiong\` |
 
-**Godot MCP**：已接通（新会话）。插件连的是编辑器里打开的工程，应打开 **D:\xiongxiong\xiongxiong**。
-
-## 3. 已冻结 Demo 规则（勿口头改）
-
-- 1v1 同步出招：**攒 / 波 / 防**
-- 资源：**气 0–5**，**血 5**，**盾耐久 0–3**（移动端新增）
-- **回合 1 强制「攒」**：双方气 +1、盾补满 3；第 2 回合起正式博弈（产品已要求改为**玩家点击**才算开始，见待办）
-- **攒**：气 +1、盾 +1（均封顶）；**波**：耗 1 气，对撞/命中；**防**：需盾 ≥ 1，**成功格挡** 才扣 1 盾，空防不扣
-- 0 盾 **禁用「防」**（无软着陆）
-- 2 拍节奏选招（啪-啪-亮招），窗口约 5s；超时默认：盾≥1 防 / 盾=0 攒
-- 胜负：血 ≤ 0 败；双亡平；**40 回合**比血，相同平
-- 网络：超阈值**立即封存** → 双方同意 → **3s 倒计时**（房主绝对时刻）→ 快照恢复；拒绝/超时未恢复方判负（产品更希望对方掉线由 **AI 接管**，见待办）
-
-改规则须变更记录，禁止口头改。结算表以 `minimal-rules-v0.md` §3 为准。
-
-## 4. 工程结构（D:\xiongxiong\xiongxiong）
-
+**回归（改完必跑）：**
 ```
-scripts/rules/          game_rules · battle_state · resolve     纯逻辑，勿与画质/网络耦合
-scripts/network/        network_provider · local · enet · websocket 桩
-scripts/session/        peer_manager(autoload Net) · battle_controller ·
-                        networked_battle_controller · network_session_fsm
-scripts/performance/    quality_settings(autoload) · fps_guard
-scripts/ui/             menu · main(单机) · net_battle_ui · settings_panel
-scenes/                 menu.tscn · main.tscn · net_battle.tscn · settings_panel.tscn
-tests/                  test_rules_v0.py · run_rules_check · run_network_check ·
-                        run_seal_check · run_quality_check · gen_sfx.py
-assets/audio/           clap · ding · hit · block · zan
-export_presets.cfg      Android com.xiongxiong.demo
-build/export_android.ps1
+run_rules_check / run_network_check / run_seal_check /
+run_quality_check / run_nav_check / run_netwindow_check
 ```
+命令：`& $Godot --headless --path D:\xiongxiong\xiongxiong --script res://tests/run_XXX_check.gd`
 
-**回归**（改完必须仍过）：`run_rules_check` / `run_network_check` / `run_seal_check` / `run_quality_check`。
+**注意：** headless 测不出布局/聚光灯/真机字体类问题，必须 F5 真窗口 + 双机验证。
 
-## 5. 已完成能力
+---
 
-1. 冻结规则实现 + 单机 vs 简易 AI + 2 拍亮招 + 音效/卡片亮招动画  
-2. 菜单：单机 / ENet 创建房间 / 加入(IP) / UDP 发现 / 设置  
-3. **热座同屏双人**（产品要求**去掉**，见待办）  
-4. PeerManager 双后端：Local / Enet / WebSocket 桩（抖音预留）  
-5. 断线封存 7 态 FSM + SessionSnapshot(seq/checksum) + 同意/倒计时 UI  
-6. 画质低/中/高 + 帧率 30/60/90/120 + 设置面板（自动+手动）  
-7. Android 导出链路跑通，debug APK 可装真机  
+## 2. 冻结规则（勿改 `scripts/rules/*` 结算）
 
-## 6. 待办（按优先级，继续做）
+- 气 0–5，血 5，盾 0–3；40 回合比血
+- 回合 1 开局亮相：气+1、盾=3（`resolve_opening`）
+- 攒：气+1盾+1；波：耗 1 气；防：成功格挡才扣 1 盾
+- 2 拍节奏，窗口约 5s；开局窗 6s
+- 角色文案只用「我 / 对手」，形象是熊
 
-### T18/T19 菜单与对局导航（上次实现被取消，**未完成**）
-1. **去掉同屏双人/热座入口**（底层可留，UI 勿露出）
-2. **全面竖版**（portrait；390×820 思路；export 里 android orientation=portrait）
-3. **终局 →「返回菜单」**；菜单含**「退出游戏」**
-4. **对局中右上角**可打开菜单：
-   - 人机：可直接回菜单
-   - 联机：文案正确（主动离开 / **对方离开 → 提示并由人机接管**，继续可玩）
+---
 
-### T20 视觉抛光（**未开始**）
-1. **血**用图标（红心等），**气**用图标/设计，避免素条太丑  
-2. **胜负庆祝**特效  
-3. **命中 / 格挡 / 受击**特效（发波弹道、盾牌闪光等）  
-4. **开局强制攒**改为**用户点击**才算开始；第 1 回合窗口可 **6s**；双方都点攒 = 正式开始信号  
+## 3. 当前已具备
 
-### 其它
-- 双机真机 ENet + 断网封存联调  
-- Android MulticastLock / 二维码直连  
-- 抖音品类与版号调研收口  
+- 单机人机、ENet 联机（发现/加入/接受/对局）、断线人机接管、封存恢复、再来一局
+- 竖版 UI（390×820），两页首页（单人 / 联机），设置面板
+- 中文 Noto 字体打包；血气盾图标行；亮招卡片、命中/格挡/受击/胜负特效
+- 开局聚光灯引导点「攒」
+- Android 权限 / MulticastLock / 多网卡 IP / create_host 绑定回退
 
-## 7. 工作节奏约定（本项目）
+---
 
-- **规则最小化 → 流程/概念图 → 反推 → 冻结**；不陷入改规则细节。  
-- 产品拍板：热座+ENet 曾并行；双后端网络接口；画质自动+手动。  
-- 实现：**优先分发 subagent / 用 Godot MCP**，少手写；派单写清工程路径、禁止改 `scripts/rules/*` 结算语义、验收命令。  
-- Windows 终端优先 **PowerShell 7 (pwsh)**。  
-- 调用 Godot 用 Start-Process；镜像同步用 **cmd xcopy**（Copy-Item 可能静默失败）。  
-- 新增 `class_name` 后要 `--headless --import` 重建 class cache。  
-- 角色文案：只用 **「我 / 对手」**，形象是熊，不用颜色昵称。  
-- 角色/招式民间规则公开不可考 → 文案「致敬童年」，不写「完整还原 10 级」。  
+## 4. 最近已修（本轮）
 
-## 8. 建议新会话开场（可直接贴）
+| 问题 | 状态 |
+|---|---|
+| 联机双方血气盾对调 | 按 `local_role` 显示，图标挂在 panel meta |
+| 开局 2 气（应 1） | `resolve_opening` 只准结算一次 |
+| 新一局继承上一局血气 | `host/join/leave/start_battle` 里 `_reset_rules_state()` |
+| 第二回合全变「防」 | 超时默认优先 `state.pending` 点选 |
+| 点招后像没点上、等超时 | **点击立刻 submit 锁定**；UI 与单机一致变灰 |
+| 再来一局面板残留/无特效 | 双方 `rematch_answered` 收遮罩；特效层置顶 |
+| 聚光灯挖空在左上角 | 等两帧布局稳定 + `item_rect_changed` 自愈 |
+| 设置 ✕ / 点外关闭 / 确认框看不清 | ✕ 在标题行右侧；点遮罩关闭；UiTheme Label 默认深字 |
+
+---
+
+## 5. 已知风险 / 下一步建议
+
+1. **缺「点招→双方→亮招→下一回合」自动闭环测试**（`run_netwindow` 只覆盖开局窗口）
+2. 搜索房间在部分 ROM 上仍可能失败（子网广播按 /24 猜；AP 隔离）
+3. CJK 字体未子集化，APK 偏大（可 `pyftsubset` 瘦 15MB+）
+4. 联机拍2 与「点击即锁定」节奏需产品确认：当前点完就锁，拍2 只亮招
+5. 双机 ENet + 断网封存 + 再来一局 仍要真机走一遍
+
+---
+
+## 6. 工作约定（请继续遵守）
+
+- 不改 `scripts/rules/*` 结算语义
+- 优先 Godot MCP；大块可派 subagent（**模型用 `zhipuai/glm-5.3-flash` / `alibaba-cn/qwen3.8-flash`**，点根因比单模型准）
+- UI/网络静默 bug：先写复现测试再改
+- 打包后请用户真机/F5 确认再推远端
+- 推送：`$env:HTTPS_PROXY="http://127.0.0.1:7897"; git push origin main`
+- 中文短句汇报
+
+---
+
+## 7. 新会话开场（可直接贴）
 
 ```text
-读取 D:\xiongxiong\xiongxiong 或 C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\
-（以及项目根目录若有 HANDOFF / 本交接说明）。
+读取 D:\xiongxiong\xiongxiong\SESSION-HANDOFF.md，按「已知风险/下一步」继续。
 
-请按其中「待办 T18/T19 + T20」继续，遵守「工作节奏约定」：
-- 优先用 godot-mcp-toolkit（工程 D:\xiongxiong\xiongxiong，编辑器已打开该工程）做场景/UI/脚本；
-- 大块可再分 subagent；不要改 scripts/rules/* 结算语义；
-- 做完跑 run_rules_check / run_network_check / run_seal_check / run_quality_check；
-- 中文汇报，短句即可。
+当前最优先：
+1) 补一条联机闭环回归（点招→双方→亮招→下一回合，含 rematch）
+2) 真机走通：搜索/建房/接受/对局/再来一局/断线恢复
+3) 需要视觉或复杂联机问题时，派 glm-5.3-flash 与 qwen3.8-flash 双审
 
-先复述你理解的待办优先级，再开工 T18。
+约束：不改 scripts/rules/* 结算；改完跑全部 run_*_check；打包 export_android.ps1；推送走 127.0.0.1:7897 代理。
 ```

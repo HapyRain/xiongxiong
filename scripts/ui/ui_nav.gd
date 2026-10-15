@@ -1,19 +1,10 @@
 ## ui_nav.gd
 ## 竖版导航公用：返回主菜单 / 退出游戏 / 离开对局确认文案。
 ## 不碰 rules/*；只服务菜单与对局 UI。
-## 注意：static 方法里不直接写 autoload 名 Net（headless --script 编译期解析不到），改为运行时取。
 class_name UiNav
 extends RefCounted
 
 const MENU_SCENE := "res://scenes/menu.tscn"
-
-
-## 运行时拿 autoload Net（PeerManager）。
-static func net() -> Node:
-	var ml := Engine.get_main_loop()
-	if ml is SceneTree:
-		return (ml as SceneTree).root.get_node_or_null("Net")
-	return null
 
 
 ## 是否在联机对局会话中（ENet，且尚未结束）。
@@ -49,8 +40,38 @@ static func peer_left_text() -> String:
 	return "对方已离开，由人机接管"
 
 
+## 运行时拿 autoload Net（PeerManager）。
+static func net() -> Node:
+	var ml := Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).root.get_node_or_null("Net")
+	return null
+
+
+## 清掉挂在 root / 场景上的临时层，避免切场景后聚光灯/设置面板残留卡死。
+static func cleanup_overlays(tree: SceneTree) -> void:
+	if tree == null or tree.root == null:
+		return
+	for n in [
+		"OpeningSpotlight",
+		"SettingsPanelOverlay",
+		"SettingsPanelLayer",
+		"NetOverlay",
+	]:
+		var node := tree.root.get_node_or_null(NodePath(n))
+		if node != null:
+			node.queue_free()
+	# 当前场景内可能还有一份
+	if tree.current_scene != null:
+		for n in ["OpeningSpotlight", "SettingsPanelOverlay", "SettingsPanelLayer"]:
+			var c := tree.current_scene.get_node_or_null(NodePath(n))
+			if c != null:
+				c.queue_free()
+
+
 ## 离开对局并回主菜单。
 static func return_to_menu(tree: SceneTree) -> void:
+	cleanup_overlays(tree)
 	var n := net()
 	if n != null and int(n.call("get_session")) != PeerManager.Session.IDLE:
 		n.call("leave")
@@ -60,6 +81,7 @@ static func return_to_menu(tree: SceneTree) -> void:
 
 ## 退出游戏（Android 会 finish Activity）。
 static func quit_game(tree: SceneTree) -> void:
+	cleanup_overlays(tree)
 	if tree != null:
 		tree.quit()
 	else:

@@ -170,10 +170,15 @@ func try_select(who: int, action: int) -> bool:
 		return false
 	if not s.can_use_action(seat, action):
 		return false
-	# 预选只写本地，锁定（拍2）才 submit
+	# 预选写本地 + 立即锁定上传（对齐单机：点完即生效，不靠超时）
 	_local_preselect[seat] = action
 	s.pending[seat] = action
+	if peer != null and peer._pending_actions != null and seat < peer._pending_actions.size():
+		peer._pending_actions[seat] = action
 	preselect_changed.emit(seat, action)
+	# 联机/热座都立刻 submit，拍2 只负责 reveal
+	if peer != null:
+		peer.submit_action(action, seat)
 	return true
 
 
@@ -198,6 +203,7 @@ func _ai_try_select(action: int) -> bool:
 
 
 ## 拍 2 后锁定上传；由 UI 或 _process 在 CLAP2 时刻调用。
+## 选招已在 try_select 时 submit；这里主要负责 reveal。
 func lock_in() -> void:
 	if peer == null or not _running or _resolving:
 		return
@@ -218,18 +224,14 @@ func lock_in() -> void:
 						act = GameRules.Action.ZAN
 			_local_preselect[i] = act
 			peer.submit_action(act, i)
+		peer.reveal_phase()
 		return
 	var role: int = peer.get_local_role()
 	var act2: int = _local_preselect[role]
 	if act2 < 0:
 		act2 = int(s.pending[role])
-	if act2 < 0:
-		# 开局点攒：即便预选丢了也按攒提交，避免卡死
-		if s.round == GameRules.OPENING_ROUND and peer != null and not peer._opening_done:
-			act2 = GameRules.Action.ZAN
-		else:
-			return
-	peer.submit_action(act2)
+	if act2 >= 0:
+		peer.submit_action(act2)
 	peer.reveal_phase()
 
 
@@ -279,6 +281,9 @@ func _on_battle_started(_snap: Dictionary) -> void:
 
 
 func _on_round_begun(round_no: int) -> void:
+	# 再来一局/恢复：终局会把 _running 关掉，必须重新拉起
+	_running = true
+	_resolving = false
 	_window_open = true
 	_select_left = _window_seconds()
 	_beat_fired = [false, false]

@@ -19,7 +19,7 @@ var _confirm_mode: String = ""
 
 
 func _ready() -> void:
-	name = "SettingsPanel"
+	name = "SettingsPanelOverlay"
 	UiTheme.apply_to_tree(get_tree())
 	# 抬到亮招层(10)之上，避免每回合结算盖住设置
 	var parent := get_parent()
@@ -59,6 +59,11 @@ func _build_ui() -> void:
 	dim.color = Color(0.08, 0.07, 0.06, 0.55)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	dim.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			queue_free()
+		elif ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
+			queue_free())
 	add_child(dim)
 
 	var panel := PanelContainer.new()
@@ -78,16 +83,30 @@ func _build_ui() -> void:
 	panel.add_theme_stylebox_override("panel", sb)
 	add_child(panel)
 
+	# ✕ 挂到 box 标题行右上；PanelContainer 会铺满子节点，不能对容器内控件 set_anchors
+	_close_btn = Button.new()
+	_close_btn.text = "✕"
+	_close_btn.custom_minimum_size = Vector2(40, 36)
+	_close_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+	_close_btn.add_theme_font_size_override("font_size", 16)
+	_close_btn.pressed.connect(_close_panel)
+
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
 	panel.add_child(box)
 
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 8)
+	box.add_child(title_row)
+
 	var title := Label.new()
 	title.text = "设置 / 菜单"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_theme_font_size_override("font_size", 22)
-	title.add_theme_color_override("font_color", Color(0.16, 0.16, 0.16))
-	box.add_child(title)
+	title.add_theme_color_override("font_color", UiTheme.INK)
+	title_row.add_child(title)
+	title_row.add_child(_close_btn)
 
 	_fps_label = Label.new()
 	_fps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -136,13 +155,6 @@ func _build_ui() -> void:
 	_menu_btn.pressed.connect(_on_menu_pressed)
 	btn_col.add_child(_menu_btn)
 
-	_close_btn = Button.new()
-	_close_btn.text = "关闭"
-	_close_btn.custom_minimum_size = Vector2(0, 44)
-	_close_btn.add_theme_font_size_override("font_size", 15)
-	_close_btn.pressed.connect(queue_free)
-	btn_col.add_child(_close_btn)
-
 	_quit_btn = Button.new()
 	_quit_btn.text = "退出游戏"
 	_quit_btn.custom_minimum_size = Vector2(0, 44)
@@ -150,6 +162,15 @@ func _build_ui() -> void:
 	_quit_btn.add_theme_color_override("font_color", Color(0.75, 0.18, 0.16))
 	_quit_btn.pressed.connect(_on_quit_pressed)
 	btn_col.add_child(_quit_btn)
+
+
+func _close_panel() -> void:
+	# 一并清掉外层 CanvasLayer，避免防重入名仍在
+	var p := get_parent()
+	if p is CanvasLayer:
+		p.queue_free()
+	else:
+		queue_free()
 
 
 func _build_confirm() -> void:
@@ -190,12 +211,16 @@ func _build_confirm() -> void:
 	_confirm_title = Label.new()
 	_confirm_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_confirm_title.add_theme_font_size_override("font_size", 18)
+	_confirm_title.add_theme_color_override("font_color", UiTheme.INK)
 	v.add_child(_confirm_title)
 
 	_confirm_body = Label.new()
 	_confirm_body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_confirm_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_confirm_body.custom_minimum_size = Vector2(260, 48)
+	_confirm_body.add_theme_font_size_override("font_size", 15)
+	_confirm_body.add_theme_color_override("font_color", UiTheme.INK_SOFT)
+	_confirm_body.add_theme_constant_override("line_spacing", 4)
 	v.add_child(_confirm_body)
 
 	var row := HBoxContainer.new()
@@ -227,6 +252,7 @@ func _on_confirm_yes() -> void:
 	var mode := _confirm_mode
 	_confirm_layer.visible = false
 	_confirm_mode = ""
+	# 确认后立刻关掉本面板，避免常驻
 	match mode:
 		"menu":
 			UiNav.return_to_menu(get_tree())
@@ -234,6 +260,9 @@ func _on_confirm_yes() -> void:
 			UiNav.quit_game(get_tree())
 		_:
 			pass
+	# return_to_menu/quit 会 cleanup；本地也兜底关一次
+	if is_instance_valid(self):
+		_close_panel()
 
 
 func _on_confirm_no() -> void:

@@ -46,6 +46,7 @@ var _sfx_zan: AudioStream
 var _players: Array = []
 
 var _reveal_layer: CanvasLayer
+var _spot_layer: Control
 var _menu_btn: Button
 var _top_menu_btn: Button
 
@@ -69,6 +70,8 @@ func _ready() -> void:
 	controller.selected_changed.connect(_on_selected)
 	controller.round_resolved.connect(_on_resolved)
 	controller.game_over.connect(_on_game_over)
+	# 子节点 BattleController 的 _ready 更早，首帧 phase_changed 可能已错过，这里回放一次
+	_on_phase(controller.state.phase, controller.state.round)
 	_refresh_all()
 
 
@@ -220,9 +223,27 @@ func _build_shield_pips() -> void:
 
 
 func _pick(action: int) -> void:
+	if action == GameRules.Action.ZAN:
+		_hide_spotlight()
 	controller.try_select_change(0, action)
 	_play_sfx(_sfx_zan if action == GameRules.Action.ZAN else _sfx_ding, -6.0)
 	_refresh_actions()
+
+
+func _show_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		return
+	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), btn_zan, "点击「攒」开始对决")
+
+
+func _hide_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		BattleFx.hide_focus_spotlight(_spot_layer)
+	_spot_layer = null
+
+
+func _exit_tree() -> void:
+	_hide_spotlight()
 
 
 func _on_phase(phase: int, round_no: int) -> void:
@@ -232,11 +253,14 @@ func _on_phase(phase: int, round_no: int) -> void:
 	match phase:
 		GameRules.Phase.OPENING:
 			center_label.text = "开局亮相"
+			_hide_spotlight()
 		GameRules.Phase.SELECTING, GameRules.Phase.CLAP1:
 			if round_no == GameRules.OPENING_ROUND and not controller._opening_done:
 				center_label.text = "点击「攒」开始对决"
+				_show_spotlight()
 			else:
 				center_label.text = "同步出招"
+				_hide_spotlight()
 		GameRules.Phase.RESOLVING:
 			center_label.text = "结算"
 		GameRules.Phase.PRESENTING:
@@ -261,6 +285,7 @@ func _on_selected(who: int, action: int) -> void:
 
 
 func _on_resolved(result: GameRules.RoundResult) -> void:
+	_hide_spotlight()
 	log_label.text = result.text
 	if result.opening:
 		center_label.text = "气 +1 · 盾 3"

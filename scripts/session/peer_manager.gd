@@ -186,6 +186,8 @@ func _disconnect_provider() -> void:
 
 ## opts: {room_name?, port?, token?, max_players?, use_discover?, discover_port?}
 func host_game(opts: Dictionary) -> Error:
+	# 新开房间：清干净上一局
+	_reset_rules_state()
 	if provider == null:
 		var err := set_backend(int(opts.get("mode", Mode.ENET)))
 		if err != OK:
@@ -208,6 +210,8 @@ func host_game(opts: Dictionary) -> Error:
 
 ## ENET: {address, port, token}；HOTSEAT: {}；WEBSOCKET: {url, token}
 func join_game(opts: Dictionary) -> Error:
+	# 新加入：同样清干净
+	_reset_rules_state()
 	if provider == null:
 		var err0 := set_backend(int(opts.get("mode", Mode.ENET)))
 		if err0 != OK:
@@ -250,9 +254,21 @@ func leave() -> void:
 	_locks = [false, false]
 	_revealing = false
 	_opening_done = false
+	_opening_applied = false
 	_grace_left = 0.0
+	_reset_rules_state()
 	_set_session(Session.IDLE)
 	status_text.emit("已离开")
+
+
+## 清空血/气/盾/回合/胜负，避免下一局继承上一局（0 血满气开局等）。
+func _reset_rules_state() -> void:
+	state = BattleState.new()
+	_pending_actions = [-1, -1]
+	_locks = [false, false]
+	_revealing = false
+	_opening_done = false
+	_opening_applied = false
 
 
 ## 对方离开/掉线：本地改由人机接管，对局继续（不再走封存判负）。
@@ -301,6 +317,7 @@ func stop_discover() -> void:
 func start_battle() -> Error:
 	if _mode == Mode.HOTSEAT:
 		_set_session(Session.IN_BATTLE)
+		_reset_rules_state()
 		_do_opening()
 		return OK
 	if not is_host():
@@ -310,6 +327,8 @@ func start_battle() -> Error:
 		return OK
 	_local_role = 0
 	_set_session(Session.IN_BATTLE)
+	# 新一局必须重置规则状态，否则快照会带上一局的血/气
+	_reset_rules_state()
 	var snap := state.snapshot()
 	_broadcast(_envelope("battle_start", 1, {"snapshot": snap, "seat": {"host": 0, "client": 1}}))
 	battle_started.emit(snap)
@@ -371,30 +390,25 @@ func answer_rematch(yes: bool) -> void:
 
 
 func _confirm_rematch() -> void:
-	# 房主权威开局；客户端等 battle_start
-	if is_host():
+	# 双方都要收起终局/询问遮罩；仅房主开局
+	if is_host() or _mode == Mode.HOTSEAT or ai_takeover:
 		_start_rematch_local()
 	else:
+		rematch_answered.emit(true)
 		status_text.emit("对方同意，进入新对局…")
 
 
 func _start_rematch_local() -> void:
 	_rematch_want = false
 	_peer_rematch_want = false
-	state = BattleState.new()
-	_pending_actions = [-1, -1]
-	_locks = [false, false]
-	_revealing = false
-	_opening_done = false
-	_opening_applied = false
+	_reset_rules_state()
 	_remotify_reset()
-	# 接管/无 provider 时视为本地房主，否则 is_host()==false 导致新局永不开始
 	var was_takeover := ai_takeover
 	ai_takeover = false
+	# 接管/无 provider 时视为本地房主，否则 is_host()==false 导致新局永不开始
 	if was_takeover or provider == null or is_host() or _mode == Mode.HOTSEAT:
 		start_battle()
 	else:
-		# 客户端仍走 ready → 房主 accept
 		start_battle()
 	rematch_answered.emit(true)
 
@@ -479,7 +493,12 @@ func request_timeout_default() -> void:
 		return
 	for i in 2:
 		if not _locks[i] or _pending_actions[i] < 0:
-			var a: int = _default_action(i)
+			# 必须优先用玩家已点的 state.pending，否则盾≥1 时默认「防」会盖掉点选
+			var a: int = int(state.pending[i])
+			if a < 0:
+				a = int(_pending_actions[i])
+			if a < 0:
+				a = _default_action(i)
 			if not state.can_use_action(i, a):
 				a = GameRules.Action.ZAN
 			_pending_actions[i] = a
@@ -524,14 +543,18 @@ func submit_resume_vote(yes: bool) -> void:
 	if fsm.state == NetworkSessionFSM.State.SEALED:
 		# 尚未进同意流程：先触发链路恢复握手
 		fsm.on_link_ok(now)
+		if is_host():
+			_broadcast(_envelope("sys_link_ok", state.round, {}))
 	if fsm.state != NetworkSessionFSM.State.AWAITING_CONSENT:
-		return
-	# 本地立刻记一票（房主=权威汇总；客户端本地票也生效以便 UI 即时反馈）
+		# 仍把票发出去，让对端能补齐状态
+		pass
+	# 本地立刻记一票
 	fsm.submit_consent(my_peer, yes, now)
 	if not is_host():
 		_send_to_host(_envelope("sys_consent", state.round, {"peer": my_peer, "yes": yes}))
 	else:
 		_broadcast(_envelope("sys_consent", state.round, {"peer": my_peer, "yes": yes}))
+	status_text.emit("已确认继续，等待对方…" if yes else "已拒绝继续")
 
 
 ## 恢复：校验 SessionSnapshot（seq/checksum 闸门）→ restore rules → 开闸。
@@ -738,6 +761,12 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					_local_role = int(seat["client"])
 				else:
 					_local_role = 1
+				# 新一局：清掉上一局残留
+				_pending_actions = [-1, -1]
+				_locks = [false, false]
+				_revealing = false
+				_opening_done = false
+				_opening_applied = false
 				restore_from_snapshot(snap)
 				_set_session(Session.IN_BATTLE)
 				battle_started.emit(snap)
@@ -753,6 +782,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				if not snap.is_empty():
 					restore_from_snapshot(snap)
 				_opening_done = true
+				_opening_applied = true
+				_locks = [false, false]
+				_pending_actions = [-1, -1]
 				actions_revealed.emit([GameRules.Action.ZAN, GameRules.Action.ZAN], res)
 				if not state.is_over():
 					round_begun.emit(state.round)
@@ -814,11 +846,17 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			sealed.emit(rreason)
 		"resume_vote":
 			pass
+		"sys_link_ok":
+			if fsm.state == NetworkSessionFSM.State.SEALED:
+				fsm.on_link_ok(Time.get_ticks_msec())
 		"sys_consent":
 			var cpeer := int(payload.get("peer", from_id))
 			var cyes := bool(payload.get("yes", true))
-			# 双端都记票（镜像），保证 Consent 超时判定两边一致
+			# 对端可能比本端先进入同意流程：先补齐 AWAITING_CONSENT，再记票
+			if fsm.state == NetworkSessionFSM.State.SEALED:
+				fsm.on_link_ok(Time.get_ticks_msec())
 			fsm.submit_consent(cpeer, cyes, Time.get_ticks_msec())
+			status_text.emit("对方已确认，继续对局…" if cyes else "对方拒绝继续")
 		"sys_countdown":
 			var resume_at := int(payload.get("resume_at_host_ms", 0))
 			var cseq := int(payload.get("seq", 0))
@@ -937,16 +975,29 @@ func _do_host_reveal() -> void:
 	_revealing = true
 	_grace_left = 0.0
 	var a0 := int(_pending_actions[0])
-	var a1 := int(_pending_actions[1])
+	if a0 < 0:
+		a0 = int(state.pending[0])
 	if a0 < 0:
 		a0 = _default_action(0)
+	var a1 := int(_pending_actions[1])
+	if a1 < 0:
+		a1 = int(state.pending[1])
 	if a1 < 0:
 		a1 = _default_action(1)
 	_pending_actions = [a0, a1]
 	state.pending = [a0, a1]
 
 	# 开局：双方点「攒」（或超时默认攒）→ 亮相，不走常规对撞结算
-	if state.round == GameRules.OPENING_ROUND and not _opening_done:
+	# 注意：这里不能把 _revealing 置回 false 后再落入 resolve_turn，
+	# 否则第二次 reveal 会把开局再算成普通攒 → 气变 2。
+	if state.round == GameRules.OPENING_ROUND:
+		if _opening_applied or _opening_done:
+			# 已经亮相过，忽略重复 reveal
+			_revealing = false
+			_locks = [false, false]
+			_pending_actions = [-1, -1]
+			state.pending = [-1, -1]
+			return
 		if a0 != GameRules.Action.ZAN:
 			a0 = GameRules.Action.ZAN
 		if a1 != GameRules.Action.ZAN:
@@ -954,9 +1005,10 @@ func _do_host_reveal() -> void:
 		_pending_actions = [a0, a1]
 		state.pending = [a0, a1]
 		_broadcast(_envelope("actions_revealed", state.round, {"actions": [a0, a1], "opening": true}))
-		# 先解闸再亮相，避免 _revealing 卡住后续回合
-		_revealing = false
+		_revealing = true
 		_finish_opening()
+		_locks = [false, false]
+		_pending_actions = [-1, -1]
 		return
 
 	# 原子揭示：一次广播双方招式
@@ -1017,7 +1069,8 @@ func _begin_next_round() -> void:
 
 
 func _begin_remote_round(round_no: int) -> void:
-	_opening_done = true
+	# 客户端开局窗也必须保持 _opening_done=false，否则聚光灯/6s 窗全丢
+	_opening_done = round_no > GameRules.OPENING_ROUND
 	_pending_actions = [-1, -1]
 	_locks = [false, false]
 	_revealing = false

@@ -16,6 +16,8 @@ var _dialog_layer: Control
 
 func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
+	# 从对局返回时清掉可能残留的聚光灯/设置层
+	UiNav.cleanup_overlays(get_tree())
 	if Net != null and Net.get_session() != PeerManager.Session.IDLE:
 		Net.leave()
 	_build_ui()

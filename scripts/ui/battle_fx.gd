@@ -85,6 +85,203 @@ static func make_shield_row(max_n: int, filled: int) -> HBoxContainer:
 	return make_pip_row(max_n, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY, Vector2(10, 16), 3)
 
 
+# ---------- 开局聚光灯：压暗全场，只亮出「攒」 ----------
+
+## 返回 Control（挂在 current_scene 下）；不用时 queue_free()。
+static func show_focus_spotlight(tree: SceneTree, target: Control, caption: String = "点击「攒」开始对决") -> Control:
+	if tree == null or tree.current_scene == null or target == null:
+		return null
+	var host: Node = tree.current_scene
+	var root := Control.new()
+	root.name = "OpeningSpotlight"
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(root)
+	root.set_meta("spot_target", target)
+	root.set_meta("spot_caption", caption)
+
+	if not target.tree_exiting.is_connected(_on_spot_target_exit.bind(root)):
+		target.tree_exiting.connect(_on_spot_target_exit.bind(root), CONNECT_ONE_SHOT)
+	# 布局变化自愈（Qwen：首帧 size 够大但 pos=0 会锁死）
+	if not target.item_rect_changed.is_connected(_on_spot_target_rect.bind(root)):
+		target.item_rect_changed.connect(_on_spot_target_rect.bind(root))
+
+	# 等布局稳定：连续两帧 rect 一致且不为原点
+	_wait_stable_rect(tree, target, root, caption)
+	return root
+
+
+static func _on_spot_target_exit(root: Control) -> void:
+	if root != null and is_instance_valid(root):
+		root.queue_free()
+
+
+static func _on_spot_target_rect(root: Control) -> void:
+	if root == null or not is_instance_valid(root):
+		return
+	var target: Control = root.get_meta("spot_target")
+	var caption: String = str(root.get_meta("spot_caption", ""))
+	if target == null or not is_instance_valid(target):
+		return
+	# 节流到下一帧再重建，避免布局风暴
+	var tree := root.get_tree()
+	if tree == null:
+		return
+	tree.create_timer(0.0).timeout.connect(func():
+		if is_instance_valid(root) and is_instance_valid(target):
+			_build_spot_geometry(root, target, caption, false))
+
+
+static func _wait_stable_rect(tree: SceneTree, target: Control, root: Control, caption: String) -> void:
+	var prev := Rect2(-1, -1, -1, -1)
+	var tries := 0
+	while tries < 12:
+		tries += 1
+		await tree.process_frame
+		if not is_instance_valid(root) or not is_instance_valid(target):
+			return
+		var r := target.get_global_rect()
+		# 布局未完成：pos=(0,0) 但按钮并非真在原点
+		if r.position.length() < 1.0 and r.size.y < 200 and tries < 12:
+			prev = r
+			continue
+		if r.size.x < 4 or r.size.y < 4:
+			continue
+		if prev == r:
+			_build_spot_geometry(root, target, caption, true)
+			return
+		prev = r
+	# 兜底：12 帧后按当前 rect 建
+	if is_instance_valid(root) and is_instance_valid(target):
+		_build_spot_geometry(root, target, caption, true)
+
+
+static func _target_local_rect(root: Control, target: Control) -> Rect2:
+	# root 为全屏 Control 时，global_rect 原点即 root 局部原点（DPI/stretch 下仍对）
+	var gr := target.get_global_rect()
+	var origin := root.get_global_rect().position
+	return Rect2(gr.position - origin, gr.size)
+
+
+static func _build_spot_geometry(root: Control, target: Control, caption: String, animate: bool = true) -> void:
+	if root == null or not is_instance_valid(root) or target == null or not is_instance_valid(target):
+		return
+	for c in root.get_children():
+		c.queue_free()
+	var r := _target_local_rect(root, target)
+	# 真·布局未完成才重试（不要再用 size>=100 当完成）
+	if r.size.x < 8 or r.size.y < 8:
+		root.get_tree().create_timer(0.03).timeout.connect(func():
+			if is_instance_valid(root) and is_instance_valid(target):
+				_build_spot_geometry(root, target, caption, animate))
+		return
+	var hole := r.grow(14)
+
+	var vs := Vector2(390, 820)
+	if root.get_viewport() != null and root.get_viewport().get_visible_rect().size.x > 0:
+		vs = root.get_viewport().get_visible_rect().size
+	var vw := maxf(root.size.x, vs.x)
+	var vh := maxf(root.size.y, vs.y)
+
+	# 渐入暗幕
+	var dim_color := Color(0.04, 0.035, 0.03, 0.0 if animate else 0.68)
+	var d0 := _add_dim(root, Rect2(0, 0, vw, maxf(0, hole.position.y)), dim_color)
+	var d1 := _add_dim(root, Rect2(0, hole.end.y, vw, maxf(0, vh - hole.end.y)), dim_color)
+	var d2 := _add_dim(root, Rect2(0, hole.position.y, maxf(0, hole.position.x), hole.size.y), dim_color)
+	var d3 := _add_dim(root, Rect2(hole.end.x, hole.position.y, maxf(0, vw - hole.end.x), hole.size.y), dim_color)
+	if animate:
+		var tw_dim := root.create_tween().set_parallel(true)
+		for d in [d0, d1, d2, d3]:
+			if d != null:
+				tw_dim.tween_property(d, "color", Color(0.04, 0.035, 0.03, 0.68), 0.22)
+
+	# 空心金框 + 入场缩放聚焦
+	var border := 3.0
+	var gold := Color(1.0, 0.82, 0.25, 0.95)
+	var edges: Array[ColorRect] = []
+	edges.append(_edge_rect(hole.position - Vector2(border, border), Vector2(hole.size.x + border * 2, border), gold))
+	edges.append(_edge_rect(Vector2(hole.position.x - border, hole.end.y), Vector2(hole.size.x + border * 2, border), gold))
+	edges.append(_edge_rect(hole.position - Vector2(border, 0), Vector2(border, hole.size.y), gold))
+	edges.append(_edge_rect(Vector2(hole.end.x, hole.position.y), Vector2(border, hole.size.y), gold))
+	for e in edges:
+		root.add_child(e)
+		e.pivot_offset = e.size * 0.5
+		if animate:
+			e.scale = Vector2(1.35, 1.35)
+			e.modulate = Color(1, 1, 1, 0)
+	if animate:
+		var tw_in := root.create_tween().set_parallel(true)
+		for e in edges:
+			tw_in.tween_property(e, "scale", Vector2.ONE, 0.28).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_in.tween_property(e, "modulate", Color(1, 1, 1, 1), 0.20)
+		tw_in.chain().tween_interval(0.05)
+		tw_in.chain().tween_callback(func():
+			if not is_instance_valid(root):
+				return
+			var tw := root.create_tween().set_loops()
+			tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 0.35), 0.48)
+			for i in range(1, edges.size()):
+				tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 0.35), 0.48)
+			tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 1.0), 0.48)
+			for i in range(1, edges.size()):
+				tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 1.0), 0.48))
+	else:
+		var tw := root.create_tween().set_loops()
+		tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 0.35), 0.48)
+		for i in range(1, edges.size()):
+			tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 0.35), 0.48)
+		tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 1.0), 0.48)
+		for i in range(1, edges.size()):
+			tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 1.0), 0.48)
+
+	# 目标按钮轻脉冲（仅首建时播一次）
+	if animate and target != null and is_instance_valid(target):
+		target.pivot_offset = target.size * 0.5
+		var tw_b := root.create_tween()
+		tw_b.tween_property(target, "scale", Vector2(1.08, 1.08), 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw_b.tween_property(target, "scale", Vector2(1.0, 1.0), 0.18)
+
+	if caption != "":
+		var lab := Label.new()
+		lab.text = caption
+		lab.add_theme_font_size_override("font_size", 17)
+		lab.add_theme_color_override("font_color", Color(1, 0.95, 0.85))
+		lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lab.modulate = Color(1, 1, 1, 1 if not animate else 0)
+		root.add_child(lab)
+		lab.reset_size()
+		lab.position = Vector2((vw - lab.size.x) * 0.5, hole.position.y - 56)
+		if animate:
+			var tw2 := root.create_tween()
+			tw2.tween_property(lab, "modulate", Color(1, 1, 1, 1), 0.25)
+
+static func _edge_rect(pos: Vector2, size: Vector2, color: Color) -> ColorRect:
+	var d := ColorRect.new()
+	d.color = color
+	d.position = pos
+	d.size = size
+	d.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return d
+
+
+static func _add_dim(root: Control, rect: Rect2, color: Color) -> ColorRect:
+	if rect.size.x <= 0.5 or rect.size.y <= 0.5:
+		return null
+	var d := ColorRect.new()
+	d.color = color
+	d.position = rect.position
+	d.size = rect.size
+	d.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.add_child(d)
+	return d
+
+
+static func hide_focus_spotlight(layer: Control) -> void:
+	if layer != null and is_instance_valid(layer):
+		layer.queue_free()
+
+
 ## 「血」标签 + 图标行 + 数值，排成一行，避免糊在一起。
 static func make_stat_line(title: String, row: HBoxContainer, value_lab: Label) -> HBoxContainer:
 	var line := HBoxContainer.new()

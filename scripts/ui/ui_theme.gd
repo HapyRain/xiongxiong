@@ -46,6 +46,9 @@ static func default_theme() -> Theme:
 	_theme = Theme.new()
 	_theme.default_font = default_font()
 	_theme.default_font_size = 15
+	# 全局 Label 默认深色，避免漏写 font_color 时白字隐形
+	_theme.set_color("font_color", "Label", INK)
+	_theme.set_color("font_shadow_color", "Label", Color(0, 0, 0, 0))
 	return _theme
 
 

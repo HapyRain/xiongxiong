@@ -108,7 +108,7 @@ func _check_settings_panel() -> void:
 	if not texts.has("返回菜单") and not _has_button_prefix(panel, "返回菜单"):
 		print("DEBUG settings texts=", texts.keys())
 	_exp("settings has 退出游戏", texts.has("退出游戏"))
-	_exp("settings has 关闭", texts.has("关闭"))
+	_exp("settings has close", texts.has("关闭") or texts.has("✕") or _has_button_prefix(panel, "✕"))
 	panel.free()
 
 

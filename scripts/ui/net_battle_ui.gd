@@ -17,6 +17,7 @@ var _you_hp_row: HBoxContainer
 var _you_qi_row: HBoxContainer
 var _fx_layer: Control
 var _reveal_layer: CanvasLayer
+var _spot_layer: Control
 var _sfx_clap: AudioStream
 var _sfx_ding: AudioStream
 var _sfx_hit: AudioStream
@@ -60,7 +61,9 @@ func _ready() -> void:
 	Net.countdown_tick.connect(_on_countdown_tick)
 	Net.session_failed.connect(_on_session_failed)
 	Net.session_restored.connect(_on_session_restored)
+	Net.battle_started.connect(func(_s): _on_battle_started_ui())
 	controller.begin()
+	_on_phase(controller.state.phase, controller.state.round)
 	_refresh_all()
 
 
@@ -179,6 +182,9 @@ func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
 	col.add_child(BattleFx.make_stat_line("血", hp_row, hp_lab))
 	col.add_child(BattleFx.make_stat_line("气", qi_row, qi_lab))
 	col.add_child(BattleFx.make_stat_line("盾", sh_row, sh_lab))
+	# 图标行挂在列上，按 panel 取；勿用座位下标选 _me/_you
+	col.set_meta("hp_row", hp_row)
+	col.set_meta("qi_row", qi_row)
 	col.set_meta("shield_row", sh_row)
 	return col
 
@@ -429,6 +435,7 @@ func _on_beat(n: int) -> void:
 
 
 func _on_resolved(result: Dictionary) -> void:
+	_hide_spotlight()
 	var text := str(result.get("text", ""))
 	_log(text)
 	# 中场结算短面板
@@ -441,10 +448,33 @@ func _on_resolved(result: Dictionary) -> void:
 
 
 func _on_pick(who: int, action: int) -> void:
+	if action == GameRules.Action.ZAN:
+		_hide_spotlight()
 	if controller.try_select(who, action):
 		_play_sfx(_sfx_zan if action == GameRules.Action.ZAN else _sfx_ding, -6.0)
 		_log("已选 %s" % GameRules.action_name(action))
 		_refresh_all()
+	else:
+		_log("当前无法出招")
+
+
+func _show_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		return
+	var zan_btn: Button = _me_btns.get(GameRules.Action.ZAN) as Button
+	if zan_btn == null:
+		return
+	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), zan_btn, "点击「攒」开始对决")
+
+
+func _hide_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		BattleFx.hide_focus_spotlight(_spot_layer)
+	_spot_layer = null
+
+
+func _exit_tree() -> void:
+	_hide_spotlight()
 
 
 func _on_preselect(who: int, action: int) -> void:
@@ -456,17 +486,35 @@ func _on_preselect(who: int, action: int) -> void:
 	_refresh_all()
 
 
+func _on_battle_started_ui() -> void:
+	# 新局务必收掉上一局遮罩，否则特效在下面看不见
+	_hide_overlay()
+
+
 func _on_phase(phase: int, round_no: int) -> void:
 	_round_label.text = "回合 %d / %d" % [round_no, GameRules.MAX_ROUND]
+	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null \
+		and controller.peer != null and not controller.peer._opening_done
 	match phase:
 		GameRules.Phase.SELECTING:
-			_status_label.text = "同步出招"
+			if is_opening:
+				_status_label.text = "点击「攒」开始对决"
+				_show_spotlight()
+			else:
+				_status_label.text = "同步出招"
+				_hide_spotlight()
+			# 选招阶段应无遮罩
+			if _overlay != null and _overlay.visible and _overlay_mode in ["game_over", "rematch", "takeover"]:
+				_hide_overlay()
 		GameRules.Phase.RESOLVING:
 			_status_label.text = "结算…"
+			_hide_spotlight()
 		GameRules.Phase.PRESENTING:
 			_status_label.text = "亮招"
+			_hide_spotlight()
 		GameRules.Phase.GAME_OVER:
 			_status_label.text = "结束"
+			_hide_spotlight()
 	_refresh_all()
 
 
@@ -586,6 +634,9 @@ func _play_impact_fx(result: Dictionary) -> void:
 		return
 	if get_tree() != null and get_tree().root.get_node_or_null("SettingsPanelOverlay") != null:
 		return
+	# 特效提到遮罩之上，避免被 game_over/rematch 盖住
+	if _fx_layer.get_parent() != null:
+		_fx_layer.get_parent().move_child(_fx_layer, _fx_layer.get_parent().get_child_count() - 1)
 	var hit: Array = result.get("hit", [false, false])
 	var blocked: Array = result.get("blocked", [false, false])
 	var mine: int = Net.get_local_role()
@@ -691,11 +742,15 @@ func _on_rematch_no() -> void:
 func _on_rematch_answered(yes: bool) -> void:
 	if yes:
 		_hide_overlay()
+		if _btn_rematch != null:
+			_btn_rematch.text = "再来一局"
+			_btn_rematch.disabled = false
+		if _btn_menu != null:
+			_btn_menu.text = "返回菜单"
 		_refresh_all()
 		_log("新对局开始")
 	else:
 		_show_overlay("game_over", "已结束", "对方不想再来一局，返回菜单。", false, false, true)
-		# 主动回联机菜单
 		var t := get_tree()
 		if t != null:
 			t.create_timer(1.2).timeout.connect(func():
@@ -719,12 +774,44 @@ func _refresh_all() -> void:
 	_set_row(_you_boxes, s, 1 - mine)
 	var input_ok: bool = Net != null and Net.is_input_open()
 	var can_lock: bool = not s.is_over() and _overlay.visible == false and input_ok and controller._window_open
+	# 本地已选（对齐单机：点完变灰）
+	var picked: int = int(controller._local_preselect[mine]) if controller._local_preselect.size() > mine else -1
+	if picked < 0:
+		picked = int(s.pending[mine])
+	var locked: bool = picked >= 0 or bool(Net != null and Net._locks != null and mine < Net._locks.size() and bool(Net._locks[mine]))
 	for a in _me_btns.keys():
 		var b: Button = _me_btns[a]
-		b.disabled = (not can_lock) or (not s.can_use_action(mine, int(a)))
-	if not input_ok and _overlay != null and not _overlay.visible and not s.is_over():
+		var act := int(a)
+		# 与单机一致：点完即灰，不再上色强调
+		b.disabled = (not can_lock) or locked or (not s.can_use_action(mine, act))
+	if locked and picked >= 0:
+		_status_label.text = "已选：%s" % GameRules.action_name(picked)
+	elif not input_ok and _overlay != null and not _overlay.visible and not s.is_over():
 		if _log_label != null and _log_label.text == "……":
 			_log_label.text = "网络同步中，请稍候…"
+
+
+## 选中态：金边 + 稍暗，肉眼可辨「点成功了」
+func _set_btn_selected(b: Button, on: bool) -> void:
+	if b == null:
+		return
+	if on:
+		b.add_theme_color_override("font_color", UiTheme.INK)
+		b.add_theme_color_override("font_hover_color", UiTheme.INK)
+		b.add_theme_stylebox_override("normal", UiTheme.button_style(Color(1.0, 0.85, 0.35), 16, UiTheme.ACCENT_DEEP))
+		b.add_theme_stylebox_override("disabled", UiTheme.button_style(Color(1.0, 0.85, 0.35), 16, UiTheme.ACCENT_DEEP))
+	else:
+		# 恢复各招式默认色
+		var col: Color = UiTheme.ACCENT
+		if b.text == "波":
+			col = UiTheme.WAVE
+		elif b.text == "防":
+			col = UiTheme.SHIELD
+		var fg := UiTheme.INK if b.text == "攒" else Color.WHITE
+		b.add_theme_color_override("font_color", fg)
+		b.add_theme_color_override("font_hover_color", fg)
+		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 16))
+		b.add_theme_stylebox_override("disabled", UiTheme.button_style(col.darkened(0.25), 16))
 
 
 func _set_row(boxes: Array, s: BattleState, i: int) -> void:
@@ -738,21 +825,20 @@ func _set_row(boxes: Array, s: BattleState, i: int) -> void:
 	boxes[0].text = "血 %d/%d" % [hp, GameRules.MAX_HP]
 	boxes[1].text = "气 %d/%d" % [qi, GameRules.MAX_QI]
 	boxes[2].text = "盾 %d/%d" % [shield_n, GameRules.MAX_SHIELD]
-	var hp_row: HBoxContainer = _me_hp_row if i == 0 else _you_hp_row
-	var qi_row: HBoxContainer = _me_qi_row if i == 0 else _you_qi_row
-	if hp_row != null:
-		BattleFx.update_hp_row(hp_row, hp)
-	if qi_row != null:
-		BattleFx.update_qi_row(qi_row, qi)
-	# 盾行挂在 stat 列的 meta 上
+	# 从该 panel 的列 meta 取图标行（盾一直正确，血/气曾按座位 i 选错行）
 	var src: Control = boxes[0].get_parent() as Control
-	if src != null and src.has_meta("shield_row"):
-		var sh: HBoxContainer = src.get_meta("shield_row")
+	var col: Control = src
+	if col != null and not col.has_meta("hp_row") and col.get_parent() != null:
+		col = col.get_parent() as Control
+	if col != null and col.has_meta("hp_row"):
+		var hp_row: HBoxContainer = col.get_meta("hp_row")
+		if hp_row != null:
+			BattleFx.update_hp_row(hp_row, hp)
+	if col != null and col.has_meta("qi_row"):
+		var qi_row: HBoxContainer = col.get_meta("qi_row")
+		if qi_row != null:
+			BattleFx.update_qi_row(qi_row, qi)
+	if col != null and col.has_meta("shield_row"):
+		var sh: HBoxContainer = col.get_meta("shield_row")
 		if sh != null:
 			BattleFx.update_shield_row(sh, shield_n)
-	else:
-		var p2: Control = src.get_parent() as Control if src != null else null
-		if p2 != null and p2.has_meta("shield_row"):
-			var sh2: HBoxContainer = p2.get_meta("shield_row")
-			if sh2 != null:
-				BattleFx.update_shield_row(sh2, shield_n)
