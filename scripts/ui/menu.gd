@@ -88,7 +88,7 @@ func _build_home_page() -> Control:
 	page.set_anchors_preset(Control.PRESET_FULL_RECT)
 
 	page.add_child(_title("拍拍熊熊", 36, UiTheme.INK, 72))
-	page.add_child(_title("1v1 指令对战", 14, UiTheme.INK_SOFT, 124))
+	page.add_child(_title("1v1 三分钟一局超爽超解压", 14, UiTheme.INK_SOFT, 124))
 
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_CENTER)

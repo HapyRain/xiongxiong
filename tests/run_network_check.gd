@@ -73,6 +73,7 @@ func _setup_hotseat() -> void:
 	_exp("opening waiting", int(_hs_pm.state.round) == 1 and not _hs_pm._opening_done)
 	_hs_pm.submit_action(GameRules.Action.ZAN, 0)
 	_hs_pm.submit_action(GameRules.Action.ZAN, 1)
+	_hs_pm.request_timeout_default()
 	_exp("opening qi", int(_hs_pm.state.qi[0]) == 1 and int(_hs_pm.state.qi[1]) == 1)
 	_exp("opening shield", int(_hs_pm.state.shield[0]) == 3 and int(_hs_pm.state.shield[1]) == 3)
 	_exp("opening done flag", _hs_pm._opening_done)
@@ -87,6 +88,7 @@ func _setup_hotseat() -> void:
 	var hs_before := _hs_rounds
 	_hs_pm.submit_action(GameRules.Action.BO, 0)
 	_hs_pm.submit_action(GameRules.Action.ZAN, 1)
+	_hs_pm.request_timeout_default()
 	_exp("hotseat r2 revealed", _hs_rounds > hs_before)
 	_exp("hotseat r2 hp", int(_hs_pm.state.hp[1]) == 4)
 	_exp("hotseat r2 qi", int(_hs_pm.state.qi[0]) == 0)  # 1-1 波耗气
@@ -148,17 +150,20 @@ func _setup_local() -> void:
 	# 开局：双方点「攒」
 	_host_pm.submit_action(GameRules.Action.ZAN, 0)
 	_client_pm.submit_action(GameRules.Action.ZAN, 1)
+	# 拍2 统一结算（不再提交即亮招）
+	_host_pm.request_timeout_default()
 	_pump(0.05)
 	_exp("local opening done", _host_pm._opening_done)
 	_host_pm.debug_advance_round()
 	_client_pm.debug_advance_round()
 	_pump(0.02)
 
-	# 双端各交一招，应原子揭示
+	# 双端各交一招，等拍2 后原子揭示
 	_host_pm.state.round = 2
 	_client_pm.state.round = 2
 	_host_pm.submit_action(GameRules.Action.BO, 0)
 	_client_pm.submit_action(GameRules.Action.FANG, 1)
+	_host_pm.request_timeout_default()
 	_pump(0.05)
 	_exp("local revealed", _local_reveals >= 2)
 	_exp("local host saw fang", int(_host_pm._pending_actions[1]) == GameRules.Action.FANG)

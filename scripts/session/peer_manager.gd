@@ -69,6 +69,8 @@ var _grace_left: float = 0.0
 var _opening_done: bool = false
 ## 开局亮相是否已结算（防 resolve_opening 重复加资源）
 var _opening_applied: bool = false
+## 本回合是否因超时自动出招（UI 角标「超时」）
+var _timeout_flags: Array = [false, false]
 var _last_commit_id: String = ""
 
 ## 心跳（应用层，ENet 默认 timeout 5–30s 太慢）
@@ -269,6 +271,7 @@ func _reset_rules_state() -> void:
 	_revealing = false
 	_opening_done = false
 	_opening_applied = false
+	_timeout_flags = [false, false]
 
 
 ## 对方离开/掉线：本地改由人机接管，对局继续（不再走封存判负）。
@@ -423,31 +426,28 @@ func _remotify_reset() -> void:
 
 # ---------- 指令（对局内） ----------
 
-## who: 热座座位 0/1；联机下省略=本地角色。仅锁定后才会上传。
+## who: 热座座位 0/1；联机下省略=本地角色。点击即上传，结算前可改。
 func submit_action(action: int, who: int = -1) -> Error:
 	if _session != Session.IN_BATTLE:
 		return ERR_UNCONFIGURED
 	if not is_input_open():
-		# Sealed/Countdown/Resuming 内禁止回合推进
+		return ERR_LOCKED
+	if _revealing or state.is_over():
 		return ERR_LOCKED
 	var role: int = _local_role if who < 0 else who
 	if role < 0 or role > 1:
 		return ERR_INVALID_PARAMETER
 	if not state.can_use_action(role, action):
 		return FAILED
-	# 本地立即写 pending（预选也写这里，但网络只在锁定后发送）
 	state.pending[role] = action
 	action_committed.emit(role, action)
 
 	if _mode == Mode.HOTSEAT or ai_takeover:
 		_locks[role] = true
 		_pending_actions[role] = action
-		_maybe_reveal_local()
 		return OK
 
-	# 联机：锁定后上传给房主
-	if _locks[role]:
-		return OK
+	# 已锁过也允许覆盖（封盘前可改招）；不在此结算
 	_locks[role] = true
 	_pending_actions[role] = action
 	var commit := {
@@ -482,7 +482,34 @@ func reveal_phase() -> void:
 		_send_to_host(_envelope("reveal_request", state.round, {}))
 
 
-## 超时默认防/攒，由 host 执行。
+## 封盘：缺输入按规则补默认并打「超时」角标，但不结算。
+func auto_fill_missing() -> void:
+	if _session != Session.IN_BATTLE or state.is_over():
+		return
+	if not is_input_open():
+		return
+	if not is_host() and _mode != Mode.HOTSEAT and not ai_takeover:
+		_send_to_host(_envelope("timeout_request", state.round, {"fill_only": true}))
+		return
+	for i in 2:
+		if not _locks[i] or _pending_actions[i] < 0:
+			var a: int = int(state.pending[i])
+			if a < 0:
+				a = int(_pending_actions[i])
+			if a < 0:
+				a = _default_action(i)
+				_timeout_flags[i] = true
+			if not state.can_use_action(i, a):
+				a = GameRules.Action.ZAN
+				_timeout_flags[i] = true
+			_pending_actions[i] = a
+			_locks[i] = true
+			if state.pending[i] < 0:
+				state.pending[i] = a
+			action_committed.emit(i, a)
+
+
+## 超时默认防/攒，由 host 执行（含结算）。
 func request_timeout_default() -> void:
 	if _session != Session.IN_BATTLE or state.is_over():
 		return
@@ -491,21 +518,7 @@ func request_timeout_default() -> void:
 	if not is_host() and _mode != Mode.HOTSEAT and not ai_takeover:
 		_send_to_host(_envelope("timeout_request", state.round, {}))
 		return
-	for i in 2:
-		if not _locks[i] or _pending_actions[i] < 0:
-			# 必须优先用玩家已点的 state.pending，否则盾≥1 时默认「防」会盖掉点选
-			var a: int = int(state.pending[i])
-			if a < 0:
-				a = int(_pending_actions[i])
-			if a < 0:
-				a = _default_action(i)
-			if not state.can_use_action(i, a):
-				a = GameRules.Action.ZAN
-			_pending_actions[i] = a
-			_locks[i] = true
-			if state.pending[i] < 0:
-				state.pending[i] = a
-			action_committed.emit(i, a)
+	auto_fill_missing()
 	if _mode == Mode.HOTSEAT or ai_takeover:
 		_maybe_reveal_local()
 	else:
@@ -779,12 +792,17 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if not is_host():
 				var res: Dictionary = payload.get("result", {})
 				var snap: Dictionary = payload.get("snapshot", {})
+				# 开窗前清残留，避免旧 pending 让按钮灰死
+				state.pending = [-1, -1]
+				_pending_actions = [-1, -1]
+				_locks = [false, false]
 				if not snap.is_empty():
 					restore_from_snapshot(snap)
+				state.pending = [-1, -1]
+				_pending_actions = [-1, -1]
+				_locks = [false, false]
 				_opening_done = true
 				_opening_applied = true
-				_locks = [false, false]
-				_pending_actions = [-1, -1]
 				actions_revealed.emit([GameRules.Action.ZAN, GameRules.Action.ZAN], res)
 				if not state.is_over():
 					round_begun.emit(state.round)
@@ -797,8 +815,11 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				_try_host_reveal()
 		"timeout_request":
 			if is_host():
-				# 不立即填默认：交给 grace，避免客户端催断
-				_try_host_reveal()
+				if bool(payload.get("fill_only", false)):
+					auto_fill_missing()
+				else:
+					# 不立即填默认：交给拍2/封盘闸
+					_try_host_reveal()
 		"actions_revealed":
 			if not is_host():
 				var acts: Array = payload.get("actions", [-1, -1])
@@ -928,12 +949,7 @@ func _on_submit_received(role: int, payload: Dictionary) -> void:
 	_pending_actions[role] = action
 	_locks[role] = true
 	action_committed.emit(role, action)
-	if _locks[0] and _locks[1]:
-		_do_host_reveal()
-	else:
-		# 等另一方；启动 grace
-		if _grace_left <= 0.0:
-			_grace_left = LOCK_GRACE_SEC
+	# 只锁定，不在此结算：统一等拍 2 / 窗口结束（双方便招也等节奏）
 
 
 # ---------- 权威侧揭示 / 结算 ----------
@@ -1044,7 +1060,9 @@ func _schedule_next_round() -> void:
 	# 无 SceneTree（headless 单测）时不自动推进，由 debug_advance_round 手动驱动
 	if not is_inside_tree() or get_tree() == null:
 		return
-	await get_tree().create_timer(0.6).timeout
+	# 结算画面独立停留 0.8s，退下后再进下一回合
+	# 结算画面独立停留（勿在 await 里调 BattleTempo）
+	await get_tree().create_timer(0.8).timeout
 	if _session == Session.IN_BATTLE and not state.is_over():
 		_begin_next_round()
 
@@ -1061,6 +1079,7 @@ func _begin_next_round() -> void:
 	state.pending = [-1, -1]
 	_pending_actions = [-1, -1]
 	_locks = [false, false]
+	_timeout_flags = [false, false]
 	_revealing = false
 	state.phase = GameRules.Phase.SELECTING
 	round_begun.emit(state.round)
@@ -1071,8 +1090,11 @@ func _begin_next_round() -> void:
 func _begin_remote_round(round_no: int) -> void:
 	# 客户端开局窗也必须保持 _opening_done=false，否则聚光灯/6s 窗全丢
 	_opening_done = round_no > GameRules.OPENING_ROUND
+	# 新窗清空点选残留，否则 UI 把上回合招式当「已选」永久灰
+	state.pending = [-1, -1]
 	_pending_actions = [-1, -1]
 	_locks = [false, false]
+	_timeout_flags = [false, false]
 	_revealing = false
 	state.phase = GameRules.Phase.SELECTING
 	round_begun.emit(round_no)
@@ -1123,7 +1145,7 @@ func _finish_opening() -> void:
 func _schedule_opening_to_select() -> void:
 	if not is_inside_tree() or get_tree() == null:
 		return
-	await get_tree().create_timer(OPENING_DELAY).timeout
+	await get_tree().create_timer(0.8).timeout
 	if _session == Session.IN_BATTLE and not state.is_over():
 		# 开局后进入回合 2 选招；round 仍为 1 时 next 会 +1 → 2
 		if state.round == GameRules.OPENING_ROUND:
@@ -1304,4 +1326,5 @@ func _result_to_dict(r: GameRules.RoundResult) -> Dictionary:
 		"blocked": r.blocked.duplicate(),
 		"opening": r.opening,
 		"text": r.text,
+		"timeout": _timeout_flags.duplicate(),
 	}

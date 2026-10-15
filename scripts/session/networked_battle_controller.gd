@@ -13,10 +13,8 @@ signal round_resolved(result: Dictionary)
 signal game_over(winner: int)
 signal status_text(text: String)
 
-const SELECT_WINDOW := 5.0
-const OPENING_SELECT_WINDOW := 6.0
-const CLAP1_ELAPSED := 1.8
-const CLAP2_ELAPSED := 3.4
+const SELECT_WINDOW := 2.1
+const OPENING_SELECT_WINDOW := 2.1
 
 var peer: PeerManager = null
 var state: BattleState:
@@ -33,6 +31,8 @@ var _running: bool = false
 var _ai_active: bool = false
 var _ai_seat: int = 1
 var _ai_timer: float = 0.0
+var _did_lock_fill: bool = false
+var _did_settle: bool = false
 
 
 func attach(manager: PeerManager) -> void:
@@ -74,9 +74,9 @@ func _session_meta() -> Dictionary:
 
 func _window_seconds() -> float:
 	var s: BattleState = state
-	if s != null and s.round == GameRules.OPENING_ROUND and peer != null and not peer._opening_done:
-		return OPENING_SELECT_WINDOW
-	return SELECT_WINDOW
+	if s == null:
+		return BattleTempo.total_window(1)
+	return BattleTempo.total_window(s.round)
 
 
 func begin() -> void:
@@ -149,34 +149,38 @@ func _on_ai_takeover(reason: String) -> void:
 		status_text.emit("对方已离开，由人机接管")
 
 
-## 座位 who 预选/改选。热座：who=0/1；联机：who 忽略，用本地角色。
-func try_select(who: int, action: int) -> bool:
+## 唯一输入闸：UI 禁用与 try_select 共用，避免“能点但无效 / 亮着却点不动”
+func is_pick_open() -> bool:
 	if peer == null or not _running:
 		return false
-	if not peer.is_input_open():
-		# Session 闸门：Sealed/Countdown/Resuming 内禁止选招
+	if _resolving or _did_settle or _did_lock_fill:
+		return false
+	if not _window_open:
 		return false
 	var s: BattleState = state
-	if s.is_over():
+	if s == null or s.is_over():
 		return false
+	if not peer.is_input_open():
+		return false
+	return true
+
+
+## 座位 who 预选/改选。热座：who=0/1；联机：who 忽略，用本地角色。
+func try_select(who: int, action: int) -> bool:
+	if not is_pick_open():
+		return false
+	var s: BattleState = state
 	var seat: int = who
 	if peer.get_mode() != PeerManager.Mode.HOTSEAT:
 		seat = peer.get_local_role()
-	if _window_open and _beat_fired[1] and _local_preselect[seat] < 0 and s.pending[seat] < 0:
-		# 拍 2 后未选则不能再选
-		return false
-	# 拍2 已锁定上传后禁止改招，避免本地显示与结算不一致
-	if peer != null and peer._locks != null and seat < peer._locks.size() and bool(peer._locks[seat]):
-		return false
 	if not s.can_use_action(seat, action):
 		return false
-	# 预选写本地 + 立即锁定上传（对齐单机：点完即生效，不靠超时）
+	# 封盘前允许改招：submit 会置 _locks，但锁≠不能改
 	_local_preselect[seat] = action
 	s.pending[seat] = action
 	if peer != null and peer._pending_actions != null and seat < peer._pending_actions.size():
 		peer._pending_actions[seat] = action
 	preselect_changed.emit(seat, action)
-	# 联机/热座都立刻 submit，拍2 只负责 reveal
 	if peer != null:
 		peer.submit_action(action, seat)
 	return true
@@ -232,7 +236,11 @@ func lock_in() -> void:
 		act2 = int(s.pending[role])
 	if act2 >= 0:
 		peer.submit_action(act2)
-	peer.reveal_phase()
+	# 拍 2 统一结算：缺招由 host 补默认并亮招，而不是谁先交谁先亮
+	if peer.is_host() or peer.get_mode() == PeerManager.Mode.HOTSEAT or peer.ai_takeover:
+		peer.request_timeout_default()
+	else:
+		peer.reveal_phase()
 
 
 func request_timeout_default() -> void:
@@ -250,30 +258,39 @@ func _process(delta: float) -> void:
 		return
 
 	_select_left -= delta
+	var s2: BattleState = state
+	var round_no := s2.round
 	var win := _window_seconds()
 	var elapsed := win - _select_left
 
-	if not _beat_fired[0] and elapsed >= CLAP1_ELAPSED:
+	# 啪啪两声：0s 首声，+0.25s 次声；约 1.7s 结算
+	if not _beat_fired[0]:
 		_beat_fired[0] = true
 		beat.emit(1)
-	if not _beat_fired[1] and elapsed >= CLAP2_ELAPSED:
+	if not _beat_fired[1] and elapsed >= BattleTempo.clap2_at(round_no):
 		_beat_fired[1] = true
 		beat.emit(2)
-		lock_in()
+
+	# 封盘：结算前 0.1s 无输入按规则补招（打超时角标）
+	if not _did_lock_fill and elapsed >= BattleTempo.lock_time(round_no):
+		_did_lock_fill = true
+		if peer != null and (peer.get_mode() == PeerManager.Mode.HOTSEAT or peer.is_host() or _ai_active):
+			peer.auto_fill_missing()
 
 	# 人机接管：窗口内为对方座位自动预选
-	if _ai_active and not _beat_fired[1] and s.pending[_ai_seat] < 0:
+	if _ai_active and not _did_lock_fill and s2.pending[_ai_seat] < 0:
 		_ai_timer -= delta
 		if _ai_timer <= 0.0:
-			_ai_try_select(AiOpponent.choose(s, _ai_seat))
-			_ai_timer = randf_range(1.2, 3.0)
+			_ai_try_select(AiOpponent.choose(s2, _ai_seat))
+			_ai_timer = randf_range(0.4, 1.0)
 
-	if _select_left <= 0.0:
-		# 窗口耗尽：缺锁则默认
-		if peer.get_mode() == PeerManager.Mode.HOTSEAT or peer.is_host() or _ai_active:
-			peer.request_timeout_default()
+	# 统一结算
+	if not _did_settle and (elapsed >= BattleTempo.settle_time(round_no) or _select_left <= 0.0):
+		_did_settle = true
 		_window_open = false
-		return
+		lock_in()
+		# 结算开始立即刷 UI，禁止继续点击
+		phase_changed.emit(GameRules.Phase.RESOLVING, state.round)
 
 
 func _on_battle_started(_snap: Dictionary) -> void:
@@ -285,6 +302,8 @@ func _on_round_begun(round_no: int) -> void:
 	_running = true
 	_resolving = false
 	_window_open = true
+	_did_lock_fill = false
+	_did_settle = false
 	_select_left = _window_seconds()
 	_beat_fired = [false, false]
 	_local_preselect = [-1, -1]

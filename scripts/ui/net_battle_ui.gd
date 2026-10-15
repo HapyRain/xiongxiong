@@ -7,6 +7,10 @@ var controller: NetworkedBattleController
 var _status_label: Label
 var _round_label: Label
 var _log_label: Label
+var _tempo_root: Control
+var _tempo_bg: ColorRect
+var _tempo_fill: ColorRect
+var _tempo_ticks: Array[ColorRect] = []
 var _me_boxes: Array = []
 var _you_boxes: Array = []
 var _me_btns: Dictionary = {}
@@ -138,6 +142,11 @@ func _build_ui() -> void:
 	_status_label = UiTheme.ink_label("对局", 22, UiTheme.INK)
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center.add_child(_status_label)
+
+	# 节奏进度条：替代文字拍点，更好把控 2.1s
+	_tempo_root = _make_tempo_bar()
+	center.add_child(_tempo_root)
+
 	_log_label = UiTheme.ink_label("……", 13, UiTheme.INK_SOFT)
 	_log_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -153,6 +162,76 @@ func _build_ui() -> void:
 	me_v.add_child(me_title)
 	me_v.add_child(_make_stat_row("me", _me_boxes))
 	me_v.add_child(_make_action_row(0, _me_btns))
+
+
+func _make_tempo_bar() -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 6)
+	wrap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var cap := UiTheme.ink_label("出招节奏", 12, UiTheme.INK_FAINT)
+	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	wrap.add_child(cap)
+
+	_tempo_root = Control.new()
+	_tempo_root.custom_minimum_size = Vector2(160, 14)
+	_tempo_root.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_tempo_root.clip_contents = true
+	_tempo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wrap.add_child(_tempo_root)
+
+	_tempo_bg = ColorRect.new()
+	_tempo_bg.color = Color(0.88, 0.84, 0.78)
+	_tempo_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_tempo_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(_tempo_bg)
+
+	_tempo_fill = ColorRect.new()
+	_tempo_fill.color = UiTheme.ACCENT
+	_tempo_fill.size = Vector2(0, 14)
+	_tempo_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(_tempo_fill)
+
+	# 两声啪啪刻度（按基础 1.75s 跨度画，加速时仍可参考）
+	_tempo_ticks.clear()
+	for p in [0.0, 1.0]:
+		var tick := ColorRect.new()
+		tick.color = Color(0.35, 0.32, 0.28, 0.55)
+		tick.size = Vector2(2, 14)
+		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_tempo_root.add_child(tick)
+		_tempo_ticks.append(tick)
+	return wrap
+
+
+func _process(_delta: float) -> void:
+	if _tempo_fill == null or controller == null:
+		return
+	var s: BattleState = controller.state
+	if s == null:
+		return
+	var win := controller._window_seconds()
+	var left: float = controller._select_left
+	var elapsed: float = win - left
+	var t: float = clampf(elapsed / maxf(win, 0.01), 0.0, 1.0)
+	var w: float = _tempo_root.size.x if _tempo_root.size.x > 0 else 300.0
+	_tempo_fill.size = Vector2(w * t, 14)
+	# 末段变红，提示快封盘
+	if t >= 0.82:
+		_tempo_fill.color = Color(0.85, 0.28, 0.22)
+	elif t >= 0.55:
+		_tempo_fill.color = Color(0.92, 0.62, 0.18)
+	else:
+		_tempo_fill.color = UiTheme.ACCENT
+	# 啪啪刻度：0 / +0.25s
+	if _tempo_ticks.size() >= 2 and win > 0.01:
+		var clap := BattleTempo.clap2_at(s.round)
+		_tempo_ticks[0].position = Vector2(1, 0)
+		_tempo_ticks[1].position = Vector2(clampf(clap / win, 0.0, 1.0) * w - 1.0, 0)
+	_tempo_root.visible = controller._window_open and not s.is_over()
+	# 每帧同步按钮禁用 ↔ is_pick_open，杜绝“亮着点不动 / 结算还能点”
+	_refresh_all()
 
 
 func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
@@ -430,8 +509,21 @@ func _on_session_restored(_snap: Dictionary) -> void:
 
 
 func _on_beat(n: int) -> void:
-	_play_sfx(_sfx_clap, 0.0)
-	_status_label.text = "啪！（拍 %d）" % n
+	var pitch := 1.0
+	var clap_pitch := 1.0
+	if controller != null and controller.state != null:
+		pitch = BattleTempo.speed_scale(controller.state.round)
+		clap_pitch = BattleTempo.clap_pitch(controller.state.round)
+	for p: AudioStreamPlayer in _sfx_players:
+		if p.stream == _sfx_clap and p.playing:
+			p.pitch_scale = clap_pitch
+	_play_sfx(_sfx_clap, -2.0)
+	for p: AudioStreamPlayer in _sfx_players:
+		if p.stream == _sfx_clap and p.playing:
+			# 降 pitch 拉长「滴滴」音
+			p.pitch_scale = clap_pitch
+	if _status_label != null and controller != null and controller._window_open:
+		_status_label.text = "出招中"
 
 
 func _on_resolved(result: Dictionary) -> void:
@@ -589,11 +681,14 @@ func _play_reveal_cards(result: Dictionary) -> void:
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(box)
 	var acts: Array = result.get("actions", [-1, -1])
+	var timeouts: Array = result.get("timeout", [false, false])
 	var mine: int = Net.get_local_role()
 	var my_act: int = int(acts[mine]) if acts.size() > mine else -1
 	var op_act: int = int(acts[1 - mine]) if acts.size() > (1 - mine) else -1
-	var me_card := _make_action_card("我", GameRules.action_name(my_act), UiTheme.ACCENT)
-	var you_card := _make_action_card("对手", GameRules.action_name(op_act), UiTheme.SHIELD)
+	var my_to: bool = bool(timeouts[mine]) if timeouts.size() > mine else false
+	var op_to: bool = bool(timeouts[1 - mine]) if timeouts.size() > (1 - mine) else false
+	var me_card := _make_action_card("我", GameRules.action_name(my_act), UiTheme.ACCENT, my_to)
+	var you_card := _make_action_card("对手", GameRules.action_name(op_act), UiTheme.SHIELD, op_to)
 	box.add_child(me_card)
 	box.add_child(you_card)
 	me_card.scale = Vector2(0.2, 0.2)
@@ -605,13 +700,13 @@ func _play_reveal_cards(result: Dictionary) -> void:
 	tw.tween_property(you_card, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	var t := get_tree()
 	if t != null:
-		t.create_timer(0.9).timeout.connect(func():
+		t.create_timer(BattleTempo.result_hold()).timeout.connect(func():
 			if _reveal_layer != null and is_instance_valid(_reveal_layer):
 				_reveal_layer.queue_free()
 				_reveal_layer = null)
 
 
-func _make_action_card(title: String, action: String, accent: Color) -> PanelContainer:
+func _make_action_card(title: String, action: String, accent: Color, is_timeout: bool = false) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var sb := UiTheme.button_style(Color(0.99, 0.97, 0.94, 0.96), 16, accent)
 	sb.content_margin_left = 16
@@ -626,6 +721,12 @@ func _make_action_card(title: String, action: String, accent: Color) -> PanelCon
 	var act := UiTheme.ink_label(action, 32, accent)
 	act.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(act)
+	# 超时角标：双方都能看到哪一方超时自动出招
+	if is_timeout:
+		var badge := UiTheme.make_btn("超时", UiTheme.DANGER, Color.WHITE, 11, 22)
+		badge.custom_minimum_size = Vector2(52, 22)
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		v.add_child(badge)
 	return panel
 
 
@@ -772,20 +873,20 @@ func _refresh_all() -> void:
 		mine = 0
 	_set_row(_me_boxes, s, mine)
 	_set_row(_you_boxes, s, 1 - mine)
-	var input_ok: bool = Net != null and Net.is_input_open()
-	var can_lock: bool = not s.is_over() and _overlay.visible == false and input_ok and controller._window_open
-	# 本地已选（对齐单机：点完变灰）
+	var input_ok: bool = controller.is_pick_open()
+	var can_lock: bool = input_ok and _overlay.visible == false
 	var picked: int = int(controller._local_preselect[mine]) if controller._local_preselect.size() > mine else -1
-	if picked < 0:
-		picked = int(s.pending[mine])
-	var locked: bool = picked >= 0 or bool(Net != null and Net._locks != null and mine < Net._locks.size() and bool(Net._locks[mine]))
 	for a in _me_btns.keys():
 		var b: Button = _me_btns[a]
 		var act := int(a)
-		# 与单机一致：点完即灰，不再上色强调
-		b.disabled = (not can_lock) or locked or (not s.can_use_action(mine, act))
-	if locked and picked >= 0:
-		_status_label.text = "已选：%s" % GameRules.action_name(picked)
+		b.disabled = (not can_lock) or (not s.can_use_action(mine, act))
+	if not can_lock and _overlay != null and not _overlay.visible and not s.is_over():
+		if _status_label != null and controller != null and (controller._resolving or controller._did_settle):
+			_status_label.text = "结算中"
+		elif _status_label != null and controller != null and controller._did_lock_fill:
+			_status_label.text = "已封盘"
+	elif picked >= 0 and can_lock:
+		_status_label.text = "已选：%s（可改）" % GameRules.action_name(picked)
 	elif not input_ok and _overlay != null and not _overlay.visible and not s.is_over():
 		if _log_label != null and _log_label.text == "……":
 			_log_label.text = "网络同步中，请稍候…"

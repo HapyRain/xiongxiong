@@ -49,6 +49,10 @@ var _reveal_layer: CanvasLayer
 var _spot_layer: Control
 var _menu_btn: Button
 var _top_menu_btn: Button
+var _tempo_root: Control
+var _tempo_bg: ColorRect
+var _tempo_fill: ColorRect
+var _tempo_ticks: Array[ColorRect] = []
 
 
 func _ready() -> void:
@@ -57,6 +61,7 @@ func _ready() -> void:
 	_build_resource_icons()
 	_setup_audio()
 	_build_nav()
+	_build_tempo_bar()
 	_tint_labels()
 	btn_zan.pressed.connect(func(): _pick(GameRules.Action.ZAN))
 	btn_bo.pressed.connect(func(): _pick(GameRules.Action.BO))
@@ -73,6 +78,76 @@ func _ready() -> void:
 	# 子节点 BattleController 的 _ready 更早，首帧 phase_changed 可能已错过，这里回放一次
 	_on_phase(controller.state.phase, controller.state.round)
 	_refresh_all()
+
+
+func _build_tempo_bar() -> void:
+	# 进度条插到中央标签下方
+	var parent: Node = center_label.get_parent() if center_label != null else self
+	if parent is BoxContainer:
+		var wrap := VBoxContainer.new()
+		wrap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		wrap.add_theme_constant_override("separation", 4)
+		var cap := UiTheme.ink_label("出招节奏", 11, UiTheme.INK_FAINT)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wrap.add_child(cap)
+		_tempo_root = Control.new()
+		_tempo_root.custom_minimum_size = Vector2(160, 12)
+		_tempo_root.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		_tempo_root.clip_contents = true
+		_tempo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		wrap.add_child(_tempo_root)
+		parent.add_child(wrap)
+		parent.move_child(wrap, center_label.get_index() + 1)
+	else:
+		_tempo_root = Control.new()
+		_tempo_root.set_anchors_preset(Control.PRESET_CENTER)
+		_tempo_root.custom_minimum_size = Vector2(220, 12)
+		add_child(_tempo_root)
+
+	_tempo_bg = ColorRect.new()
+	_tempo_bg.color = Color(0.88, 0.84, 0.78)
+	_tempo_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_tempo_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(_tempo_bg)
+	_tempo_fill = ColorRect.new()
+	_tempo_fill.color = UiTheme.ACCENT
+	_tempo_fill.size = Vector2(0, 12)
+	_tempo_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(_tempo_fill)
+	_tempo_ticks.clear()
+	for p in [0.0, 1.0]:
+		var tick := ColorRect.new()
+		tick.color = Color(0.35, 0.32, 0.28, 0.55)
+		tick.size = Vector2(2, 12)
+		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_tempo_root.add_child(tick)
+		_tempo_ticks.append(tick)
+
+
+func _process(_delta: float) -> void:
+	# 每帧同步按钮 ↔ is_pick_open
+	if controller != null:
+		_refresh_actions()
+	if _tempo_fill == null or controller == null or controller.state == null:
+		return
+	var s: BattleState = controller.state
+	var win: float = controller._window_total if controller._window_total > 0.01 else BattleTempo.total_window(s.round)
+	var left: float = controller._select_left
+	var elapsed: float = win - left
+	var t: float = clampf(elapsed / maxf(win, 0.01), 0.0, 1.0)
+	var w: float = _tempo_root.size.x if _tempo_root.size.x > 0 else 220.0
+	_tempo_fill.size = Vector2(w * t, 12)
+	if t >= 0.82:
+		_tempo_fill.color = Color(0.85, 0.28, 0.22)
+	elif t >= 0.55:
+		_tempo_fill.color = Color(0.92, 0.62, 0.18)
+	else:
+		_tempo_fill.color = UiTheme.ACCENT
+	if _tempo_ticks.size() >= 2:
+		var clap := BattleTempo.clap2_at(s.round)
+		_tempo_ticks[0].position = Vector2(1, 0)
+		_tempo_ticks[1].position = Vector2(clampf(clap / win, 0.0, 1.0) * w - 1.0, 0)
+	_tempo_root.visible = controller.is_pick_open() or (controller._window_total > 0 and not s.is_over())
 
 
 func _build_nav() -> void:
@@ -225,7 +300,7 @@ func _build_shield_pips() -> void:
 func _pick(action: int) -> void:
 	if action == GameRules.Action.ZAN:
 		_hide_spotlight()
-	controller.try_select_change(0, action)
+	controller.try_select(0, action)
 	_play_sfx(_sfx_zan if action == GameRules.Action.ZAN else _sfx_ding, -6.0)
 	_refresh_actions()
 
@@ -402,7 +477,8 @@ func _play_reveal(result: GameRules.RoundResult) -> void:
 			_play_sfx(_sfx_ding, -4.0)
 	)
 
-	await get_tree().create_timer(0.85).timeout
+	# 淡出含在 0.8s hold 内（勿在 await 里调 BattleTempo）
+	await get_tree().create_timer(0.62).timeout
 	if is_instance_valid(_reveal_layer):
 		var fade_root: Control = _reveal_layer.get_meta("root")
 		var fade := create_tween()
@@ -495,7 +571,8 @@ func _refresh_all() -> void:
 
 func _refresh_actions() -> void:
 	var s: BattleState = controller.state
-	var locked: bool = int(s.pending[0]) >= 0 or s.is_over()
-	btn_zan.disabled = locked or not s.can_use_action(0, GameRules.Action.ZAN)
-	btn_bo.disabled = locked or not s.can_use_action(0, GameRules.Action.BO)
-	btn_fang.disabled = locked or not s.can_use_action(0, GameRules.Action.FANG)
+	# 与 controller.is_pick_open 同源，禁止“亮着点不动”
+	var open: bool = controller != null and controller.is_pick_open()
+	btn_zan.disabled = (not open) or not s.can_use_action(0, GameRules.Action.ZAN)
+	btn_bo.disabled = (not open) or not s.can_use_action(0, GameRules.Action.BO)
+	btn_fang.disabled = (not open) or not s.can_use_action(0, GameRules.Action.FANG)
