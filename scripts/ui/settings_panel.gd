@@ -20,14 +20,22 @@ var _confirm_mode: String = ""
 
 func _ready() -> void:
 	name = "SettingsPanelOverlay"
+	# 判重靠 group：本面板随后会被搬进 SettingsPanelLayer/，按 root 固定路径查不到
+	add_to_group(UiNav.SETTINGS_GROUP)
 	UiTheme.apply_to_tree(get_tree())
 	# 抬到亮招层(10)之上，避免每回合结算盖住设置
 	var parent := get_parent()
 	if parent != null and not parent is CanvasLayer:
-		var layer := CanvasLayer.new()
-		layer.name = "SettingsPanelLayer"
-		layer.layer = 100
-		parent.add_child(layer)
+		# 复用已有层：多条关闭路径只 free 面板本体，层会留在 root，反复打开会越堆越多
+		var layer: CanvasLayer = null
+		var existing_layer := parent.get_node_or_null("SettingsPanelLayer")
+		if existing_layer is CanvasLayer:
+			layer = existing_layer
+		else:
+			layer = CanvasLayer.new()
+			layer.name = "SettingsPanelLayer"
+			layer.layer = 100
+			parent.add_child(layer)
 		parent.remove_child(self)
 		layer.add_child(self)
 	set_anchors_preset(Control.PRESET_FULL_RECT)

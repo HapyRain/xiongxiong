@@ -18,6 +18,7 @@ var _host_pm: PeerManager
 var _client_pm: PeerManager
 var _local_reveals: int = 0
 var _local_started: bool = false
+var _local_host_failed: bool = false
 
 # ENet 环回
 var _enet_host: PeerManager
@@ -125,6 +126,7 @@ func _setup_local() -> void:
 	root.add_child(_host_pm)
 	_host_pm.install_provider(hp, PeerManager.Mode.ENET)
 	_host_pm.actions_revealed.connect(func(_a, _r): _local_reveals += 1)
+	_host_pm.session_failed.connect(func(_loser: int, _reason: String): _local_host_failed = true)
 
 	_client_pm = PeerManager.new()
 	root.add_child(_client_pm)
@@ -171,6 +173,38 @@ func _setup_local() -> void:
 	_exp("local shield block", int(_client_pm.state.shield[1]) == 2 or int(_client_pm.state.shield[1]) == 3)
 	# 开局盾3，防住波扣1 → 2
 	_exp("local block cost shield", int(_client_pm.state.shield[1]) == 2)
+
+	# ===== 回归：发送者校验（房主权威不能被对端单包改写）=====
+	# 房主通过 hello 学习到对端真实 id（LocalProvider client=2）
+	_exp("host learned remote peer id", _host_pm._remote_peer_id == 2)
+	var hp_before := int(_host_pm.state.hp[0])
+	# 陌生 id 的判负包必须丢弃
+	_host_pm._on_provider_packet(99, {"type": "sys_game_over", "round": 2,
+		"payload": {"loser": 0, "reason": "forged"}})
+	_exp("drop forged sys_game_over", not _local_host_failed)
+	# 陌生 id 的恢复快照必须丢弃（否则对端能任意改房主局面）
+	_host_pm._on_provider_packet(99, {"type": "sys_resume", "round": 2,
+		"payload": {"snapshot": {"round": 40, "hp": [1, 5]}}})
+	_exp("drop forged sys_resume", int(_host_pm.state.hp[0]) == hp_before)
+	# 合法对端也不能替房主座位出招
+	# 注意：上一轮揭示后 _revealing 仍为 true（等下一窗重置），这里模拟新选招窗
+	_host_pm._revealing = false
+	_host_pm._locks = [false, false]
+	_host_pm._pending_actions = [-1, -1]
+	_host_pm.state.pending = [-1, -1]
+	_host_pm._on_provider_packet(2, {"type": "submit_action", "round": 2,
+		"payload": {"from_role": 0, "action": GameRules.Action.BO}})
+	_exp("reject remote write to host seat",
+		int(_host_pm._pending_actions[0]) < 0 and int(_host_pm.state.pending[0]) < 0)
+	# 同一来源写自己的座位必须接受
+	_host_pm._on_provider_packet(2, {"type": "submit_action", "round": 2,
+		"payload": {"from_role": 1, "action": GameRules.Action.FANG}})
+	_exp("accept remote write to own seat", int(_host_pm._pending_actions[1]) == GameRules.Action.FANG)
+	# 客户端侧只认房主(1)：陌生 id 宣布胜负必须丢弃
+	var client_winner_before := int(_client_pm.state.winner)
+	_client_pm._on_provider_packet(99, {"type": "sys_game_over", "round": 2,
+		"payload": {"loser": 1, "reason": "forged"}})
+	_exp("client drops stranger sys_game_over", int(_client_pm.state.winner) == client_winner_before)
 
 	_phase = "enet"
 	_setup_enet()
@@ -232,7 +266,7 @@ func _tick_enet(delta: float) -> void:
 			if _enet_connected or _enet_client.get_session() == PeerManager.Session.IN_BATTLE:
 				_enet_step = "play"
 				_enet_t = 0.0
-				_exp("enet client in battle", true)
+				_exp("enet client in battle", _enet_client.get_session() == PeerManager.Session.IN_BATTLE)
 			elif _enet_t > 3.0:
 				_fail("enet battle start timeout (host_session=%d client_session=%d)" % [
 					_enet_host.get_session(), _enet_client.get_session()])
@@ -258,7 +292,9 @@ func _tick_enet(delta: float) -> void:
 					_enet_host.reveal_phase()
 			if _enet_reveals >= 4:
 				_exp("enet revealed both sides", true)
-				_exp("enet rtt api", _enet_host.get_rtt_ms() >= 0 or _enet_host.get_rtt_ms() == -1)
+				# 真断言：环回连接下房主必须能看到恰好一个对端（原来 `>=0 or ==-1` 恒真）
+				_exp("enet host sees one peer",
+					_enet_host.provider != null and _enet_host.provider.get_peer_ids().size() >= 1)
 				_enet_step = "end"
 			elif _enet_t > 6.0:
 				_fail("enet play timeout reveals=%d host_round=%d client_round=%d locks=%s/%s" % [

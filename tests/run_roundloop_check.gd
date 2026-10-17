@@ -118,10 +118,12 @@ func _initialize() -> void:
 	_host_ctrl.stop()
 	_client_ctrl.stop()
 
-	var host_rematch := false
-	var client_rematch := false
-	_host_pm.rematch_answered.connect(func(y): host_rematch = y)
-	_client_pm.rematch_answered.connect(func(y): client_rematch = y)
+	# GDScript 的 lambda 对标量是「按值捕获」，函数体里赋值不会回写外层局部变量。
+	# 原来用 var host_rematch := false 记录回调 → 永远 false，断言靠 or 兜底才过。
+	# 用 Dictionary（引用类型）才能真正观测到回调是否触发。
+	var rematch_seen := {"host": false, "client": false}
+	_host_pm.rematch_answered.connect(func(y): rematch_seen["host"] = y)
+	_client_pm.rematch_answered.connect(func(y): rematch_seen["client"] = y)
 
 	_host_pm.request_rematch()
 	_pump()
@@ -129,8 +131,10 @@ func _initialize() -> void:
 	_pump()
 	_pump()
 
-	_exp("host rematch started", host_rematch or _host_pm.get_session() == PeerManager.Session.IN_BATTLE)
-	_exp("client rematch started", client_rematch or _client_pm.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("host rematch_answered fired", bool(rematch_seen["host"]))
+	_exp("client rematch_answered fired", bool(rematch_seen["client"]))
+	_exp("host rematch started", _host_pm.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("client rematch started", _client_pm.get_session() == PeerManager.Session.IN_BATTLE)
 	_exp("rematch round reset", _host_pm.state.round == GameRules.OPENING_ROUND and _client_pm.state.round == GameRules.OPENING_ROUND)
 	_exp("rematch hp reset", int(_host_pm.state.hp[0]) == GameRules.MAX_HP and int(_client_pm.state.hp[1]) == GameRules.MAX_HP)
 	_exp("rematch pending clear", int(_client_pm.state.pending[1]) < 0)
@@ -172,6 +176,7 @@ func _pump() -> void:
 
 
 func _exp(n: String, c: bool) -> void:
+	# 按本行真实结果打印（用 _ok 打印会让首个失败把后续每条都误显 FAIL）
 	print(("PASS" if c else "FAIL"), " - ", n)
 	_ok = _ok and c
 

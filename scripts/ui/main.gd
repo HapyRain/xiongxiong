@@ -184,8 +184,7 @@ func _on_top_menu() -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
-	var existing := tree.root.get_node_or_null("SettingsPanelOverlay")
-	if existing != null:
+	if UiNav.is_settings_open(tree):
 		return
 	var panel_scene: PackedScene = load("res://scenes/settings_panel.tscn")
 	if panel_scene == null:
@@ -421,7 +420,7 @@ func _play_impact_fx(result: GameRules.RoundResult) -> void:
 
 func _play_reveal(result: GameRules.RoundResult) -> void:
 	# 设置面板打开时不播亮招，避免盖层/抢焦点
-	if get_tree() != null and get_tree().root.get_node_or_null("SettingsPanelOverlay") != null:
+	if UiNav.is_settings_open(get_tree()):
 		return
 	# 清理上一次
 	if _reveal_layer != null and is_instance_valid(_reveal_layer):

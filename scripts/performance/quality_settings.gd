@@ -93,7 +93,9 @@ func _try_attach_settings_btn() -> void:
 	var tree := get_tree()
 	if tree == null or tree.root == null:
 		return
-	if tree.root.get_node_or_null("SettingsEntryLayer/SettingsButton") != null:
+	# 齿轮挂在 autoload 自己身上（QualitySettings/SettingsEntryLayer/...），
+	# 按 root 固定路径查不到 → 用 group 判重；否则启动时 _ready + node_added 会各建一个重叠齿轮
+	if tree.get_first_node_in_group(UiNav.SETTINGS_ENTRY_GROUP) != null:
 		return
 	var scene_path := ""
 	if tree.current_scene != null:
@@ -108,6 +110,7 @@ func _try_attach_settings_btn() -> void:
 
 	var btn := Button.new()
 	btn.name = "SettingsButton"
+	btn.add_to_group(UiNav.SETTINGS_ENTRY_GROUP)
 	btn.text = "设置"
 	btn.tooltip_text = "画质 / 帧率设置"
 	# 贴最右，给对局内「菜单」留出左侧位置，避免重叠
@@ -125,9 +128,8 @@ func _open_settings_panel() -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
-	# 避免重复打开
-	var existing := tree.root.get_node_or_null("SettingsPanelOverlay")
-	if existing != null:
+	# 避免重复打开（面板会把自己搬进 SettingsPanelLayer，只能按 group 查）
+	if UiNav.is_settings_open(tree):
 		return
 	var panel_scene: PackedScene = load("res://scenes/settings_panel.tscn")
 	if panel_scene == null:

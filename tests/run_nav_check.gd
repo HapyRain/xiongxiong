@@ -172,6 +172,9 @@ func _setup_ai_takeover() -> void:
 	_host_pm.submit_action(GameRules.Action.ZAN, 0)
 	_client_pm.submit_action(GameRules.Action.ZAN, 1)
 	_pump(0.05)
+	# 拍2 揭示：headless 下无控制器驱动节奏，手动触发（结算后才加气/盾）
+	_host_pm.reveal_phase()
+	_pump(0.05)
 	_host_pm.debug_advance_round()
 	_pump(0.02)
 
@@ -212,6 +215,9 @@ func _tick_ai(delta: float) -> void:
 					var hp1 := int(_host_pm.state.hp[1])
 					_host_pm.submit_action(GameRules.Action.ZAN, 0)
 					_host_pm.submit_action(GameRules.Action.BO, 1)
+					# 拍2 揭示：提交只锁定，结算由 reveal_phase 触发（3000d5e 后的节奏语义）
+					_host_pm.reveal_phase()
+					_pump(0.05)
 					var resolved := _reveals_after >= 1 or int(_host_pm.state.hp[1]) != hp1
 					_exp("ai takeover can resolve", resolved)
 				_ai_step = "end"

@@ -316,8 +316,7 @@ func _on_top_menu() -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
-	var existing := tree.root.get_node_or_null("SettingsPanelOverlay")
-	if existing != null:
+	if UiNav.is_settings_open(tree):
 		return
 	var panel_scene: PackedScene = load("res://scenes/settings_panel.tscn")
 	if panel_scene == null:
@@ -657,7 +656,7 @@ func _play_impact_sfx(result: Dictionary) -> void:
 
 
 func _play_reveal_cards(result: Dictionary) -> void:
-	if get_tree() != null and get_tree().root.get_node_or_null("SettingsPanelOverlay") != null:
+	if UiNav.is_settings_open(get_tree()):
 		return
 	if _reveal_layer != null and is_instance_valid(_reveal_layer):
 		_reveal_layer.queue_free()
@@ -733,7 +732,7 @@ func _make_action_card(title: String, action: String, accent: Color, is_timeout:
 func _play_impact_fx(result: Dictionary) -> void:
 	if _fx_layer == null or bool(result.get("opening", false)):
 		return
-	if get_tree() != null and get_tree().root.get_node_or_null("SettingsPanelOverlay") != null:
+	if UiNav.is_settings_open(get_tree()):
 		return
 	# 特效提到遮罩之上，避免被 game_over/rematch 盖住
 	if _fx_layer.get_parent() != null:

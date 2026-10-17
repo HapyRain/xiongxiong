@@ -55,6 +55,9 @@ static func _pip_style(on: bool, color: Color, empty_color: Color, pip_size: Vec
 
 
 ## 更新已有 pip 行的亮灭。
+## 每帧都会被 net_battle_ui._process → _refresh_all 调到（26 个 pip），
+## 若每次都重建 StyleBoxFlat 会连触发 NOTIFICATION_THEME_CHANGED + 重排；
+## 这里按「亮灭 + 颜色 + 尺寸」缓存 key，未变直接跳过。
 static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_color: Color) -> void:
 	if row == null:
 		return
@@ -67,6 +70,11 @@ static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_col
 		var pip_size: Vector2 = holder.custom_minimum_size
 		if pip_size.x <= 0:
 			pip_size = Vector2(14, 14)
+		var key := "%s|%s|%s|%s" % [
+			str(on), color.to_html(), empty_color.to_html(), str(pip_size)]
+		if str(holder.get_meta("pip_key", "")) == key:
+			continue
+		holder.set_meta("pip_key", key)
 		holder.add_theme_stylebox_override("panel", _pip_style(on, color, empty_color, pip_size))
 
 
@@ -100,8 +108,11 @@ static func show_focus_spotlight(tree: SceneTree, target: Control, caption: Stri
 	root.set_meta("spot_target", target)
 	root.set_meta("spot_caption", caption)
 
-	if not target.tree_exiting.is_connected(_on_spot_target_exit.bind(root)):
-		target.tree_exiting.connect(_on_spot_target_exit.bind(root), CONNECT_ONE_SHOT)
+	if not target.tree_exiting.is_connected(_on_spot_target_exit.bind(root.get_instance_id())):
+		# 只绑 instance_id，别把 root 对象本身绑进回调：
+		# 场景退出时 root 可能已被释放，把已释放 Object 作为参数传给带类型的参数会报
+		# "Cannot convert argument 1 from Object to Object"。
+		target.tree_exiting.connect(_on_spot_target_exit.bind(root.get_instance_id()), CONNECT_ONE_SHOT)
 	# 布局变化自愈（Qwen：首帧 size 够大但 pos=0 会锁死）
 	if not target.item_rect_changed.is_connected(_on_spot_target_rect.bind(root)):
 		target.item_rect_changed.connect(_on_spot_target_rect.bind(root))
@@ -111,7 +122,8 @@ static func show_focus_spotlight(tree: SceneTree, target: Control, caption: Stri
 	return root
 
 
-static func _on_spot_target_exit(root: Control) -> void:
+static func _on_spot_target_exit(root_id: int) -> void:
+	var root := instance_from_id(root_id) as Control
 	if root != null and is_instance_valid(root):
 		root.queue_free()
 
@@ -166,6 +178,12 @@ static func _target_local_rect(root: Control, target: Control) -> Rect2:
 static func _build_spot_geometry(root: Control, target: Control, caption: String, animate: bool = true) -> void:
 	if root == null or not is_instance_valid(root) or target == null or not is_instance_valid(target):
 		return
+	# 重建前先杀掉上一轮的「循环呼吸」tween：它挂在即将被回收的边框上，
+	# 目标全失效后仍无限循环 → 引擎会报 "Infinite loop detected"。
+	var old_loop: Variant = root.get_meta("loop_tween", null)
+	if old_loop is Tween and (old_loop as Tween).is_valid():
+		(old_loop as Tween).kill()
+	root.set_meta("loop_tween", null)
 	for c in root.get_children():
 		c.queue_free()
 	var r := _target_local_rect(root, target)
@@ -218,7 +236,13 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		tw_in.chain().tween_callback(func():
 			if not is_instance_valid(root):
 				return
+			# 目标已被后续重建回收 → 跳过呼吸脉冲。
+			# 否则 tween 里全是无效目标，配合 set_loops() 会报 "Infinite loop detected"。
+			for e in edges:
+				if not is_instance_valid(e):
+					return
 			var tw := root.create_tween().set_loops()
+			root.set_meta("loop_tween", tw)
 			tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 0.35), 0.48)
 			for i in range(1, edges.size()):
 				tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 0.35), 0.48)
@@ -226,7 +250,12 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 			for i in range(1, edges.size()):
 				tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 1.0), 0.48))
 	else:
+		# 同上：目标已回收就别建无限循环 tween
+		for e in edges:
+			if not is_instance_valid(e):
+				return
 		var tw := root.create_tween().set_loops()
+		root.set_meta("loop_tween", tw)
 		tw.tween_property(edges[0], "modulate", Color(1, 1, 1, 0.35), 0.48)
 		for i in range(1, edges.size()):
 			tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 0.35), 0.48)

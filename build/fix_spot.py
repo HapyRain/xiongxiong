@@ -1,4 +1,7 @@
-p = r"D:\xiongxiong\xiongxiong\scripts\ui\battle_fx.gd"
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+p = str(ROOT / "scripts" / "ui" / "battle_fx.gd")
 with open(p, encoding="utf-8") as f:
     lines = f.read().splitlines(True)
 # find second 'var vs := Vector2(390, 820)' and 'static func _edge_rect'

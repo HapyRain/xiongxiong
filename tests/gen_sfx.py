@@ -8,7 +8,8 @@ import wave
 from pathlib import Path
 
 SR = 44100
-OUT = Path(r"D:\xiongxiong\xiongxiong\assets\audio")
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "assets" / "audio"
 
 
 def write_wav(name: str, samples: list[float]) -> None:

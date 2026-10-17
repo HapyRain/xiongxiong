@@ -27,9 +27,86 @@ var _reject_mode: bool = false
 
 func _initialize() -> void:
 	print("SEALCHECK_START")
+	_check_auto_seal_snapshot()
 	_run_fsm_suite()
 	_phase = "pm"
 	_setup_pm()
+
+
+# ================= P0-1 回归：自主封存（心跳超时）必须带真实局面 =================
+# 旧 bug：_eval_quality 走 _do_seal(..., {}) → 快照 rules 为空 → 恢复后 round=1/血满，
+# 且 _opening_done 只「或」不复位 → round==1 的开局分支把之后每次揭示都吞掉 → 对局永久卡死。
+func _check_auto_seal_snapshot() -> void:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	var client := PeerManager.new()
+	root.add_child(client)
+	client.install_provider(cp, PeerManager.Mode.ENET)
+	hp.open_as_host({})
+	cp.open_as_client({})
+	host._sync_fsm_identity()
+	client._sync_fsm_identity()
+	host._set_session(PeerManager.Session.IN_BATTLE)
+	client._set_session(PeerManager.Session.IN_BATTLE)
+	# 造一个「已打了几回合」的局面
+	host.state.round = 5
+	host.state.hp = [4, 2]
+	host.state.qi = [1, 0]
+	host.state.shield = [2, 1]
+	host.state.phase = GameRules.Phase.SELECTING
+	host._opening_done = true
+	client.state.restore(host.state.snapshot())
+	client._opening_done = true
+
+	# 连续 5 次心跳丢失 → FSM 自主封存（调用方不传局面）
+	for i in 5:
+		host.fsm.on_heartbeat_miss(Time.get_ticks_msec())
+	_exp("hb auto-seal → Sealed", host.fsm.state == NetworkSessionFSM.State.SEALED)
+
+	var snap: Dictionary = host.last_session_snap
+	var rules: Dictionary = {}
+	var v_rules: Variant = snap.get("rules", {})
+	if typeof(v_rules) == TYPE_DICTIONARY:
+		rules = v_rules
+	_exp("hb auto-seal snapshot 带 rules", not rules.is_empty())
+	_exp("hb auto-seal 保住 round", int(rules.get("round", 0)) == 5)
+	var hp_r: Array = []
+	var v_hp: Variant = rules.get("hp", [])
+	if typeof(v_hp) == TYPE_ARRAY:
+		hp_r = v_hp
+	_exp("hb auto-seal 保住 hp", hp_r.size() == 2 and int(hp_r[0]) == 4 and int(hp_r[1]) == 2)
+	var meta: Dictionary = {}
+	var v_meta: Variant = snap.get("session", {})
+	if typeof(v_meta) == TYPE_DICTIONARY:
+		meta = v_meta
+	_exp("hb auto-seal 带 opening_done", bool(meta.get("opening_done", false)))
+
+	# 对端必须收到封存广播（旧代码自主封存不广播 → 双端分叉，客户端还在照常选招）
+	cp.poll(0.0)
+	_exp("hb auto-seal 广播到客户端", client.get_session() == PeerManager.Session.SEALED)
+
+	# 恢复后局面不能被清零
+	host.restore_from_snapshot(snap.duplicate(true))
+	_exp("restore 保住 round", host.state.round == 5)
+	_exp("restore 保住 hp", int(host.state.hp[0]) == 4 and int(host.state.hp[1]) == 2)
+	_exp("restore 复位 opening 标记", host._opening_done)
+
+	# 关键：恢复后揭示必须真的结算（旧 bug 会被开局分支直接 return 吞掉）
+	host._pending_actions = [GameRules.Action.ZAN, GameRules.Action.ZAN]
+	host.state.pending = [GameRules.Action.ZAN, GameRules.Action.ZAN]
+	host._locks = [true, true]
+	host.reveal_phase()
+	_exp("restore 后揭示仍结算（攒+攒 → 气各+1）",
+		int(host.state.qi[0]) == 2 and int(host.state.qi[1]) == 1)
+
+	# 只 leave 不 queue_free：_do_host_reveal 里有 `await create_timer(0.8)`，
+	# 立刻释放节点会在 0.8s 后对已释放实例续跑而刷报错；leave 后 session=IDLE，续跑会自行跳过。
+	host.leave()
+	client.leave()
 
 
 func _process(delta: float) -> bool:
@@ -61,17 +138,19 @@ func _run_fsm_suite() -> void:
 	_exp("fsm initial Connected", _fsm.state == NetworkSessionFSM.State.CONNECTED)
 	_exp("fsm input open", _fsm.is_input_open())
 
-	# --- 质量降级：RTT 超阈值 ---
+	# --- 延迟尖刺：单次不降级，连续 DEGRADE_CONFIRM(2) 次才降级 ---
 	var t0 := 1000
-	_fsm.on_heartbeat_sample(t0, 300)  # rtt 300 >= 250
-	_exp("fsm quality_drop → Degraded", _fsm.state == NetworkSessionFSM.State.DEGRADED)
+	_fsm.on_heartbeat_sample(t0, 300)  # rtt 300 >= 250，但只有一次
+	_exp("单次 RTT 尖刺不降级", _fsm.state == NetworkSessionFSM.State.CONNECTED)
+	_fsm.on_heartbeat_sample(t0 + 1000, 300)
+	_exp("连续 2 次超标 → Degraded", _fsm.state == NetworkSessionFSM.State.DEGRADED)
 	_exp("fsm input still open in Degraded", _fsm.is_input_open())
 
 	# --- Degraded → Connected（连续 3 次达标）---
-	_fsm.on_heartbeat_sample(t0 + 1000, 80)
 	_fsm.on_heartbeat_sample(t0 + 2000, 80)
-	_exp("fsm still Degraded after 2 ok", _fsm.state == NetworkSessionFSM.State.DEGRADED)
 	_fsm.on_heartbeat_sample(t0 + 3000, 80)
+	_exp("fsm still Degraded after 2 ok", _fsm.state == NetworkSessionFSM.State.DEGRADED)
+	_fsm.on_heartbeat_sample(t0 + 4000, 80)
 	_exp("fsm recover → Connected", _fsm.state == NetworkSessionFSM.State.CONNECTED)
 
 	# --- 连续丢心跳 2 → Degraded，5 → Sealed ---
@@ -137,6 +216,37 @@ func _run_fsm_suite() -> void:
 
 	# --- 一方拒绝对方同意的超时路径已覆盖；再测 peer_lost 封存 ---
 	_fsm2_peer_lost()
+
+	# --- 网络质量判定不误报（健康局域网不该提示「网络不佳」）---
+	_quality_calibration()
+
+
+## 网络质量判定的「不误报」回归：
+## ① 旧实现把心跳间隔(1000ms)直接当丢包窗口 → 正常 LAN「刚好差几十毫秒」就记一次丢包；
+## ② p95 在 10 样本窗口下≈最大值，单次尖刺就会亮「网络不佳」。
+func _quality_calibration() -> void:
+	# 丢包判定窗口边界（HB_MISS_WINDOW_MS = 2.5×心跳间隔）
+	_exp("hb_miss_due: 从未收到包不判定", not PeerManager.hb_miss_due(10000, 0))
+	_exp("hb_miss_due: 1.0s 间隔不判丢包", not PeerManager.hb_miss_due(11000, 10000))
+	_exp("hb_miss_due: 1.6s 间隔不判丢包", not PeerManager.hb_miss_due(11600, 10000))
+	_exp("hb_miss_due: 2.4s 静默仍不判", not PeerManager.hb_miss_due(12400, 10000))
+	_exp("hb_miss_due: 2.5s 静默判丢包", PeerManager.hb_miss_due(12500, 10000))
+
+	# 健康链路：连续 30 拍 LAN 级 RTT（每 7 拍一次 40ms 波动）不得降级/封存
+	var f := NetworkSessionFSM.new()
+	f.is_host = true
+	f.host_peer_id = 1
+	f.local_peer_id = 1
+	var bad_state := false
+	for i in 30:
+		var rtt := 5
+		if i % 7 == 0:
+			rtt = 40
+		f.on_heartbeat_sample(20000 + i * 1000, rtt)
+		if f.state != NetworkSessionFSM.State.CONNECTED:
+			bad_state = true
+	_exp("健康链路 30 拍不降级/不封存", not bad_state)
+	_exp("健康链路仍可操作", f.is_input_open())
 
 
 func _fsm2_reject() -> void:

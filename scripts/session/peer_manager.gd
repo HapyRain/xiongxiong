@@ -60,6 +60,9 @@ var _local_role: int = 0
 var _token: String = ""
 var _room_name: String = ""
 var _self_closing: bool = false
+## 传输层唯一对端 id：客户端固定为房主 1（传输层已把 src 改写为 1）；
+## 房主在收到第一包 hello 时学习。<=0 表示未知（热座/测试直连）→ 不启用发送者过滤。
+var _remote_peer_id: int = -1
 
 ## 本回合锁定缓存（权威侧）
 var _pending_actions: Array = [-1, -1]
@@ -98,11 +101,14 @@ func _wire_fsm() -> void:
 	if _fsm_ready:
 		return
 	_fsm_ready = true
+	# 自主封存（心跳超时）拿不到局面 → 由注入方提供活快照
+	fsm.snapshot_provider = _live_rules_snapshot
 	fsm.state_changed.connect(func(from_s: int, to_s: int, reason: String):
 		net_state_changed.emit(NetworkSessionFSM.state_name(to_s), reason)
 		_on_fsm_state(from_s, to_s, reason))
 	fsm.sealed.connect(func(snap: Dictionary, reason: String):
-		last_session_snap = snap)
+		last_session_snap = snap
+		_broadcast_sealed(snap, reason))
 	fsm.consent_needed.connect(func(snap: Dictionary, need_from: Array):
 		consent_needed.emit(snap, need_from))
 	fsm.countdown_tick.connect(func(remain_ms: int):
@@ -123,6 +129,8 @@ func _process(delta: float) -> void:
 # ---------- 后端与模式 ----------
 
 func set_backend(mode: int) -> Error:
+	# --script/headless 下 _ready 不保证触发，接线在这里幂等补一次
+	_wire_fsm()
 	if _session != Session.IDLE:
 		leave()
 	if provider != null:
@@ -141,6 +149,8 @@ func set_backend(mode: int) -> Error:
 func install_provider(p: NetworkProvider, mode: int = Mode.ENET) -> Error:
 	if p == null:
 		return ERR_INVALID_PARAMETER
+	# --script/headless 下 _ready 不保证触发，接线在这里幂等补一次
+	_wire_fsm()
 	if _session != Session.IDLE:
 		leave()
 	if provider != null:
@@ -252,6 +262,7 @@ func leave() -> void:
 		provider = null
 	_self_closing = false
 	ai_takeover = false
+	_remote_peer_id = -1
 	_pending_actions = [-1, -1]
 	_locks = [false, false]
 	_revealing = false
@@ -542,8 +553,7 @@ func seal(reason: String) -> void:
 	last_session_snap = snap
 	_set_session(Session.SEALED)
 	sealed.emit(reason)
-	if is_host():
-		_broadcast(_envelope("sys_sealed", state.round, {"reason": reason, "snapshot": snap}))
+	# sys_sealed 的广播已收敛到 _broadcast_sealed()（挂 fsm.sealed），此处不再重复发
 	status_text.emit("已封存：%s" % reason)
 
 
@@ -587,8 +597,15 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 	_pending_actions = [int(state.pending[0]), int(state.pending[1])]
 	_locks = [_pending_actions[0] >= 0, _pending_actions[1] >= 0]
 	_revealing = false
-	# 显式字段才认；缺省当作未开局，避免误把 opening 当已完成导致结算走 resolve_turn
-	_opening_done = _opening_done or bool((snap.get("session", {}) as Dictionary).get("opening_done", false))
+	# 快照带 opening_done 时以快照为准：只「或」不复位的话，空快照恢复后 round 回到 1
+	# 而 _opening_done 仍为 true → 开局分支会把之后每一次揭示都吞掉（不结算/不广播/不推进）。
+	var sess_meta: Dictionary = {}
+	var raw_sess: Variant = snap.get("session", {})
+	if typeof(raw_sess) == TYPE_DICTIONARY:
+		sess_meta = raw_sess
+	if sess_meta.has("opening_done"):
+		_opening_done = bool(sess_meta["opening_done"])
+		_opening_applied = _opening_done
 	if state.is_over():
 		_set_session(Session.GAME_OVER)
 	else:
@@ -665,6 +682,9 @@ func get_rtt_ms() -> int:
 
 func _on_provider_connected(peer_id: int) -> void:
 	status_text.emit("传输已连接 (id=%d)" % peer_id)
+	# 客户端侧对端恒为房主（EnetProvider 把 host 包 src 改写为 1；LocalProvider host=1）。
+	# 房主侧尚不知对端 id（传输层在 hello 到达时才暴露）→ 由 hello 学习。
+	_remote_peer_id = 1 if (provider != null and not provider.is_host()) else -1
 	if provider != null:
 		_local_role = 0 if provider.is_host() else 1
 	_sync_fsm_identity()
@@ -698,7 +718,10 @@ func _on_provider_disconnected(reason: String) -> void:
 	if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED:
 		peer_left.emit(0, reason)
 		if _mode == Mode.ENET and not state.is_over():
-			# 产品优先：对方掉线/离开 → 人机接管继续可玩
+			# 产品优先：对方掉线/离开 → 人机接管继续可玩。
+			# 但先封存一份完整快照（rules+session），否则这次对局状态彻底丢失、也无从恢复。
+			if _session != Session.SEALED:
+				seal("peer_disconnected:%s" % reason)
 			begin_ai_takeover("peer_disconnected:%s" % reason)
 			return
 		if _mode == Mode.ENET:
@@ -720,6 +743,12 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		payload = {}
 	var round_no := int(data.get("round", 0))
 
+	# 发送者校验：只接受「唯一对端」的包（1v1 房间）。
+	# 房主侧对端 id 由 hello 学习；_remote_peer_id<=0 表示热座/直连测试，不拦截。
+	if _remote_peer_id > 0 and from_id != _remote_peer_id:
+		push_warning("Net: drop %s from peer %d (bound remote=%d)" % [type, from_id, _remote_peer_id])
+		return
+
 	# 跨回合重放/旧包直接丢
 	if round_no > 0 and state.round > 0 and round_no < state.round and type in [
 		"submit_action", "actions_revealed", "round_result", "reveal_request", "timeout_request"
@@ -730,6 +759,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"hello":
 			# 对端就绪（房主收）→ 等房主点「接受」再开战
 			if is_host():
+				if _remote_peer_id <= 0:
+					_remote_peer_id = from_id
 				peer_joined.emit(from_id, payload)
 				# 已在对局/已接受过则忽略重复 hello，避免把状态打回 READY_CHECK
 				if _session == Session.LOBBY or _session == Session.IDLE:
@@ -809,6 +840,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"submit_action":
 			if is_host():
 				var role := int(payload.get("from_role", from_id % 2))
+				# 房主座位只能房主自己写：网络对端只能提交客户端座位（1）
+				if is_remote_sender(from_id) and role != 1:
+					push_warning("Net: reject remote submit for seat %d" % role)
+					return
 				_on_submit_received(role, payload)
 		"reveal_request":
 			if is_host():
@@ -851,9 +886,17 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					# 下一窗由 select_window 开
 					_revealing = false
 		"sealed":
+			# 无人会发这个包（封存统一走 sys_sealed）；收到即视为异常，且只有客户端可能采纳
+			if is_host():
+				push_warning("Net: ignore bare 'sealed' from client")
+				return
 			_set_session(Session.SEALED)
 			sealed.emit(str(payload.get("reason", "remote")))
 		"sys_sealed":
+			# 封存快照由房主广播；房主不采纳对端快照（防快照/判定被反向改写）
+			if is_host():
+				push_warning("Net: ignore sys_sealed from client")
+				return
 			var rsnap: Dictionary = payload.get("snapshot", {})
 			var rreason := str(payload.get("reason", "remote"))
 			if not rsnap.is_empty():
@@ -868,6 +911,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"resume_vote":
 			pass
 		"sys_link_ok":
+			# 链路恢复由房主发起广播；房主本地走 on_link_ok，不采纳对端
+			if is_host():
+				return
 			if fsm.state == NetworkSessionFSM.State.SEALED:
 				fsm.on_link_ok(Time.get_ticks_msec())
 		"sys_consent":
@@ -879,6 +925,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			fsm.submit_consent(cpeer, cyes, Time.get_ticks_msec())
 			status_text.emit("对方已确认，继续对局…" if cyes else "对方拒绝继续")
 		"sys_countdown":
+			# 倒计时由房主广播
+			if is_host():
+				return
 			var resume_at := int(payload.get("resume_at_host_ms", 0))
 			var cseq := int(payload.get("seq", 0))
 			if cseq > 0 and cseq < fsm.seq:
@@ -892,6 +941,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if is_host():
 				fsm.on_resume_ack(int(payload.get("peer", from_id)))
 		"sys_resume":
+			# 恢复快照只能由房主下发（否则任何一端都能把对端局面改成任意值）
+			if is_host():
+				push_warning("Net: ignore sys_resume from client")
+				return
 			var ssnap: Dictionary = payload.get("snapshot", {})
 			var sseq := int(payload.get("seq", 0))
 			if sseq > 0 and sseq < fsm.seq:
@@ -901,6 +954,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			else:
 				fsm.confirm_restore(true, Time.get_ticks_msec())
 		"sys_game_over":
+			# 判负由房主广播；房主不采纳对端宣布的胜负
+			if is_host():
+				push_warning("Net: ignore sys_game_over from client")
+				return
 			var loser := int(payload.get("loser", -1))
 			var greason := str(payload.get("reason", "net_forfeit"))
 			fsm.force_fail(loser, greason, Time.get_ticks_msec())
@@ -1160,6 +1217,16 @@ func _actions_revealed_emit(actions: Array, results: Dictionary) -> void:
 
 # ---------- 会话 FSM 驱动（心跳 / 超时 / 房主倒计时） ----------
 
+## 是否需要记一次「心跳丢失」。
+## 窗口必须显著大于心跳间隔（HB_MISS_WINDOW_MS = 2.5×HB_INTERVAL_MS）：
+## 旧实现直接拿心跳间隔当窗口，正常局域网里「刚好差几十毫秒」也会被算成丢包，
+## 于是链路明明很好却提示「网络不佳」。抽成静态函数便于自检直接测边界。
+static func hb_miss_due(now_ms: int, last_rx_ms: int) -> bool:
+	if last_rx_ms <= 0:
+		return false
+	return now_ms - last_rx_ms >= NetworkSessionFSM.HB_MISS_WINDOW_MS
+
+
 func _pump_session(delta: float) -> void:
 	if _mode == Mode.HOTSEAT or ai_takeover:
 		return
@@ -1171,8 +1238,10 @@ func _pump_session(delta: float) -> void:
 	if _hb_timer * 1000.0 >= float(NetworkSessionFSM.HB_INTERVAL_MS):
 		_hb_timer = 0.0
 		_send_heartbeat(now)
-		# 连续丢 2 → Degraded；连续 5 → Sealed（由 fsm 计数）
-		if _last_hb_rx_ms > 0 and now - _last_hb_rx_ms >= NetworkSessionFSM.HB_INTERVAL_MS:
+		# 静默窗口 HB_MISS_WINDOW_MS（2.5×心跳间隔）内一包都没收到才记一次丢包。
+		# 旧实现窗口 == 心跳间隔，正常局域网「刚好差几十毫秒」就会被误记 → 误报「网络不佳」。
+		# 连续 2 次 → Degraded（约 3.5s 静默），连续 5 次 → Sealed（约 6.5s 静默）。
+		if hb_miss_due(now, _last_hb_rx_ms):
 			fsm.on_heartbeat_miss(now)
 	fsm.tick(now)
 	# 房主：Consent 齐后由 fsm 自动 begin_countdown；此处把 COUNTDOWN 广播出去
@@ -1262,6 +1331,29 @@ func _on_fsm_state(_from_s: int, to_s: int, reason: String) -> void:
 		NetworkSessionFSM.State.FAIL:
 			_set_session(Session.GAME_OVER)
 			status_text.emit("终局：%s" % reason)
+
+
+## 活局面快照（供 FSM 自主封存使用）：rules + session 双段，恢复时才能原样还原。
+func _live_rules_snapshot() -> Dictionary:
+	return {"rules": state.snapshot(), "session": _session_meta()}
+
+
+## 本地封存后统一广播（房主权威：客户端只采纳房主快照，不反向广播）。
+## 对端已经不在（get_peer_ids 为空）时跳过，避免向已断开连接发可靠包报错。
+func _broadcast_sealed(snap: Dictionary, reason: String) -> void:
+	if not is_host() or ai_takeover or provider == null or _mode == Mode.HOTSEAT:
+		return
+	if provider.get_peer_ids().is_empty():
+		return
+	_broadcast(_envelope("sys_sealed", state.round, {
+		"reason": reason,
+		"snapshot": snap.duplicate(true),
+	}))
+
+
+## 该包的 from_id 是否来自「网络对端」（热座/直连测试下为 false，不做角色约束）。
+func is_remote_sender(from_id: int) -> bool:
+	return _remote_peer_id > 0 and from_id == _remote_peer_id
 
 
 func _on_fsm_failed(loser_peer: int, reason: String) -> void:

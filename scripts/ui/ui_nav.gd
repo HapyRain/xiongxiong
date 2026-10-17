@@ -5,6 +5,18 @@ class_name UiNav
 extends RefCounted
 
 const MENU_SCENE := "res://scenes/menu.tscn"
+## 设置面板一旦 _ready 会把自己搬进 SettingsPanelLayer/ 下，
+## 所以「是否已打开」只能按 group 查，不能按 root 下的固定路径查。
+const SETTINGS_GROUP := "settings_panel_overlay"
+## 右上角「设置」齿轮（挂在 QualitySettings autoload 下的 SettingsEntryLayer 里）
+const SETTINGS_ENTRY_GROUP := "settings_entry_button"
+
+
+## 设置面板是否已打开（按 group 查，兼容面板被搬到 SettingsPanelLayer 之后）。
+static func is_settings_open(tree: SceneTree) -> bool:
+	if tree == null:
+		return false
+	return tree.get_first_node_in_group(SETTINGS_GROUP) != null
 
 
 ## 是否在联机对局会话中（ENet，且尚未结束）。
@@ -61,6 +73,10 @@ static func cleanup_overlays(tree: SceneTree) -> void:
 		var node := tree.root.get_node_or_null(NodePath(n))
 		if node != null:
 			node.queue_free()
+	# 面板实际挂在 SettingsPanelLayer/ 下，上面按名查不到 → 再按 group 兜一刀
+	var panel := tree.get_first_node_in_group(SETTINGS_GROUP)
+	if panel != null:
+		panel.queue_free()
 	# 当前场景内可能还有一份
 	if tree.current_scene != null:
 		for n in ["OpeningSpotlight", "SettingsPanelOverlay", "SettingsPanelLayer"]:

@@ -20,10 +20,18 @@ const SCHEMA_VERSION := 1
 
 # ---- 阈值（docs/arch/network-session-fsm.md §9，实测可调值不调语义）----
 const HB_INTERVAL_MS := 1000
+## 判「丢心跳」的静默窗口：必须显著大于心跳间隔。
+## 曾经直接用 HB_INTERVAL_MS 当窗口 → 正常局域网里「刚好差几十毫秒」也会被记一次丢包，
+## 于是明明链路很好却提示「网络不佳」。留 2.5 倍余量吸收帧率抖动与到达抖动。
+const HB_MISS_WINDOW_MS := 2500
 const HB_WINDOW := 10
 const DEGRADE_RTT_P95_MS := 250
 const DEGRADE_JITTER_MS := 80
 const DEGRADE_HB_MISS := 2
+## 延迟/抖动属于瞬时指标（10 样本窗口下 p95 索引就落在最大值上），
+## 单次尖刺（Android GC、帧卡顿、WiFi 省电）不该直接亮「网络不佳」；
+## 需要连续这么多次采样都差才降级。
+const DEGRADE_CONFIRM := 2
 const RECOVER_RTT_MS := 400
 const RECOVER_JITTER_MS := 50
 const RECOVER_OK_STREAK := 3
@@ -52,9 +60,16 @@ var is_host: bool = true
 var host_peer_id: int = 1
 var local_peer_id: int = 1
 
+## 活局面快照提供者：返回 {"rules": Dictionary, "session": Dictionary}。
+## 心跳超时等「自主封存」路径调用时 caller 拿不到局面，靠它补一份真实快照；
+## 不注入时保持旧行为（空 rules）。注入方为 PeerManager，见 _live_rules_snapshot()。
+var snapshot_provider: Callable = Callable()
+
 var _rtt_samples: Array = []
 var _hb_miss: int = 0
 var _good_streak: int = 0
+## 连续「延迟/抖动超标」的采样次数（DEGRADE_CONFIRM 次才真正降级）
+var _bad_streak: int = 0
 var _high_rtt_since_ms: int = -1
 var _last_rtt: int = -1
 var _last_jit: int = 0
@@ -184,6 +199,18 @@ func _do_seal(now_ms: int, reason: String, rules_snap: Dictionary, session_meta:
 		return last_snapshot
 	if state == State.RESUMING:
 		return last_snapshot
+	# 自主封存（心跳超时等）只传空快照 → 向注入方要一份活局面。
+	# 否则 rules={} 的快照恢复后会把对局清零（round→1、血回满），且开局分支会把后续揭示全吞掉。
+	if rules_snap.is_empty() and snapshot_provider.is_valid():
+		var live: Variant = snapshot_provider.call()
+		if typeof(live) == TYPE_DICTIONARY:
+			var live_dict: Dictionary = live
+			var live_rules: Variant = live_dict.get("rules", {})
+			if typeof(live_rules) == TYPE_DICTIONARY:
+				rules_snap = live_rules
+			var live_meta: Variant = live_dict.get("session", {})
+			if typeof(live_meta) == TYPE_DICTIONARY:
+				session_meta = live_meta
 	var already := state == State.SEALED or state == State.AWAITING_CONSENT or state == State.COUNTDOWN
 	var snap: Dictionary
 	if already and not last_snapshot.is_empty() and rules_snap.is_empty():
@@ -445,6 +472,7 @@ func force_local_play(reason: String = "ai_takeover") -> void:
 	_fail_reason = ""
 	_hb_miss = 0
 	_good_streak = 0
+	_bad_streak = 0
 	_consent_yes.clear()
 	_resume_acks.clear()
 	_seal_deadline_ms = 0
@@ -513,18 +541,32 @@ func _eval_quality(now_ms: int) -> void:
 	match state:
 		State.CONNECTED:
 			if _hb_miss >= SEAL_HB_MISS or _seal_by_rtt(now_ms, rtt_p95):
+				_bad_streak = 0
 				_do_seal(now_ms, "hb_timeout", {}, {})
-			elif _hb_miss >= DEGRADE_HB_MISS or rtt_p95 >= DEGRADE_RTT_P95_MS or jitter >= DEGRADE_JITTER_MS:
+			elif _hb_miss >= DEGRADE_HB_MISS:
+				# 连续 2 个静默窗口都没收到任何包 → 真的断了，立即降级
+				_bad_streak = 0
 				_good_streak = 0
-				_set_state(State.DEGRADED, "quality_drop")
+				_set_state(State.DEGRADED, "miss_drop")
+			elif rtt_p95 >= DEGRADE_RTT_P95_MS or jitter >= DEGRADE_JITTER_MS:
+				# 瞬时指标：要连续 DEGRADE_CONFIRM 次都超阈值才降级
+				_bad_streak += 1
+				if _bad_streak >= DEGRADE_CONFIRM:
+					_bad_streak = 0
+					_good_streak = 0
+					_set_state(State.DEGRADED, "quality_drop")
+			else:
+				_bad_streak = 0
 		State.DEGRADED:
 			if _hb_miss >= SEAL_HB_MISS or _seal_by_rtt(now_ms, rtt_p95):
+				_bad_streak = 0
 				_do_seal(now_ms, "hb_timeout", {}, {})
 			elif _hb_miss == 0 and _last_rtt >= 0 and _last_rtt < RECOVER_RTT_MS and _last_jit < RECOVER_JITTER_MS:
 				# 连续 3 次「本拍」达标即退出降级（滞回防抖）
 				_good_streak += 1
 				if _good_streak >= RECOVER_OK_STREAK:
 					_good_streak = 0
+					_bad_streak = 0
 					_set_state(State.CONNECTED, "quality_ok")
 			else:
 				_good_streak = 0

@@ -3,42 +3,54 @@
 Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上架。
 **这不是 Node/JS 工程：没有 `package.json`、没有 lint/format/typecheck、没有 `npm test`。** `.mcp.json` 只是 Godot MCP 桥接配置，别据此推断技术栈。
 
+## 项目定位（阶段，2026-10-17 确认）
+
+- 这是**完整度较高的 MVP 基线**：玩法闭环（攒/波/防 + 2 拍 + 单机/联机 + 断线处理）已跑通，用户已真机试玩，无阻塞体验的 bug。
+- **前端/视觉/页面结构后续会重做**：当前 UI 只求可用、可读、能走完流程，不追加视觉打磨，不为表现层加复杂度。
+- 判断标准：**结算语义、房主权威、竖版契约是长期资产，必须严谨**；UI 布局、文案包装、特效是消耗品，随前端重做一起换。
+- 下一阶段：在这套基线上**加功能、加模块、加具体功能页面**。新功能优先「最短路径跑通 + 一条 headless 断言」，不做框架化抽象。
+
 ## 关键路径（别猜错）
 
 | 用途 | 路径 |
 |---|---|
-| Godot 工程（唯一） | `D:\xiongxiong\xiongxiong` |
-| Godot 4.7.2 console 引擎 | `C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe` |
-| **文档 / 规则冻结稿** | `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\`（**在本仓库外**，见下） |
+| Godot 工程（唯一） | `E:\github\xiongxiong` |
+| Godot 4.7.2 console 引擎（本机） | `C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe` |
+| 文档 / 规则冻结稿 | 旧机镜像 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` —— **过程文件，未随仓库迁移，本机没有** |
 
-**路径坑（两处只差一个字母，极易踩）**：文档镜像在 `XiaomiMiProjects`，引擎在 `XiaomiMiMoProjects`（MiMo 双 M）。本仓库内**没有 `docs/`**，任何 `docs/...` 引用都指向镜像目录。
-
-规则唯一权威是 `docs/rules/minimal-rules-v0.md`（**已冻结**）。其它：`docs/arch/peer-manager-multipath.md`、`network-session-fsm.md`、`quality-performance-tiers.md`、`docs/design/game-flow-v0.md`、`docs/testing/device-test-checklist.md`。
+- 引擎路径换机就变：脚本用 `-Godot <..._console.exe>` 或 `$env:GODOT` 覆盖，不要改死在本文件以外的脚本里。
+- 旧机的 `D:\xiongxiong\xiongxiong`、`C:\Users\pc\...`、`XiaomiMiProjects` / `XiaomiMiMoProjects` 在本机**都不存在**；代码注释里的 `docs/...` 是旧机出处，不是本机可读文件。
+- **本机环境细节（引擎/JDK/SDK/导出脚本/MCP 接入与验证方式）：`docs/ENVIRONMENT.md`**。该文件在 `.gitignore` 里，只作本机交接，**不要提交/推送**。
+- 规则权威：冻结稿 `docs/rules/minimal-rules-v0.md`（旧机过程文件）。本机可执行的权威是 **`scripts/rules/*` 与 `tests/test_rules_v0.py` 双镜像**，两者必须一致；改结算语义仍须先走冻结流程。
 
 ## 验证命令（改完必跑）
 
 测试是 **Godot headless SceneTree 脚本**，`ALL PASS` + exit 0 = 通过：
 
 ```powershell
-$g = "C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
-$g --headless --path D:\xiongxiong\xiongxiong --script res://tests/run_rules_check.gd
+$g = "C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
+& $g --headless --path E:\github\xiongxiong --script res://tests/run_rules_check.gd
 ```
 
-6 个自检，**全部都要跑**（`run_nav_check` 和 `run_netwindow_check` 是后来加的，交接文档里没列，别漏）：
+**7 个自检，全部都要跑**（都继承 `SceneTree`、单进程，不需要真实窗口/导出模板）：
 
-`run_rules_check` · `run_network_check` · `run_seal_check` · `run_quality_check` · `run_netwindow_check` · `run_nav_check`
+`run_rules_check` · `run_network_check` · `run_seal_check` · `run_quality_check` · `run_netwindow_check` · `run_roundloop_check` · `run_nav_check`
 
 ```powershell
-# 一条命令跑完全部
-foreach ($n in "run_rules_check","run_network_check","run_seal_check","run_quality_check","run_netwindow_check","run_nav_check") {
-  & $g --headless --path D:\xiongxiong\xiongxiong --script "res://tests/$n.gd" > $null
+# 一条命令跑完全部（首次先做一次 --import，见「硬约束 6」）
+foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_seal_check","run_netwindow_check","run_roundloop_check","run_nav_check") {
+  & $g --headless --path E:\github\xiongxiong --script "res://tests/$n.gd" > $null
   "$n exit=$LASTEXITCODE"
 }
 ```
 
-另有一个 Python 规则镜像测试：`python tests/test_rules_v0.py`。
+另有一个 Python 规则镜像测试：`python tests/test_rules_v0.py`（Python 3.8 可跑；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
+
+**当前基线：7/7 全绿，断言合计 241 条**（2026-10-17，commit `c106e21`）。近期补的回归：规则必胜/封顶/40 回合/`can_use_action`、自主封存快照、伪造包丢弃、健康链路不误报。
+**断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
+`run_quality_check` 会写 `user://settings.cfg`（画质偏好会被改成测试值），跑完可回设置面板改回。
 
 ## 硬约束
 
@@ -47,9 +59,10 @@ foreach ($n in "run_rules_check","run_network_check","run_seal_check","run_quali
 3. **房主权威**：`PeerManager`（autoload `Net`）里客户端只 apply 房主下发的结算，**绝不本地调 `GameResolve`**。
 4. **竖版是契约**：`project.godot` 的 390×820 / `orientation=1` 与 `export_presets.cfg` 的 `screen/orientation=1` 必须同时成立，`run_nav_check` 会静态校验这两处。
 5. **headless 下 `static func` 不能直接写 autoload 名**（如 `Net`），编译期解析不到。要像 `scripts/ui/ui_nav.gd` 那样运行时取：`Engine.get_main_loop().root.get_node_or_null("Net")`。
-6. **新增 `class_name` 后必须重建 class cache**：`& $g --headless --path . --import`，否则其它脚本报"标识符未声明"。`.godot/global_script_class_cache.cfg` 即该索引。
-7. 脚本旁的 `*.gd.uid` 已入库，勿删勿手改。
-8. 文案规范：角色只用**「我 / 对手」**，禁用颜色昵称；规则出处不可考，统一写**「致敬童年」**，不写「完整还原」。
+6. **新增 `class_name` 后必须重建 class cache**：`& $g --headless --path . --import`，否则其它脚本报"标识符未声明"。`.godot/global_script_class_cache.cfg` 即该索引（`.godot/` 已被 `.gitignore` 忽略）。
+7. **提交只管锁定，结算等拍2**：`submit_action()` 在 3000d5e 之后只写入 `_locks`/`_pending_actions`，真正揭示必须调 `reveal_phase()`（或走 `request_timeout_default()`）。headless 测试里提交完要手动 `reveal_phase()` + `_pump()` 才会结算（`run_nav_check.gd` 已按此写法，`run_roundloop_check.gd` 用控制器驱动）。
+8. 脚本旁的 `*.gd.uid` 已入库，勿删勿手改。
+9. 文案规范：角色只用**「我 / 对手」**，禁用颜色昵称；规则出处不可考，统一写**「致敬童年」**，不写「完整还原」。
 
 ## 架构边界
 
@@ -59,32 +72,61 @@ foreach ($n in "run_rules_check","run_network_check","run_seal_check","run_quali
 - `scripts/performance/` — `QualitySettings`(autoload) + `FpsGuard`，**只动表现层**（帧率/特效/降采样），不读写 rules 与对局状态。
 - `scripts/ui/` — `menu` / `main`(单机) / `net_battle_ui` / `settings_panel` / `ui_nav`(导航) / `ui_theme` / `battle_fx`。
 - `scenes/` — `menu.tscn` 是 `run/main_scene`，入口从这里开始。
-- `build/` **部分是源码**：`export_android.ps1`、`dl_font.py` 在里面；但 `xiongxiong-debug.apk`（约 73MB）被 git 跟踪，改动会刷出巨大的 diff，提交前留意。
+- `build/` **部分是源码**：`export_android.ps1`、`dl_font.py`、`fix_spot.py` 在里面；但 `xiongxiong-debug.apk`（约 73MB）仍被 git 跟踪，改动会刷出巨大的 diff，提交前留意（要停跟踪需单独决策，别顺手做）。
+
+## 网络（局域网）
+
+- **传输 = ENet over UDP**（`scripts/network/enet_provider.gd`，`ENetConnection` + `put_packet` 可靠通道）；消息是自定义 Dictionary 信封 `{v,type,round,from_role,payload}`，**不用** Godot RPC / MultiplayerSynchronizer。
+- 端口：游戏 `47001`，房间发现 `47000`（UDP 广播）。`WebSocketProvider` 是**空桩**（抖音/远程对局预留，所有方法 `ERR_UNAVAILABLE`）——跨网对战要走那条路，别在 ENet 上硬加。
+- 心跳/质量判定在 `PeerManager._pump_session()` + `NetworkSessionFSM`：1s 一次心跳；**丢包窗口 = 2.5×间隔**（2.5s 静默算 1 次 miss，2 次≈3.5s 提示、5 次≈6.5s 封存）；延迟/抖动要**连续 2 次**采样超标才降级。改阈值前先看 `run_seal_check` 的「健康链路不误报」回归。
+- **房主权威**：只接受唯一对端（客户端认房主 1，房主由 hello 学习）的数据包；房主不采纳客户端发来的胜负/恢复快照/倒计时/链路恢复。
+- 已知未实现：**ENet 自动重连**。断线当前是「先封存（快照保留）→ 转人机接管」；真正的「重连→双方同意→3s 倒计时→恢复」只差传输层重连握手，FSM 那套已经写好。
 
 ## Android 导出
 
 ```powershell
-.\build\export_android.ps1 -CheckOnly   # 只查环境，不导出
+.\build\setup_android_env.ps1                        # 一键把 JDK/SDK 路径写进 Godot 编辑器设置（先关编辑器）
+.\build\export_android.ps1 -CheckOnly   # 只查环境，不导出（缺项时 exit 1）
 .\build\export_android.ps1              # debug APK
 .\build\export_android.ps1 -Release     # release APK
+.\build\export_android.ps1 -Godot "C:\path\Godot_v4.7.2-stable_win64_console.exe"
 ```
 
-包名 `com.xiongxiong.demo`，产物 `build/xiongxiong-debug.apk`。前置依赖：Godot 4.7.2 导出模板（`%APPDATA%\Godot\export_templates\4.7.2.stable`）、JDK 17 + `JAVA_HOME`、Android SDK（`ANDROID_HOME`，platform-tools + build-tools 34.x）、debug keystore（`%APPDATA%\Godot\keystores\debug.keystore`）。`-CheckOnly` 会逐项告诉你缺什么。安装：`adb install -r build\xiongxiong-debug.apk`。
+**本机已装好（2026-10-17）**：JDK `E:\github\tools\jdk-17.0.20.1+1`、Android SDK `E:\github\tools\android-sdk`（platform-tools + build-tools 36.0.0 + platforms android-36）、导出模板已装进 `%APPDATA%\Godot\export_templates\4.7.2.stable`、debug keystore 已生成。`export_android.ps1` 会自动探测这些位置（不再依赖 `JAVA_HOME`/`ANDROID_HOME`），并在每次导出前调用 `setup_android_env.ps1` 对齐编辑器设置。
+
+包名 `com.xiongxiong.demo`，产物 `build/xiongxiong-debug.apk`。`-CheckOnly` 会逐项报缺。
+
+前置依赖（**前 4 项是硬门槛**，Godot 4.7.2 导出只认编辑器设置，`JAVA_HOME`/`ANDROID_HOME` 不够）：
+
+1. Godot 4.7.2 stable win64（含 console exe）
+2. 导出模板 4.7.2 → `%APPDATA%\Godot\export_templates\4.7.2.stable\android_debug.apk`
+3. JDK 17 → 编辑器设置 `export/android/java_sdk_path`
+4. Android SDK（platform-tools + build-tools **28–36，建议 36.0.0**；4.7.2 默认 target SDK 36）→ 编辑器设置 `export/android/android_sdk_path`
+5. debug keystore → `%APPDATA%\Godot\keystores\debug.keystore`（配好 JDK 后 Godot 自动生成）
+6. 首次导入：`& $g --headless --path E:\github\xiongxiong --import`
+
+不需要 NDK / CMake / gradle（`use_gradle_build=false`，用官方预构建模板）。安装：`adb install -r build\xiongxiong-debug.apk`（本机可用 `D:\software\MuMuPlayer\nx_main\adb.exe`）。
 
 ## Godot MCP（重要）
 
-`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`）只跟**编辑器里当前打开的工程**通信。要让它作用到本仓库，**必须先在 Godot 编辑器里打开 `D:\xiongxiong\xiongxiong`**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
+`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`，要求 node ≥ 22）只跟**编辑器里当前打开的工程**通信。要让它作用到本仓库，**必须先在 Godot 编辑器里打开 `E:\github\xiongxiong`**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
 
 ## 工作约定
 
 - 终端用 **PowerShell 7 (pwsh)**；跑自检时直接调引擎并读 `$LASTEXITCODE`（需要退出码时才这样，一般交互式启动用 `Start-Process`）。
-- 仓库↔镜像同步用 **`cmd xcopy`**，`Copy-Item` 可能静默失败。
+- 推送走本机代理：`$env:HTTPS_PROXY="http://127.0.0.1:7897"`。**github.com 直连不稳（时通时断）**，`git fetch/push` 失败先挂代理再试；下载大文件可改用镜像（`https://gh-proxy.com/https://github.com/...` 实测可用）。
 - 大改动先拆 subagent；派单时写清工程路径、禁止改 `scripts/rules/*`、验收命令。
+- **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
+- DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前未提交改动（勿直接覆盖/提交）
+## 当前状态（2026-10-17）
 
-`scripts/session/networked_battle_controller.gd`（rematch/restore 时重新拉起 `_running`）、`scripts/ui/net_battle_ui.gd`（血/气图标行改从列 meta 取，不再按座位下标选行），以及重新导出的 debug APK。
+- `main` 头部 **`c106e21`**：修复断线封存死锁 / 房主权威漏洞 / 网络质量误报，自检断言 199 → **241**；`scripts/rules/*` 未改动。
+- 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
+- 本机已装引擎 + `.godot` 已导入；**7 个自检全绿**；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
+- 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。
+- 换机器后：按 `WORKSPACE.md` 补引擎/模板/JDK/SDK，再跑 `build\setup_android_env.ps1`；脚本里所有路径都已不再写死旧机。
 
 ## 交接文档
 
-`SESSION-HANDOFF.md`（根目录，与镜像 `docs/SESSION-HANDOFF.md` 同内容）记录待办优先级与「节奏约定」。**其回归清单只列了 4 个 check，实际有 6 个**，以上方「验证命令」为准。
+`SESSION-HANDOFF.md`（根目录）记录待办优先级与「节奏约定」。其回归清单与上方「验证命令」一致（**7 个**），两边任一改动都要同步。
