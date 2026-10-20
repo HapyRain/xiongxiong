@@ -197,6 +197,15 @@ func _check_auto_seal_snapshot() -> void:
 	_exp("restore 保住 sealed_round",
 		int(host.state.sealed_round[0]) == -1 and int(host.state.sealed_round[1]) == 6)
 	_exp("restore 复位 opening 标记", host._opening_done)
+	# 反例：快照 opening_done=false 时必须清掉本地残留 true（旧断言两边都是 true → 套套逻辑）
+	var snap_reset: Dictionary = snap.duplicate(true)
+	(snap_reset["session"] as Dictionary)["opening_done"] = false
+	snap_reset["checksum"] = NetworkSessionFSM.compute_checksum(
+		snap_reset["rules"] as Dictionary, snap_reset["session"] as Dictionary)
+	host._opening_done = true
+	host.restore_from_snapshot(snap_reset)
+	_exp("restore 以快照 opening_done=false 为准（清掉本地 true）",
+		not host._opening_done and not host._opening_applied)
 
 	# 关键：恢复后揭示必须真的结算（旧 bug 会被开局分支直接 return 吞掉）
 	host._pending_actions = [GameRules.Action.ZAN, GameRules.Action.ZAN]

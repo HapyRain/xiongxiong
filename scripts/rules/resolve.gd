@@ -365,25 +365,33 @@ static func _check_winner(state: BattleState) -> void:
 
 ## 文案：沿用「我 X vs 对手 Y · …」风格（GameRules.action_name）。
 static func _describe(r: GameRules.RoundResult) -> String:
+	return describe(r, 0)
+
+
+## 文案按 viewer 座位生成：联机下客户端拿到同一份 RoundResult，文案必须换视角。
+static func describe(r: GameRules.RoundResult, viewer: int = 0) -> String:
+	var me: int = clampi(viewer, 0, 1)
+	var op: int = 1 - me
 	var parts := PackedStringArray()
 	parts.append(
 		"我 %s vs 对手 %s"
 		% [
-			GameRules.action_name(int(r.actions[0])),
-			GameRules.action_name(int(r.actions[1])),
+			GameRules.action_name(int(r.actions[me])),
+			GameRules.action_name(int(r.actions[op])),
 		]
 	)
 	var names: Array = ["我", "对手"]
-	for i: int in 2:
-		var who: String = names[i]
-		if int(r.hp_delta[i]) < 0:
-			parts.append("%s %d 血" % [who, int(r.hp_delta[i])])
-		if int(r.shield_delta[i]) < 0:
-			parts.append("%s %d 盾" % [who, int(r.shield_delta[i])])
-		if r.blocked[i]:
+	for p: int in 2:
+		var seat: int = me if p == 0 else op
+		var who: String = names[p]
+		if int(r.hp_delta[seat]) < 0:
+			parts.append("%s %d 血" % [who, int(r.hp_delta[seat])])
+		if int(r.shield_delta[seat]) < 0:
+			parts.append("%s %d 盾" % [who, int(r.shield_delta[seat])])
+		if r.blocked[seat]:
 			parts.append("%s格挡" % who)
-		if r.sealed[i]:
+		if r.sealed[seat]:
 			parts.append("%s被封盾" % who)
-	if int(r.actions[0]) == GameRules.Action.XI_SHOU or int(r.actions[1]) == GameRules.Action.XI_SHOU:
+	if int(r.actions[me]) == GameRules.Action.XI_SHOU or int(r.actions[op]) == GameRules.Action.XI_SHOU:
 		parts.append("吸收")
 	return " · ".join(parts)

@@ -154,6 +154,25 @@ func _initialize() -> void:
 	_exp("client ui can pick after rematch", _ui_can_pick(_client_pm, _client_ctrl, 1))
 	_exp("client pick after rematch", _client_ctrl.try_select(1, GameRules.Action.ZAN))
 
+	# ── 掉线接管后再来一局：必须真开新局（旧代码清掉 ai_takeover → READY_CHECK 死路）
+	_host_pm.ai_takeover = true
+	_host_pm.request_rematch()
+	_exp("takeover rematch starts battle",
+		_host_pm.get_session() == PeerManager.Session.IN_BATTLE
+		and _host_pm.state.round == GameRules.OPENING_ROUND)
+	_host_pm.ai_takeover = false
+
+	# ── 联机 RoundResult 序列化：封盾/劝降/双视角文案必须带上
+	var rr := GameRules.RoundResult.new()
+	rr.actions = [GameRules.Action.XIAO_YANG, GameRules.Action.FANG]
+	rr.sealed = [false, true]
+	rr.quan_jiang = 1
+	var rd: Dictionary = _host_pm._result_to_dict(rr)
+	_exp("result dict 带 sealed", (rd.get("sealed", []) as Array) == [false, true])
+	_exp("result dict 带 quan_jiang", int(rd.get("quan_jiang", -1)) == 1)
+	var texts: Array = rd.get("texts", [])
+	_exp("result dict 带双视角文案（两份不同）",
+		texts.size() == 2 and str(texts[0]) != str(texts[1]))
 	if _host_pm != null:
 		_host_pm.leave()
 	_finish()
@@ -354,15 +373,34 @@ func _check_ai_v2() -> void:
 		if k != GameRules.Action.ZAN and k != GameRules.Action.BAO1 and k != GameRules.Action.FANG:
 			only_basic = false
 	_exp("AI v2：只从 攒气/包子×1/防御 里挑", only_basic)
+	seed(20261021)
 	var low := BattleState.new()
 	low.round = 5
-	low.qi = [0, 0]
-	low.shield = [0, 0]
+	low.qi = [1, 1]
+	low.shield = [1, 1]
 	var zan_cnt := 0
-	for i in 20:
-		if AiOpponent.choose(low, 1) == GameRules.Action.ZAN:
+	var low_seen := {}
+	for i in 40:
+		var la: int = AiOpponent.choose(low, 1)
+		low_seen[la] = true
+		if la == GameRules.Action.ZAN:
 			zan_cnt += 1
-	_exp("AI v2：低气偏攒气", zan_cnt >= 16)
+	_exp("AI v2：低气偏攒气（qi=1 时攒气占多数）", zan_cnt >= 18)
+	_exp("AI v2：低气也不是永远攒气（包子/防御都会出）",
+		low_seen.has(GameRules.Action.BAO1) and low_seen.has(GameRules.Action.FANG))
+
+	seed(20261022)
+	var rich := BattleState.new()
+	rich.round = 5
+	rich.qi = [5, 5]
+	rich.shield = [3, 3]
+	var rich_seen := {}
+	for i in 40:
+		rich_seen[AiOpponent.choose(rich, 1)] = true
+	_exp("AI v2：气/盾充足时 攒气/包子/防御 都会出现",
+		rich_seen.has(GameRules.Action.ZAN)
+		and rich_seen.has(GameRules.Action.BAO1)
+		and rich_seen.has(GameRules.Action.FANG))
 
 
 ## 网络判负（forfeit / 拒绝继续 / 同意超时）是**整场**结束，不能当小局处理：

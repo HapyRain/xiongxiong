@@ -422,13 +422,8 @@ func _start_rematch_local() -> void:
 	_peer_rematch_want = false
 	_reset_rules_state()
 	_remotify_reset()
-	var was_takeover := ai_takeover
-	ai_takeover = false
-	# 接管/无 provider 时视为本地房主，否则 is_host()==false 导致新局永不开始
-	if was_takeover or provider == null or is_host() or _mode == Mode.HOTSEAT:
-		start_battle()
-	else:
-		start_battle()
+	# 接管态保留 ai_takeover=true：is_host() 才能走房主开局；清掉会落到客户端分支（READY_CHECK 死路）
+	start_battle()
 	rematch_answered.emit(true)
 
 
@@ -818,6 +813,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				_revealing = false
 				_opening_done = false
 				_opening_applied = false
+				_rematch_want = false
+				_peer_rematch_want = false
 				restore_from_snapshot(snap)
 				_set_session(Session.IN_BATTLE)
 				battle_started.emit(snap)
@@ -847,8 +844,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"submit_action":
 			if is_host():
 				var role := int(payload.get("from_role", from_id % 2))
-				# 房主座位只能房主自己写：网络对端只能提交客户端座位（1）
-				if is_remote_sender(from_id) and role != 1:
+				# 房主座位只能房主自己写：网络对端只能提交客户端座位（1）。
+				# 用 from_id != 1 而非只靠 is_remote_sender：hello 之前 _remote_peer_id 还是 -1。
+				if is_host() and from_id != 1 and role != 1:
 					push_warning("Net: reject remote submit for seat %d" % role)
 					return
 				_on_submit_received(role, payload)
@@ -924,7 +922,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if fsm.state == NetworkSessionFSM.State.SEALED:
 				fsm.on_link_ok(Time.get_ticks_msec())
 		"sys_consent":
-			var cpeer := int(payload.get("peer", from_id))
+			# 票只能代表发送者自己：忽略 payload.peer，防止客户端替房主投票
+			var cpeer := from_id
 			var cyes := bool(payload.get("yes", true))
 			# 对端可能比本端先进入同意流程：先补齐 AWAITING_CONSENT，再记票
 			if fsm.state == NetworkSessionFSM.State.SEALED:
@@ -1478,8 +1477,11 @@ func _result_to_dict(r: GameRules.RoundResult) -> Dictionary:
 		"shield_delta": r.shield_delta.duplicate(),
 		"hit": r.hit.duplicate(),
 		"blocked": r.blocked.duplicate(),
+		"sealed": r.sealed.duplicate(),
+		"quan_jiang": r.quan_jiang,
 		"opening": r.opening,
 		"text": r.text,
+		"texts": [GameResolve.describe(r, 0), GameResolve.describe(r, 1)],
 		"timeout": _timeout_flags.duplicate(),
 	}
 

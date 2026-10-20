@@ -129,6 +129,42 @@ func _init() -> void:
 	ok = _exp(ok, "[矩阵·包子vs小羊] 3连：3 连包克制小羊 → 小羊方掉 1 血，包子方无事",
 		_chk(s, [4, 3], [2, 4], [3, 3]))
 
+	# ── ⑥b 反向座位：包子在 1 号位（镜像 resolve.gd 的 is_bao(b) 分支）──────
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, XIAO_YANG, BAO1)
+	ok = _exp(ok, "[矩阵·反向座位] 小羊(0) vs 1连包(1)：包子方耗 1 盾挡下",
+		_chk(s, [4, 4], [4, 4], [3, 2]))
+
+	s = _mk([4, 4], [5, 5], [3, 0])
+	GameResolve.resolve_turn(s, XIAO_YANG, BAO1)
+	ok = _exp(ok, "[矩阵·反向座位] 小羊 vs 1连包（包子方 0 盾）：挡不住 → 包子方掉 1 血",
+		_chk(s, [4, 3], [4, 4], [3, 0]))
+
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, XIAO_YANG, BAO2)
+	ok = _exp(ok, "[矩阵·反向座位] 小羊 vs 2连包：挡下且不掉盾",
+		_chk(s, [4, 4], [4, 3], [3, 3]))
+
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, XIAO_YANG, BAO3)
+	ok = _exp(ok, "[矩阵·反向座位] 小羊 vs 3连包：3 连包克制小羊 → 小羊方掉 1 血",
+		_chk(s, [3, 4], [4, 2], [3, 3]))
+
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, DA_YANG, BAO1)
+	ok = _exp(ok, "[矩阵·反向座位] 大羊 vs 1连包：挡不住 → 包子方掉 1 血",
+		_chk(s, [4, 3], [3, 4], [3, 3]))
+
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, DA_YANG, BAO3)
+	ok = _exp(ok, "[矩阵·反向座位] 大羊 vs 3连包：完全挡下（不掉盾不掉血）",
+		_chk(s, [4, 4], [3, 2], [3, 3]))
+
+	s = _mk([4, 4], [5, 5], [3, 3])
+	GameResolve.resolve_turn(s, ZHONG_JI, BAO1)
+	ok = _exp(ok, "[矩阵·反向座位] 终极技 vs 1连包：挡不住 → 包子方掉 2 血",
+		_chk(s, [4, 2], [0, 4], [3, 3]))
+
 	# ── ⑦ §3.2 包子 vs 大羊 ─────────────────────────────────────────
 	s = _mk([4, 4], [5, 5], [3, 3])
 	GameResolve.resolve_turn(s, BAO1, DA_YANG)
@@ -572,6 +608,22 @@ func _init() -> void:
 	if not ok:
 		for n in _failed:
 			print("  FAILED: ", n)
+	# ── ⑳ 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（契约 D_bare）
+	s = _mk([4, 4], [5, 5], [0, 3])
+	GameResolve.resolve_turn(s, FANG, BAO1)
+	ok = _exp(ok, "[裸防兜底] 0 盾出防御 vs 1连包：防御不生效 → 掉 1 血",
+		_chk(s, [3, 4], [5, 4], [0, 3]))
+
+	s = _mk([4, 4], [5, 5], [0, 3])
+	GameResolve.resolve_turn(s, FANG, XIAO_YANG)
+	ok = _exp(ok, "[裸防兜底] 0 盾出防御 vs 小羊：掉 1 血",
+		_chk(s, [3, 4], [5, 4], [0, 3]))
+
+	s = _mk([4, 4], [5, 5], [0, 3])
+	GameResolve.resolve_turn(s, FANG, ZHONG_JI)
+	ok = _exp(ok, "[裸防兜底] 0 盾出防御 vs 终极技：掉 2 血",
+		_chk(s, [2, 4], [5, 0], [0, 3]))
+
 	print("ALL PASS" if ok else "HAS FAILURES")
 	quit(0 if ok else 1)
 

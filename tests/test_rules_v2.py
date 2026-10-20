@@ -295,6 +295,14 @@ def _pair(s, r, acts, bare):
         me, op = 1, 0
     else:
         return                                # 防御/增益互撞：无额外伤害
+    # 包子在任一座位都要按「包子侧」派发（镜像 resolve.gd 的 is_bao(a)/is_bao(b) 双分支）
+    if ka == K_BAO or kb == K_BAO:
+        me = 0 if ka == K_BAO else 1
+        op = 1 - me
+        handler = RULES.get((K_BAO, kind(acts[op])))
+        if handler is not None:
+            handler(s, r, me, op, acts[me], bare)
+        return
     handler = RULES.get((kind(acts[me]), kind(acts[op])))
     if handler is not None:
         handler(s, r, me, op, acts[me], bare)
@@ -563,6 +571,42 @@ def main():
     resolve_turn(s, BAO3, XIAO_YANG)
     ok &= expect("[矩阵·包子vs小羊] 3连：3 连包克制小羊 → 小羊方掉 1 血，包子方无事",
                  chk(s, [4, 3], [2, 4], [3, 3]))
+
+    # ── ⑥b 反向座位：包子在 1 号位（此前镜像漏派发 → 静默不结算）────────
+    s = mk(qi=[5, 5])
+    resolve_turn(s, XIAO_YANG, BAO1)
+    ok &= expect("[矩阵·反向座位] 小羊(0) vs 1连包(1)：包子方耗 1 盾挡下",
+                 chk(s, [4, 4], [4, 4], [3, 2]))
+
+    s = mk(qi=[5, 5], shield=[3, 0])
+    resolve_turn(s, XIAO_YANG, BAO1)
+    ok &= expect("[矩阵·反向座位] 小羊 vs 1连包（包子方 0 盾）：挡不住 → 包子方掉 1 血",
+                 chk(s, [4, 3], [4, 4], [3, 0]))
+
+    s = mk(qi=[5, 5])
+    resolve_turn(s, XIAO_YANG, BAO2)
+    ok &= expect("[矩阵·反向座位] 小羊 vs 2连包：挡下且不掉盾",
+                 chk(s, [4, 4], [4, 3], [3, 3]))
+
+    s = mk(qi=[5, 5])
+    resolve_turn(s, XIAO_YANG, BAO3)
+    ok &= expect("[矩阵·反向座位] 小羊 vs 3连包：3 连包克制小羊 → 小羊方掉 1 血",
+                 chk(s, [3, 4], [4, 2], [3, 3]))
+
+    s = mk(qi=[5, 5])
+    resolve_turn(s, DA_YANG, BAO1)
+    ok &= expect("[矩阵·反向座位] 大羊 vs 1连包：挡不住 → 包子方掉 1 血",
+                 chk(s, [4, 3], [3, 4], [3, 3]))
+
+    s = mk(qi=[5, 5])
+    resolve_turn(s, DA_YANG, BAO3)
+    ok &= expect("[矩阵·反向座位] 大羊 vs 3连包：完全挡下（不掉盾不掉血）",
+                 chk(s, [4, 4], [3, 2], [3, 3]))
+
+    s = mk(qi=[5, 5])
+    resolve_turn(s, ZHONG_JI, BAO1)
+    ok &= expect("[矩阵·反向座位] 终极技 vs 1连包：挡不住 → 包子方掉 2 血",
+                 chk(s, [4, 2], [0, 4], [3, 3]))
 
     # ── ⑦ §3.2 包子 vs 大羊 ─────────────────────────────────────────
     s = mk(qi=[5, 5])
@@ -925,6 +969,21 @@ def main():
     ok &= expect("[强断言] 结算后 pending 清空（劝降路径）",
                  s.pending == [-1, -1] and s.winner == 0)
 
+    # ── 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（契约 D_bare）────
+    s = mk(qi=[5, 5], shield=[0, 3])
+    resolve_turn(s, FANG, BAO1)
+    ok &= expect("[裸防兜底] 0 盾出防御 vs 1连包：防御不生效 → 掉 1 血",
+                 chk(s, [3, 4], [5, 4], [0, 3]))
+
+    s = mk(qi=[5, 5], shield=[0, 3])
+    resolve_turn(s, FANG, XIAO_YANG)
+    ok &= expect("[裸防兜底] 0 盾出防御 vs 小羊：掉 1 血",
+                 chk(s, [3, 4], [5, 4], [0, 3]))
+
+    s = mk(qi=[5, 5], shield=[0, 3])
+    resolve_turn(s, FANG, ZHONG_JI)
+    ok &= expect("[裸防兜底] 0 盾出防御 vs 终极技：掉 2 血",
+                 chk(s, [2, 4], [5, 0], [0, 3]))
     fresh = State()
     ok &= expect("[强断言] can_use_action：回合 1 仅攒气可出",
                  fresh.can_use_action(0, ZAN) and fresh.can_use_action(1, ZAN)

@@ -527,7 +527,9 @@ func _on_beat(n: int) -> void:
 
 func _on_resolved(result: Dictionary) -> void:
 	_hide_spotlight()
-	var text := str(result.get("text", ""))
+	var mine: int = Net.get_local_role()
+	var texts: Array = result.get("texts", [])
+	var text := str(texts[mine]) if texts.size() > mine else str(result.get("text", ""))
 	_log(text)
 	# 中场结算短面板
 	if not bool(result.get("opening", false)) and text != "":
