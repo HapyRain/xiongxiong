@@ -21,7 +21,7 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 - 引擎路径换机就变：脚本用 `-Godot <..._console.exe>` 或 `$env:GODOT` 覆盖，不要改死在本文件以外的脚本里。
 - 旧机的 `D:\xiongxiong\xiongxiong`、`C:\Users\pc\...`、`XiaomiMiProjects` / `XiaomiMiMoProjects` 在本机**都不存在**；代码注释里的 `docs/...` 是旧机出处，不是本机可读文件。
 - **本机环境细节（引擎/JDK/SDK/导出脚本/MCP 接入与验证方式）：`docs/ENVIRONMENT.md`**。该文件在 `.gitignore` 里，只作本机交接，**不要提交/推送**。
-- 规则权威：冻结稿 `docs/rules/minimal-rules-v0.md`（旧机过程文件）。本机可执行的权威是 **`scripts/rules/*` 与 `tests/test_rules_v0.py` 双镜像**，两者必须一致；改结算语义仍须先走冻结流程。
+- 规则权威：**`docs/rules/game-rules-v2.md`（已定稿，唯一实现依据；`minimal-rules-v0.md` 是历史）**。本机可执行的权威是 **`scripts/rules/*` 与 `tests/test_rules_v2.py` 双镜像**，两者必须一致。
 
 ## 验证命令（改完必跑）
 
@@ -44,9 +44,9 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 }
 ```
 
-另有一个 Python 规则镜像测试：`python tests/test_rules_v0.py`（Python 3.8 可跑；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
+另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，103 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：7/7 全绿，断言合计 241 条**（2026-10-17，commit `c106e21`）。近期补的回归：规则必胜/封顶/40 回合/`can_use_action`、自主封存快照、伪造包丢弃、健康链路不误报。
+**当前基线：7/7 全绿，断言合计 389 条**（2026-10-20，v2 规则落地）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 103 条、每小局判分/12 分终场。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -55,7 +55,7 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 ## 硬约束
 
 1. **`scripts/rules/*` 结算语义禁止口头改。** 改规则必须先变更记录走冻结流程。
-2. **`tests/test_rules_v0.py` 是 `scripts/rules/resolve.gd` 的逐行镜像**（不是包装调用）。改了 resolve 必须同步改这个 Python 文件，否则两套结算表会静默分叉。
+2. **`tests/test_rules_v2.py` 是 `scripts/rules/resolve.gd` 的逐行镜像**（不是包装调用）。改了 resolve 必须同步改这个 Python 文件，否则两套结算表会静默分叉。
 3. **房主权威**：`PeerManager`（autoload `Net`）里客户端只 apply 房主下发的结算，**绝不本地调 `GameResolve`**。
 4. **竖版是契约**：`project.godot` 的 390×820 / `orientation=1` 与 `export_presets.cfg` 的 `screen/orientation=1` 必须同时成立，`run_nav_check` 会静态校验这两处。
 5. **headless 下 `static func` 不能直接写 autoload 名**（如 `Net`），编译期解析不到。要像 `scripts/ui/ui_nav.gd` 那样运行时取：`Engine.get_main_loop().root.get_node_or_null("Net")`。
@@ -119,11 +119,13 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 - **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
 - DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前状态（2026-10-17）
+## 当前状态（2026-10-20）
 
-- `main` 头部 **`c106e21`**：修复断线封存死锁 / 房主权威漏洞 / 网络质量误报，自检断言 199 → **241**；`scripts/rules/*` 未改动。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、五步结算管线）；`scripts/session/*` 加每小局判分、按分解锁、12 分终场；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（103 条）；**7 个自检 389 条断言全绿**。
+- **UI 只做了保编译**：旧 3 按钮映射到 攒气/包子×1/防御；技能条 + CD 角标 + 分数条待做（v2 §8）。
+- `main` 上一版本 `c106e21`：修复断线封存死锁 / 房主权威漏洞 / 网络质量误报（自检 199 → 241）。
 - 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
-- 本机已装引擎 + `.godot` 已导入；**7 个自检全绿**；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
+- 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。
 - 换机器后：按 `WORKSPACE.md` 补引擎/模板/JDK/SDK，再跑 `build\setup_android_env.ps1`；脚本里所有路径都已不再写死旧机。
 

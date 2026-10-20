@@ -64,7 +64,7 @@ func _ready() -> void:
 	_build_tempo_bar()
 	_tint_labels()
 	btn_zan.pressed.connect(func(): _pick(GameRules.Action.ZAN))
-	btn_bo.pressed.connect(func(): _pick(GameRules.Action.BO))
+	btn_bo.pressed.connect(func(): _pick(GameRules.Action.BAO1))
 	btn_fang.pressed.connect(func(): _pick(GameRules.Action.FANG))
 	BattleFx.bind_press(btn_zan, "zan")
 	BattleFx.bind_press(btn_bo, "bo")
@@ -402,9 +402,9 @@ func _play_impact_fx(result: GameRules.RoundResult) -> void:
 		return
 	# 发波弹道
 	if result.actions.size() >= 2:
-		if int(result.actions[0]) == GameRules.Action.BO and me_panel != null and you_panel != null:
+		if int(result.actions[0]) == GameRules.Action.BAO1 and me_panel != null and you_panel != null:
 			BattleFx.play_projectile(_fx_layer, me_panel, you_panel, true)
-		if int(result.actions[1]) == GameRules.Action.BO and me_panel != null and you_panel != null:
+		if int(result.actions[1]) == GameRules.Action.BAO1 and me_panel != null and you_panel != null:
 			BattleFx.play_projectile(_fx_layer, you_panel, me_panel, false)
 	if result.hit[0]:
 		BattleFx.play_hurt(_fx_layer, me_panel if me_panel else self)
@@ -573,5 +573,5 @@ func _refresh_actions() -> void:
 	# 与 controller.is_pick_open 同源，禁止“亮着点不动”
 	var open: bool = controller != null and controller.is_pick_open()
 	btn_zan.disabled = (not open) or not s.can_use_action(0, GameRules.Action.ZAN)
-	btn_bo.disabled = (not open) or not s.can_use_action(0, GameRules.Action.BO)
+	btn_bo.disabled = (not open) or not s.can_use_action(0, GameRules.Action.BAO1)
 	btn_fang.disabled = (not open) or not s.can_use_action(0, GameRules.Action.FANG)

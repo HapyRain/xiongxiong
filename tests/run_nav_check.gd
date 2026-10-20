@@ -121,15 +121,19 @@ func _check_ui_nav() -> void:
 
 func _check_ai_opponent() -> void:
 	var s := BattleState.new()
+	# 开局回合（round 1）规则层只放行攒气，AI 会直接短路成 ZAN —— 白名单断言将形同虚设。
+	# 放到第 2 回合，才真正校验「AI 候选 ⊆ 攒气 / 包子×1 / 防御」这一覆盖点。
+	s.round = 2
 	s.qi = [3, 3]
 	s.shield = [3, 3]
 	var all_valid := true
 	for i in 20:
 		var a: int = AiOpponent.choose(s, 1)
-		if a != GameRules.Action.ZAN and a != GameRules.Action.BO and a != GameRules.Action.FANG:
+		# v2：AI 候选表为 攒气 / 包子×1 / 防御（旧「波」= 单发 1 气攻击 → BAO1）
+		if a != GameRules.Action.ZAN and a != GameRules.Action.BAO1 and a != GameRules.Action.FANG:
 			all_valid = false
 	_exp("ai action valid", all_valid)
-	# 低气应偏攒
+	# 低气应偏攒（v2：0 气 0 盾 → 包子无气、防御无盾，规则层只放行攒气）
 	s.qi = [0, 0]
 	s.shield = [0, 0]
 	var zan_count := 0
@@ -214,7 +218,7 @@ func _tick_ai(delta: float) -> void:
 					_host_pm._revealing = false
 					var hp1 := int(_host_pm.state.hp[1])
 					_host_pm.submit_action(GameRules.Action.ZAN, 0)
-					_host_pm.submit_action(GameRules.Action.BO, 1)
+					_host_pm.submit_action(GameRules.Action.BAO1, 1)
 					# 拍2 揭示：提交只锁定，结算由 reveal_phase 触发（3000d5e 后的节奏语义）
 					_host_pm.reveal_phase()
 					_pump(0.05)

@@ -28,9 +28,98 @@ var _reject_mode: bool = false
 func _initialize() -> void:
 	print("SEALCHECK_START")
 	_check_auto_seal_snapshot()
+	_check_snapshot_carry_score()
 	_run_fsm_suite()
 	_phase = "pm"
 	_setup_pm()
+
+
+# ================= T6：断线快照必须带 score / cooldowns / sealed_round =================
+# v2 会话层把「分数 / CD / 封盾」放在 BattleState 里（BattleState.snapshot/restore 三项齐全），
+# 但断线恢复若只还原血/气/盾，就会出现「分数回 0、CD 清空 → 技能又被锁」的静默分叉。
+# 这里直接验证 seal() / get_session_snapshot() / restore_from_snapshot() 三条路径。
+func _check_snapshot_carry_score() -> void:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	var client := PeerManager.new()
+	root.add_child(client)
+	client.install_provider(cp, PeerManager.Mode.ENET)
+	hp.open_as_host({})
+	cp.open_as_client({})
+	host._sync_fsm_identity()
+	client._sync_fsm_identity()
+	host._set_session(PeerManager.Session.IN_BATTLE)
+	client._set_session(PeerManager.Session.IN_BATTLE)
+	host.start_battle()
+	_pump_two(host, client, 0.05)
+
+	# 造一个「打到一半、各有分数与 CD、还封着盾」的局面
+	host._opening_done = true
+	client._opening_done = true
+	host.state.round = 7
+	host.state.hp = [3, 2]
+	host.state.qi = [4, 1]
+	host.state.shield = [2, 1]
+	host.state.phase = GameRules.Phase.SELECTING
+	host.state.score = [5, 7]
+	host.state.cooldowns = [
+		{GameRules.Action.XIAO_YANG: 4},
+		{GameRules.Action.HUI_FU: 6},
+	]
+	host.state.sealed_round = [8, -1]
+
+	# ① get_session_snapshot()：rules 段必须带三项
+	var sess_snap: Dictionary = host.get_session_snapshot()
+	var s_rules: Dictionary = {}
+	var v_sr: Variant = sess_snap.get("rules", {})
+	if typeof(v_sr) == TYPE_DICTIONARY:
+		s_rules = v_sr
+	_exp("session_snapshot rules 带 score", (s_rules.get("score", []) as Array) == [5, 7])
+	_exp("session_snapshot rules 带 cooldowns",
+		(s_rules.get("cooldowns", []) as Array).size() == 2
+		and int(((s_rules.get("cooldowns", []) as Array)[0] as Dictionary).get(GameRules.Action.XIAO_YANG, -1)) == 4)
+	_exp("session_snapshot rules 带 sealed_round", (s_rules.get("sealed_round", []) as Array) == [8, -1])
+
+	# ② seal()：对端也要拿到同一份带分数的快照
+	host.seal("test_score_snapshot")
+	_pump_two(host, client, 0.05)
+	var snap: Dictionary = host.last_session_snap
+	var rules: Dictionary = {}
+	var v_rules: Variant = snap.get("rules", {})
+	if typeof(v_rules) == TYPE_DICTIONARY:
+		rules = v_rules
+	_exp("seal 快照 rules 带 score", (rules.get("score", []) as Array) == [5, 7])
+	_exp("seal 快照 rules 带 sealed_round", (rules.get("sealed_round", []) as Array) == [8, -1])
+	var c_rules: Dictionary = {}
+	var v_cr: Variant = client.last_session_snap.get("rules", {})
+	if typeof(v_cr) == TYPE_DICTIONARY:
+		c_rules = v_cr
+	_exp("对端封存快照带 score", (c_rules.get("score", []) as Array) == [5, 7])
+
+	# ③ restore_from_snapshot()：恢复后三项必须逐字段一致
+	host.state.score = [0, 0]
+	host.state.cooldowns = [{}, {}]
+	host.state.sealed_round = [-1, -1]
+	host.restore_from_snapshot(snap.duplicate(true))
+	_exp("restore 后 score 一致", int(host.state.score[0]) == 5 and int(host.state.score[1]) == 7)
+	_exp("restore 后 cooldowns 一致（含具体回合号）",
+		(host.state.cooldowns[0] as Dictionary).size() == 1
+		and int((host.state.cooldowns[0] as Dictionary).get(GameRules.Action.XIAO_YANG, -1)) == 4
+		and int((host.state.cooldowns[1] as Dictionary).get(GameRules.Action.HUI_FU, -1)) == 6)
+	_exp("restore 后 sealed_round 一致",
+		int(host.state.sealed_round[0]) == 8 and int(host.state.sealed_round[1]) == -1)
+	# 深拷贝：改本地 CD 字典不应污染快照
+	(host.state.cooldowns[0] as Dictionary)[GameRules.Action.XIAO_YANG] = 99
+	var snap_cd: Array = rules.get("cooldowns", [])
+	_exp("restore 后 CD 为深拷贝（改本地不回写快照）",
+		snap_cd.size() == 2 and int((snap_cd[0] as Dictionary).get(GameRules.Action.XIAO_YANG, -1)) == 4)
+
+	host.leave()
+	client.leave()
 
 
 # ================= P0-1 回归：自主封存（心跳超时）必须带真实局面 =================
@@ -52,12 +141,15 @@ func _check_auto_seal_snapshot() -> void:
 	client._sync_fsm_identity()
 	host._set_session(PeerManager.Session.IN_BATTLE)
 	client._set_session(PeerManager.Session.IN_BATTLE)
-	# 造一个「已打了几回合」的局面
+	# 造一个「已打了几回合」的局面（v2：含 score / cooldowns / sealed_round）
 	host.state.round = 5
 	host.state.hp = [4, 2]
 	host.state.qi = [1, 0]
 	host.state.shield = [2, 1]
 	host.state.phase = GameRules.Phase.SELECTING
+	host.state.score = [2, 3]
+	host.state.cooldowns = [{GameRules.Action.JI_QI: 2}, {}]
+	host.state.sealed_round = [-1, 6]
 	host._opening_done = true
 	client.state.restore(host.state.snapshot())
 	client._opening_done = true
@@ -79,6 +171,12 @@ func _check_auto_seal_snapshot() -> void:
 	if typeof(v_hp) == TYPE_ARRAY:
 		hp_r = v_hp
 	_exp("hb auto-seal 保住 hp", hp_r.size() == 2 and int(hp_r[0]) == 4 and int(hp_r[1]) == 2)
+	# v2：自动封存（调用方不传局面）也必须带上分数 / CD / 封盾
+	_exp("hb auto-seal 保住 score", (rules.get("score", []) as Array) == [2, 3])
+	_exp("hb auto-seal 保住 cooldowns",
+		(rules.get("cooldowns", []) as Array).size() == 2
+		and int(((rules.get("cooldowns", []) as Array)[0] as Dictionary).get(GameRules.Action.JI_QI, -1)) == 2)
+	_exp("hb auto-seal 保住 sealed_round", (rules.get("sealed_round", []) as Array) == [-1, 6])
 	var meta: Dictionary = {}
 	var v_meta: Variant = snap.get("session", {})
 	if typeof(v_meta) == TYPE_DICTIONARY:
@@ -93,6 +191,11 @@ func _check_auto_seal_snapshot() -> void:
 	host.restore_from_snapshot(snap.duplicate(true))
 	_exp("restore 保住 round", host.state.round == 5)
 	_exp("restore 保住 hp", int(host.state.hp[0]) == 4 and int(host.state.hp[1]) == 2)
+	_exp("restore 保住 score", int(host.state.score[0]) == 2 and int(host.state.score[1]) == 3)
+	_exp("restore 保住 cooldowns",
+		int((host.state.cooldowns[0] as Dictionary).get(GameRules.Action.JI_QI, -1)) == 2)
+	_exp("restore 保住 sealed_round",
+		int(host.state.sealed_round[0]) == -1 and int(host.state.sealed_round[1]) == 6)
 	_exp("restore 复位 opening 标记", host._opening_done)
 
 	# 关键：恢复后揭示必须真的结算（旧 bug 会被开局分支直接 return 吞掉）
@@ -255,7 +358,7 @@ func _fsm2_reject() -> void:
 	f.host_peer_id = 1
 	f.local_peer_id = 1
 	var t := 100
-	f.request_seal(t, "test", {"round": 2, "hp": [4, 3], "qi": [1, 1], "shield": [2, 1], "pending": [-1, -1], "phase": 1, "winner": -1}, {})
+	f.request_seal(t, "test", _rules_v2(2, [4, 3], [1, 1], [2, 1], [1, 4]), {})
 	f.on_link_ok(t + 10)
 	f.submit_consent(1, true, t + 20)
 	f.submit_consent(2, false, t + 30)
@@ -270,7 +373,7 @@ func _fsm2_timeout() -> void:
 	f.host_peer_id = 1
 	f.local_peer_id = 1
 	var t := 200
-	f.request_seal(t, "test", {"round": 2, "hp": [4, 3], "qi": [1, 1], "shield": [2, 1], "pending": [-1, -1], "phase": 1, "winner": -1}, {})
+	f.request_seal(t, "test", _rules_v2(2, [4, 3], [1, 1], [2, 1], [1, 4]), {})
 	f.on_link_ok(t + 10)
 	f.submit_consent(1, true, t + 20)
 	# peer 2 一直不点 → 30s 超时
@@ -284,12 +387,30 @@ func _fsm2_timeout() -> void:
 	f2.is_host = true
 	f2.host_peer_id = 1
 	f2.local_peer_id = 1
-	f2.request_seal(300, "test", {"round": 3, "hp": [3, 3], "qi": [0, 0], "shield": [0, 0], "pending": [-1, -1], "phase": 1, "winner": -1}, {})
+	f2.request_seal(300, "test", _rules_v2(3, [3, 3], [0, 0], [0, 0], [3, 3]), {})
 	f2.on_link_ok(310)
 	f2.tick(310 + NetworkSessionFSM.CONSENT_TIMEOUT_MS + 100)
 	_exp("both timeout → Fail draw", f2.state == NetworkSessionFSM.State.FAIL)
 	_exp("draw loser -1", f2.get_fail_loser() == -1)
 	_exp("draw winner 2", f2.winner_on_fail() == 2)
+
+
+## v2 规则段（BattleState.snapshot 同形状）：回合/血/气/盾/pending/phase/winner + 分数/CD/封盾。
+func _rules_v2(
+	round_no: int, hp: Array, qi: Array, shield: Array, score: Array
+) -> Dictionary:
+	return {
+		"round": round_no,
+		"hp": hp.duplicate(),
+		"qi": qi.duplicate(),
+		"shield": shield.duplicate(),
+		"pending": [-1, -1],
+		"phase": GameRules.Phase.SELECTING,
+		"winner": -1,
+		"score": score.duplicate(),
+		"cooldowns": [{}, {}],
+		"sealed_round": [-1, -1],
+	}
 
 
 func _fsm2_peer_lost() -> void:
@@ -454,6 +575,16 @@ func _pump_pair(dt: float) -> void:
 	if _client_pm != null and _client_pm.provider != null:
 		_client_pm.provider.poll(dt)
 		_client_pm._pump_session(dt)
+
+
+## 与 _pump_pair 同语义，但作用于任意一对 PM（T6 快照用例用的是局部 host/client）。
+func _pump_two(a: PeerManager, b: PeerManager, dt: float) -> void:
+	if a != null and a.provider != null:
+		a.provider.poll(dt)
+		a._pump_session(dt)
+	if b != null and b.provider != null:
+		b.provider.poll(dt)
+		b._pump_session(dt)
 
 
 func _exp(name: String, cond: bool) -> void:

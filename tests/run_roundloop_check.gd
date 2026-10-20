@@ -1,6 +1,7 @@
 ## run_roundloop_check.gd
 ## 联机闭环回归：点招 → 双方锁定 → 亮招 → 下一回合按钮回弹（含 rematch 后再开一局）。
 ## 复现：客户端第一回合点一次后 UI 永久灰（state.pending 未在新窗清空）。
+## v2：开局亮相只允许攒气（气 +1）；另含 T6「每小局判分 / 12 分终场 / 小局重开」断言。
 extends SceneTree
 
 var _ok := true
@@ -110,6 +111,13 @@ func _initialize() -> void:
 	_exp("client ui can pick r3", _ui_can_pick(_client_pm, _client_ctrl, 1))
 	_exp("client try_select r3", _client_ctrl.try_select(1, GameRules.Action.ZAN))
 
+	# ---------- T6：每小局判分 / 12 分终场 / 小局重开 ----------
+	_check_settle_v2()
+	_check_net_round_restart()
+	_check_solo_round_restart()
+	_check_forfeit_ends_match()
+	_check_ai_v2()
+
 	# ---------- rematch：强制终局后再来一局 ----------
 	_host_pm.state.winner = 0
 	_client_pm.state.winner = 0
@@ -151,6 +159,248 @@ func _initialize() -> void:
 	_finish()
 
 
+## T6 会话层判分 / 终场（单机、热座、联机房主共用同一份裁决）。
+## 用例 1：score=[11,0] 时本小局 winner=0 → score[0] 收到 12 → 整场 GAME_OVER，winner 保留胜者。
+## 用例 2：score 未到 12 → 小局结束只重开一小局：资源全复位、score 保留、winner 归 -1、仍是回合 1 开局窗。
+## 用例 3：平局（winner=2）双方不得分，同样重开一小局。
+func _check_settle_v2() -> void:
+	var pm := _make_settle_pm(11, 0, [4, 1], [1, 0])
+	pm.reveal_phase()  # 包子×1 vs 攒气（裸防）→ 对手 -1 血 → 本小局 winner=0
+	_exp("终场：score[0] 11→12", int(pm.state.score[0]) == 12 and int(pm.state.score[1]) == 0)
+	_exp("终场：Session.GAME_OVER", pm.get_session() == PeerManager.Session.GAME_OVER)
+	_exp("终场：winner 保留为胜者", int(pm.state.winner) == 0)
+	_exp("终场：不再重开小局（回合/血保持终局态）",
+		int(pm.state.round) == 3 and int(pm.state.hp[1]) == 0)
+	pm.leave()
+
+	var pm2 := _make_settle_pm(3, 5, [4, 1], [1, 0])
+	pm2.reveal_phase()
+	_exp("小局结束：score[0] 3→4 且保留对手分", int(pm2.state.score[0]) == 4 and int(pm2.state.score[1]) == 5)
+	_exp("小局结束：未终场仍 IN_BATTLE", pm2.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("小局结束：未到 12 分", not PeerManager.is_match_over(pm2.state))
+	_exp("小局重开：round 回 1", int(pm2.state.round) == GameRules.OPENING_ROUND)
+	_exp("小局重开：hp 复位 4/4",
+		int(pm2.state.hp[0]) == GameRules.MAX_HP and int(pm2.state.hp[1]) == GameRules.MAX_HP)
+	_exp("小局重开：气归 0", int(pm2.state.qi[0]) == 0 and int(pm2.state.qi[1]) == 0)
+	_exp("小局重开：盾回 3/3",
+		int(pm2.state.shield[0]) == GameRules.MAX_SHIELD
+		and int(pm2.state.shield[1]) == GameRules.MAX_SHIELD)
+	_exp("小局重开：pending 清空", int(pm2.state.pending[0]) < 0 and int(pm2.state.pending[1]) < 0)
+	_exp("小局重开：CD 清空",
+		(pm2.state.cooldowns[0] as Dictionary).is_empty()
+		and (pm2.state.cooldowns[1] as Dictionary).is_empty())
+	_exp("小局重开：封盾清空",
+		int(pm2.state.sealed_round[0]) == -1 and int(pm2.state.sealed_round[1]) == -1)
+	_exp("小局重开：winner 归 -1（不再 is_over）", not pm2.state.is_over())
+	# 表现停留的等价物：小局重开必须进回合 1 开局亮相窗，而不是把回合号 +1
+	pm2.debug_advance_round()
+	_exp("小局重开：回到回合1开局窗",
+		int(pm2.state.round) == GameRules.OPENING_ROUND and not pm2._opening_done
+		and pm2.state.phase == GameRules.Phase.SELECTING)
+	_exp("小局重开：score 未被清", int(pm2.state.score[0]) == 4 and int(pm2.state.score[1]) == 5)
+	pm2.leave()
+
+	# 用例 3：双终极技同归于尽 → winner=2 → 双方不得分，照样重开一小局
+	var pm3 := _make_settle_pm(8, 8, [1, 1], [5, 5])
+	pm3.state.pending = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm3._pending_actions = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm3.reveal_phase()
+	_exp("平局：双方不得分", int(pm3.state.score[0]) == 8 and int(pm3.state.score[1]) == 8)
+	_exp("平局：同样重开一小局",
+		int(pm3.state.round) == GameRules.OPENING_ROUND and not pm3.state.is_over())
+	_exp("平局：资源复位（血 4 / 气 0）",
+		int(pm3.state.hp[0]) == GameRules.MAX_HP and int(pm3.state.qi[0]) == 0)
+	pm3.leave()
+
+
+## 联机双端「小局结束 → 重开一小局」：房主 round_result 里的快照即新小局初值
+## （round=1 / 血4 / 盾3 / 气0），随后广播回合 1 开局窗；客户端必须能继续点「攒」。
+## 回归点：重开后 round 复位成 1，若把 1 写进信封，客户端会按「旧包」丢弃整条结算 → 双端分叉。
+func _check_net_round_restart() -> void:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var hpm := PeerManager.new()
+	root.add_child(hpm)
+	hpm.install_provider(hp, PeerManager.Mode.ENET)
+	var cpm := PeerManager.new()
+	root.add_child(cpm)
+	cpm.install_provider(cp, PeerManager.Mode.ENET)
+	hp.open_as_host({})
+	cp.open_as_client({})
+	hpm._sync_fsm_identity()
+	cpm._sync_fsm_identity()
+	hpm._set_session(PeerManager.Session.IN_BATTLE)
+	cpm._set_session(PeerManager.Session.IN_BATTLE)
+	hpm.start_battle()
+	_pump_two(hpm, cpm)
+
+	# 表现层也要一起验：重开小局后双方选招窗必须重新打开（否则按钮永久灰）
+	var hctrl := NetworkedBattleController.new()
+	root.add_child(hctrl)
+	hctrl.attach(hpm)
+	hctrl.begin()
+	var cctrl := NetworkedBattleController.new()
+	root.add_child(cctrl)
+	cctrl.attach(cpm)
+	cctrl.begin()
+	_pump_two(hpm, cpm)
+
+	# 开局：双方点「攒」→ 亮相（房主先泵一次才能收到客户端的锁招包）
+	hpm.submit_action(GameRules.Action.ZAN, 0)
+	cpm.submit_action(GameRules.Action.ZAN, 1)
+	_pump_two(hpm, cpm)
+	hpm.reveal_phase()
+	_pump_two(hpm, cpm)
+	_exp("联机小局：开局亮相完成", hpm._opening_done and cpm._opening_done)
+	_exp("联机小局：双方气 1", int(hpm.state.qi[0]) == 1 and int(cpm.state.qi[1]) == 1)
+
+	# 造「本小局即将结束」：对手 1 血；包子×1 vs 攒气（裸防）→ 命中 → 本小局 winner=0
+	hpm._opening_done = true
+	cpm._opening_done = true
+	hpm.state.round = 3
+	cpm.state.round = 3
+	hpm.state.hp = [4, 1]
+	hpm.state.qi = [1, 0]
+	hpm.state.score = [3, 5]
+	hpm.state.pending = [GameRules.Action.BAO1, GameRules.Action.ZAN]
+	hpm._pending_actions = [GameRules.Action.BAO1, GameRules.Action.ZAN]
+	hpm._locks = [true, true]
+	hpm.reveal_phase()
+	_pump_two(hpm, cpm)
+	_exp("联机小局：房主判分 3→4", int(hpm.state.score[0]) == 4 and int(hpm.state.score[1]) == 5)
+	_exp("联机小局：客户端同步到分数", int(cpm.state.score[0]) == 4 and int(cpm.state.score[1]) == 5)
+	_exp("联机小局：房主未终场仍 IN_BATTLE", hpm.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("联机小局：客户端未终场仍 IN_BATTLE", cpm.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("联机小局：客户端资源随快照复位",
+		int(cpm.state.hp[0]) == GameRules.MAX_HP and int(cpm.state.hp[1]) == GameRules.MAX_HP
+		and int(cpm.state.qi[1]) == 0 and int(cpm.state.shield[1]) == GameRules.MAX_SHIELD)
+	_exp("联机小局：客户端 winner 归 -1（不再 is_over）", not cpm.state.is_over())
+
+	# 等价于结算停留后自动进新小局开局窗（headless 无计时器，手动推一把）
+	hpm.debug_advance_round()
+	_pump_two(hpm, cpm)
+	_exp("联机小局重开：双端回回合 1",
+		int(hpm.state.round) == GameRules.OPENING_ROUND and int(cpm.state.round) == GameRules.OPENING_ROUND)
+	_exp("联机小局重开：双端回到点攒阶段",
+		not hpm._opening_done and not cpm._opening_done
+		and cpm.state.phase == GameRules.Phase.SELECTING)
+	_exp("联机小局重开：score 双端保留", int(cpm.state.score[0]) == 4 and int(cpm.state.score[1]) == 5)
+	_exp("联机小局重开：双端选招窗重新打开", hctrl._window_open and cctrl._window_open)
+	_exp("联机小局重开：客户端选招闸放开（不会永久灰）", cctrl.is_pick_open() and hctrl.is_pick_open())
+	_exp("联机小局重开：客户端还能点「攒」",
+		cctrl.try_select(1, GameRules.Action.ZAN) and int(cpm.state.pending[1]) == GameRules.Action.ZAN)
+	# 走完新小局的开局亮相：双方再点攒 → 气重新 1
+	_exp("联机小局重开：房主能点「攒」", hctrl.try_select(0, GameRules.Action.ZAN))
+	_pump_two(hpm, cpm)
+	hpm.reveal_phase()
+	_pump_two(hpm, cpm)
+	_exp("联机小局重开：新小局亮相成功", hpm._opening_done and int(cpm.state.qi[1]) == 1)
+	hpm.leave()
+	cpm.leave()
+
+
+## 单机路径：BattleController._start_opening(true) 也必须走同一份会话层复位（保留 score）。
+func _check_solo_round_restart() -> void:
+	var solo := BattleController.new()
+	root.add_child(solo)
+	solo.state.score = [4, 5]
+	solo.state.round = 6
+	solo.state.hp = [4, 1]
+	solo.state.qi = [3, 2]
+	solo.state.cooldowns = [{GameRules.Action.JI_QI: 2}, {}]
+	solo.state.sealed_round = [-1, 6]
+	solo.state.winner = 0
+	solo._opening_done = true
+	solo._start_opening(true)
+	_exp("单机小局重开：score 保留", int(solo.state.score[0]) == 4 and int(solo.state.score[1]) == 5)
+	_exp("单机小局重开：资源复位（血4/盾3/气0/winner -1）",
+		int(solo.state.hp[0]) == GameRules.MAX_HP and int(solo.state.hp[1]) == GameRules.MAX_HP
+		and int(solo.state.shield[0]) == GameRules.MAX_SHIELD and int(solo.state.qi[0]) == 0
+		and not solo.state.is_over())
+	_exp("单机小局重开：CD / 封盾 / pending 清空",
+		(solo.state.cooldowns[0] as Dictionary).is_empty() and int(solo.state.sealed_round[1]) == -1
+		and int(solo.state.pending[0]) < 0)
+	_exp("单机小局重开：回回合 1 亮相流程",
+		int(solo.state.round) == GameRules.OPENING_ROUND and not solo._opening_done)
+	solo.free()
+
+
+## AiOpponent v2 契约：返回的招必须满足 state.can_use_action（解锁分/耗气/盾/封盾/CD 全由规则层裁决）；
+## 开局回合只攒气；低气偏攒气；候选只从攒气/包子×1/防御这一小撮可用集里挑。
+func _check_ai_v2() -> void:
+	var bad := 0
+	var seen := {}
+	for sc: int in [0, 3, 8, 12]:
+		for qi: int in [0, 1, 3]:
+			for sh: int in [0, 3]:
+				for sealed: bool in [false, true]:
+					var s := BattleState.new()
+					s.round = 5
+					s.score = [sc, sc]
+					s.qi = [qi, qi]
+					s.shield = [sh, sh]
+					s.sealed_round = [5, 5] if sealed else [-1, -1]
+					for i in 8:
+						var a: int = AiOpponent.choose(s, 1)
+						seen[a] = true
+						if not s.can_use_action(1, a):
+							bad += 1
+	_exp("AI v2：返回的招全部可用（can_use_action）", bad == 0)
+	_exp("AI v2：开局回合只会攒气",
+		AiOpponent.choose(BattleState.new(), 1) == GameRules.Action.ZAN)
+	var only_basic := true
+	for k in seen.keys():
+		if k != GameRules.Action.ZAN and k != GameRules.Action.BAO1 and k != GameRules.Action.FANG:
+			only_basic = false
+	_exp("AI v2：只从 攒气/包子×1/防御 里挑", only_basic)
+	var low := BattleState.new()
+	low.round = 5
+	low.qi = [0, 0]
+	low.shield = [0, 0]
+	var zan_cnt := 0
+	for i in 20:
+		if AiOpponent.choose(low, 1) == GameRules.Action.ZAN:
+			zan_cnt += 1
+	_exp("AI v2：低气偏攒气", zan_cnt >= 16)
+
+
+## 网络判负（forfeit / 拒绝继续 / 同意超时）是**整场**结束，不能当小局处理：
+## 不加分、不重开小局、score 原样，winner 由判负写死（_on_fsm_failed，与结算判分是两条路）。
+func _check_forfeit_ends_match() -> void:
+	var pm := _make_settle_pm(4, 5, [4, 4], [0, 0])
+	pm._wire_fsm()
+	pm._sync_fsm_identity()
+	pm._set_session(PeerManager.Session.IN_BATTLE)
+	# 对端 peer 2 判负 → 房主胜（winner=0）
+	pm.fsm.force_fail(2, "consent_reject")
+	_exp("判负：整场结束（winner=0 / GAME_OVER）",
+		int(pm.state.winner) == 0 and pm.get_session() == PeerManager.Session.GAME_OVER)
+	_exp("判负：不加分（score 原样 4:5）", int(pm.state.score[0]) == 4 and int(pm.state.score[1]) == 5)
+	_exp("判负：不重开小局（round 保持、无重开标记）",
+		int(pm.state.round) == 3 and not pm._round_restart_pending)
+	pm.leave()
+
+
+## 造一个「房主权威」PM：回合 3 选招阶段、双方已锁招，可直接 reveal_phase() 结算。
+## 热座（Mode.HOTSEAT，无 provider）与联机房主走的是同一条 _do_host_reveal 路径。
+func _make_settle_pm(s0: int, s1: int, hp: Array, qi: Array) -> PeerManager:
+	var pm := PeerManager.new()
+	root.add_child(pm)
+	pm._set_session(PeerManager.Session.IN_BATTLE)
+	pm._opening_done = true
+	pm.state.round = 3
+	pm.state.phase = GameRules.Phase.SELECTING
+	pm.state.hp = [int(hp[0]), int(hp[1])]
+	pm.state.qi = [int(qi[0]), int(qi[1])]
+	pm.state.shield = [GameRules.MAX_SHIELD, GameRules.MAX_SHIELD]
+	pm.state.score = [s0, s1]
+	pm.state.pending = [GameRules.Action.BAO1, GameRules.Action.ZAN]
+	pm._pending_actions = [GameRules.Action.BAO1, GameRules.Action.ZAN]
+	pm._locks = [true, true]
+	return pm
+
+
 func _ui_can_pick(pm: PeerManager, ctrl: NetworkedBattleController, seat: int) -> bool:
 	# 与 net_battle_ui._refresh_all 同判据
 	var s: BattleState = ctrl.state
@@ -173,6 +423,16 @@ func _pump() -> void:
 	if _client_pm != null and _client_pm.provider != null:
 		_client_pm.provider.poll(0.0)
 		_client_pm._pump_session(0.0)
+
+
+## 与 _pump 同语义，但作用于任意一对 PM（T6 用例用的是局部 host/client 对）。
+func _pump_two(a: PeerManager, b: PeerManager) -> void:
+	if a != null and a.provider != null:
+		a.provider.poll(0.0)
+		a._pump_session(0.0)
+	if b != null and b.provider != null:
+		b.provider.poll(0.0)
+		b._pump_session(0.0)
 
 
 func _exp(n: String, c: bool) -> void:

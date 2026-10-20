@@ -72,6 +72,9 @@ var _grace_left: float = 0.0
 var _opening_done: bool = false
 ## 开局亮相是否已结算（防 resolve_opening 重复加资源）
 var _opening_applied: bool = false
+## 本小局刚结束、整场未到 12 分 → 等表现停留后重开一小局（回合 1 开局亮相）。
+## 置位后由 _do_opening() 清除；debug_advance_round() 也据此走「重开小局」而不是「回合 +1」。
+var _round_restart_pending: bool = false
 ## 本回合是否因超时自动出招（UI 角标「超时」）
 var _timeout_flags: Array = [false, false]
 var _last_commit_id: String = ""
@@ -275,6 +278,7 @@ func leave() -> void:
 
 
 ## 清空血/气/盾/回合/胜负，避免下一局继承上一局（0 血满气开局等）。
+## 整场（再来一局）复位：score 也归零。
 func _reset_rules_state() -> void:
 	state = BattleState.new()
 	_pending_actions = [-1, -1]
@@ -283,6 +287,7 @@ func _reset_rules_state() -> void:
 	_opening_done = false
 	_opening_applied = false
 	_timeout_flags = [false, false]
+	_round_restart_pending = false
 
 
 ## 对方离开/掉线：本地改由人机接管，对局继续（不再走封存判负）。
@@ -606,12 +611,14 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 	if sess_meta.has("opening_done"):
 		_opening_done = bool(sess_meta["opening_done"])
 		_opening_applied = _opening_done
-	if state.is_over():
+	# 整场结束判据：小局 winner 已定 或 任一方 score 到 12（max(score) >= WIN_SCORE）
+	var match_over_now: bool = state.is_over() or is_match_over(state)
+	if match_over_now:
 		_set_session(Session.GAME_OVER)
 	else:
 		_set_session(Session.IN_BATTLE)
 	# 恢复后必须重开选招窗，否则按钮永久灰
-	if is_session_snap and not state.is_over():
+	if is_session_snap and not match_over_now:
 		if is_host() or _mode == Mode.HOTSEAT or ai_takeover:
 			round_begun.emit(state.round)
 			if is_host():
@@ -1087,20 +1094,54 @@ func _do_host_reveal() -> void:
 	# 原子揭示：一次广播双方招式
 	_broadcast(_envelope("actions_revealed", state.round, {"actions": [a0, a1]}))
 
+	# 本回合号必须在结算/复位前定格：小局结束会把 round 复位成 1，
+	# 若信封里带 1 而客户端还在第 N 回合，整包会被当「旧包」丢弃。
+	var env_round: int = state.round
 	var result: GameRules.RoundResult = GameResolve.resolve_turn(state, a0, a1)
 	var res_dict := _result_to_dict(result)
+	# ── T6 小局判分 / 终场（会话层唯一裁决；单机/热座/联机同款）─────────────
+	# 先判分、再（若小局未终场）复位：随包的 snapshot 即新小局初值，对端不必自己算分。
+	var settled := _settle_match_after_round()
+	res_dict["round_end"] = bool(settled["round_end"])
+	res_dict["match_over"] = bool(settled["match_over"])
+	res_dict["score"] = state.score.duplicate()
 	var snap := state.snapshot()
-	_broadcast(_envelope("round_result", state.round, {
+	_broadcast(_envelope("round_result", env_round, {
 		"actions": [a0, a1],
 		"result": res_dict,
 		"snapshot": snap,
+		"round_end": bool(settled["round_end"]),
+		"match_over": bool(settled["match_over"]),
+		"score": state.score.duplicate(),
 	}))
 	_actions_revealed_emit([a0, a1], res_dict)
-	if state.is_over():
+	if bool(settled["match_over"]):
 		_set_session(Session.GAME_OVER)
+	elif bool(settled["round_end"]):
+		# 小局结束但整场未到 12 分 → 结算停留后回到回合 1 开局亮相
+		_schedule_round_restart()
 	else:
 		# 稍后由上层/下一轮推进
 		_schedule_next_round()
+
+
+## 房主/热座侧：一小局结算完成后的会话层裁决（判分 → 终场 / 重开一小局）。
+## 判分内核是 settle_round_after_resolve()（与单机 BattleController 共用同一份）。
+## 返回 {"round_end","match_over","winner","score","scored"}。
+func _settle_match_after_round() -> Dictionary:
+	var info := settle_round_after_resolve(state)
+	if bool(info["round_end"]) and not bool(info["match_over"]):
+		# 本小局结束、整场未到 12 分 → 重开一小局：资源复位、保留 score、winner 归 -1
+		reset_round_keep_score(state)
+		_pending_actions = [-1, -1]
+		_locks = [false, false]
+		_revealing = false
+		_timeout_flags = [false, false]
+		_grace_left = 0.0
+		_opening_done = false
+		_opening_applied = false
+		_round_restart_pending = true
+	return info
 
 
 func _default_action(who: int) -> int:
@@ -1124,10 +1165,25 @@ func _schedule_next_round() -> void:
 		_begin_next_round()
 
 
+## 小局结束（分数未到 12）后重开一小局：结算停留 0.8s → 回合 1 开局亮相。
+## 资源与 score 的复位已在 _settle_match_after_round() 做完，这里只负责进开局窗。
+func _schedule_round_restart() -> void:
+	if not is_inside_tree() or get_tree() == null:
+		return
+	await get_tree().create_timer(0.8).timeout
+	if _session == Session.IN_BATTLE and _round_restart_pending:
+		_do_opening()
+
+
 ## 测试钩子：跳过表现延迟，立即进入下一回合选招。
+## 小局刚结束（分数未到 12）时改为进入「重开一小局」的开局窗，而不是把回合号 +1。
 func debug_advance_round() -> void:
-	if _session == Session.IN_BATTLE and not state.is_over():
-		_begin_next_round()
+	if _session != Session.IN_BATTLE or state.is_over():
+		return
+	if _round_restart_pending:
+		_do_opening()
+		return
+	_begin_next_round()
 
 
 func _begin_next_round() -> void:
@@ -1159,6 +1215,9 @@ func _begin_remote_round(round_no: int) -> void:
 
 func _do_opening() -> void:
 	# 产品：开局不再强制结算，改为双方点「攒」确认后再亮相
+	# 整场首局与「小局重开」共用本流程：小局的资源/score 复位由
+	# _reset_rules_state()（整场）或 _settle_match_after_round()（小局）负责。
+	_round_restart_pending = false
 	_opening_done = false
 	_opening_applied = false
 	state.round = GameRules.OPENING_ROUND
@@ -1369,6 +1428,9 @@ func _on_fsm_failed(loser_peer: int, reason: String) -> void:
 	var w := fsm.winner_on_fail()
 	state.winner = w
 	state.phase = GameRules.Phase.GAME_OVER
+	# 网络判负（拒绝继续 / 同意超时 / 封存链路超时 / 快照校验失败）＝**整场**结束：
+	# 不判小局、不加分、不重开小局（与 GameResolve 的小局胜负是两条路）。
+	_round_restart_pending = false
 
 
 # ---------- 信封 ----------
@@ -1420,3 +1482,75 @@ func _result_to_dict(r: GameRules.RoundResult) -> Dictionary:
 		"text": r.text,
 		"timeout": _timeout_flags.duplicate(),
 	}
+
+
+# ═════════════════════════ T6 小局判分 / 终场 ═════════════════════════
+#
+# v2 规则（docs/rules/game-rules-v2.md §1 + 契约 §4）：
+#   · 每赢一小局 +1 分（GameResolve 把本小局胜者写进 state.winner：0/1 胜，2 平）；
+#   · 先到 12 分（GameRules.WIN_SCORE）获胜 → 整场结束；
+#   · 未到 12 分 → 重开一小局：资源全复位、**保留 score**、沿用回合 1 开局亮相；
+#   · 平局（winner=2）双方不得分，同样重开一小局；
+#   · 网络判负（forfeit / consent 超时 / 校验失败）是**整场**结束，不走本判分（见 _on_fsm_failed）。
+#
+# 下面三个 static 是会话层对「小局 / 整场」的唯一裁决口径：
+# 单机 BattleController、热座与联机房主 PeerManager、表现层 NetworkedBattleController 共用同一份，
+# 不要在别处再写一遍 score 累加 / 12 分判定 / 复位字段表。
+
+## 一小局结束后的判分：winner∈{0,1} → score[winner] += 1；winner==2（平局）不得分。
+## 返回 {"round_end", "match_over", "winner", "score", "scored"}；小局未分胜负时 round_end=false。
+## 注意「整场是否结束」的判据是 max(score) >= WIN_SCORE，而不是 state.is_over()（后者只说明小局结束）。
+static func settle_round_after_resolve(state: BattleState) -> Dictionary:
+	var info := {
+		"round_end": false,
+		"match_over": false,
+		"winner": -1,
+		"score": [0, 0],
+		"scored": false,
+	}
+	if state == null:
+		return info
+	info["score"] = [int(state.score[0]), int(state.score[1])]
+	if not state.is_over():
+		return info
+	var w: int = int(state.winner)
+	info["winner"] = w
+	info["round_end"] = true
+	if w == 0 or w == 1:
+		state.score[w] = int(state.score[w]) + 1
+		info["scored"] = true
+	info["score"] = [int(state.score[0]), int(state.score[1])]
+	info["match_over"] = maxi(int(state.score[0]), int(state.score[1])) >= GameRules.WIN_SCORE
+	return info
+
+
+## 整场是否已结束：任一方分数达到 WIN_SCORE（12）。这是「整场结束」的唯一判据。
+static func is_match_over(state: BattleState) -> bool:
+	if state == null:
+		return false
+	return maxi(int(state.score[0]), int(state.score[1])) >= GameRules.WIN_SCORE
+
+
+## 重开一小局：局部资源复位、**保留 score**；winner 归 -1（否则 is_over() 恒真 → 整局卡死）。
+## 复位字段与 v2 契约一致：round=1 / hp=[4,4] / qi=[0,0] / shield=[3,3] /
+## pending=[-1,-1] / cooldowns=[{},{}] / sealed_round=[-1,-1]。
+## 开局亮相（回合 1 点「攒」）由调用方接：PeerManager._do_opening() / BattleController._start_opening(true)。
+## 就地改字段而**不换对象**：UI / 对端快照都持有同一个 BattleState 引用。
+static func reset_round_keep_score(state: BattleState) -> void:
+	if state == null:
+		return
+	var keep_score: Array = [0, 0]
+	if state.score.size() >= 2:
+		keep_score = [int(state.score[0]), int(state.score[1])]
+	state.restore({
+		"round": GameRules.OPENING_ROUND,
+		"hp": [GameRules.MAX_HP, GameRules.MAX_HP],
+		"qi": [0, 0],
+		"shield": [GameRules.MAX_SHIELD, GameRules.MAX_SHIELD],
+		"pending": [-1, -1],
+		"phase": GameRules.Phase.SELECTING,
+		"winner": -1,
+		"score": keep_score,
+		"cooldowns": [{}, {}],
+		"sealed_round": [-1, -1],
+	})

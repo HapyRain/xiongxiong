@@ -39,8 +39,15 @@ func is_pick_open() -> bool:
 	return true
 
 
-func _start_opening() -> void:
-	state = BattleState.new()
+## 开局流程。keep_score=true 表示「小局重开」：资源复位但保留 score，
+## 沿用回合 1 的「亮相 + 点攒」流程（v2 §1：每小局开局 血4/盾3/气0，技能 CD 每局重置）。
+func _start_opening(keep_score: bool = false) -> void:
+	if keep_score:
+		# 复位字段表由会话层统一给出，避免与热座/联机路径分叉
+		PeerManager.reset_round_keep_score(state)
+	else:
+		# 整场（含再来一局）首次开局：score 归零
+		state = BattleState.new()
 	_opening_done = false
 	state.round = GameRules.OPENING_ROUND
 	state.phase = GameRules.Phase.SELECTING
@@ -155,13 +162,20 @@ func _resolve_locked() -> void:
 	state.phase = GameRules.Phase.RESOLVING
 	phase_changed.emit(state.phase, state.round)
 	var r := GameResolve.resolve_turn(state, state.pending[0], state.pending[1])
+	# ── T6 小局判分 / 终场：与热座/联机路径共用同一份会话层裁决 ──
+	# winner∈{0,1} → score+1；score 到 12 → 整场结束；否则重开一小局（保留 score）。
+	var settled := PeerManager.settle_round_after_resolve(state)
 	state.phase = GameRules.Phase.PRESENTING
 	phase_changed.emit(state.phase, state.round)
 	round_resolved.emit(r)
-	if state.is_over():
+	if bool(settled["match_over"]):
 		_emit_over()
 		return
 	await get_tree().create_timer(0.8).timeout
+	if bool(settled["round_end"]):
+		# 小局结束但整场未结束 → 重开一小局（资源复位、score 保留、回合 1 亮相）
+		_start_opening(true)
+		return
 	_start_selecting(state.round + 1)
 
 

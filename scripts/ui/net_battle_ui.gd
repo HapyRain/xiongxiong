@@ -274,15 +274,15 @@ func _make_action_row(who: int, btns: Dictionary) -> HBoxContainer:
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	var styles := {
 		GameRules.Action.ZAN: UiTheme.ACCENT,
-		GameRules.Action.BO: UiTheme.WAVE,
+		GameRules.Action.BAO1: UiTheme.WAVE,
 		GameRules.Action.FANG: UiTheme.SHIELD,
 	}
 	var names := {
 		GameRules.Action.ZAN: "攒",
-		GameRules.Action.BO: "波",
+		GameRules.Action.BAO1: "包子",
 		GameRules.Action.FANG: "防",
 	}
-	for a in [GameRules.Action.ZAN, GameRules.Action.BO, GameRules.Action.FANG]:
+	for a in [GameRules.Action.ZAN, GameRules.Action.BAO1, GameRules.Action.FANG]:
 		var b := Button.new()
 		b.text = names[a]
 		b.custom_minimum_size = Vector2(96, 72)
@@ -302,7 +302,7 @@ func _make_action_row(who: int, btns: Dictionary) -> HBoxContainer:
 		var kind := "default"
 		if a == GameRules.Action.ZAN:
 			kind = "zan"
-		elif a == GameRules.Action.BO:
+		elif a == GameRules.Action.BAO1:
 			kind = "bo"
 		else:
 			kind = "fang"

@@ -3,8 +3,8 @@
 给「换了台机器 / 另一个工作区 / 新会话」用：clone 仓库后照着补齐，再按 `SESSION-HANDOFF.md` 做需求。
 
 > 2026-10-17 实况（本机 Windows 11 / 用户 `Hollis` / 仓库 `E:\github\xiongxiong`）：
-> Godot 4.7.2 已装、`.godot` 已导入、**7 个 headless 自检全绿（241 断言）**、**Android 导出链已装好并打出 APK**（v2+v3 签名）。
-> 代码状态：`main` 头部 `c106e21`（封存/权威/网络判定修复 + 自检补齐）；工作区仍有未提交的环境修复批次。
+> Godot 4.7.2 已装、`.godot` 已导入、**7 个 headless 自检全绿（389 断言）**、**Android 导出链已装好并打出 APK**（v2+v3 签名）。
+> 代码状态：v2 规则已落地（`docs/rules/game-rules-v2.md`：12 分制/11 技能/对撞矩阵，双镜像 `tests/test_rules_v2.py`）；工作区仍有未提交的环境修复批次。
 
 ---
 
@@ -13,7 +13,7 @@
 | 内容 | 说明 |
 |---|---|
 | Godot 4.7 工程源码 | `project.godot`、`scripts/`、`scenes/` |
-| 测试 | `tests/` 下 **7 个** `run_*_check.gd`（当前 241 条断言）+ `tests/test_rules_v0.py`（规则镜像，14 条） |
+| 测试 | `tests/` 下 **7 个** `run_*_check.gd`（当前 389 条断言）+ `tests/test_rules_v2.py`（规则镜像，103 条） |
 | 导出配置 | `export_presets.cfg`（竖版、包名） |
 | 构建脚本 | `build/export_android.ps1`、`build/dl_font.py`、`build/fix_spot.py`、`tests/gen_sfx.py`（路径均按脚本位置推导，可移植） |
 | 资源 | 已含 Noto CJK 字体（16MB）与 5 个 wav，**无需重新下载** |
@@ -33,7 +33,7 @@
 | Android SDK | ✅ 已装 `E:\github\tools\android-sdk\`（cmdline-tools latest + platform-tools 37.0.1 + build-tools 36.0.0 + platforms android-36） | 同上 | 已写入编辑器设置 `export/android/android_sdk_path`；包管理用 `android.exe --sdk=... sdk install <pkg>`（新版 CLI 取代 sdkmanager） |
 | debug keystore | ✅ 已生成 `%APPDATA%\Godot\keystores\debug.keystore`（alias `androiddebugkey`） | 无法 debug 签名 | 删了重跑 `build\setup_android_env.ps1` 会重建 |
 | adb | ✅ SDK 自带 `E:\github\tools\android-sdk\platform-tools\adb.exe`（另 MuMu 也带一份） | 装不了机 | 插手机后 `adb devices -l` |
-| **文档镜像 `docs/`** | 旧机 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` —— **过程文件，未随仓库迁移，本机没有** | 看不到冻结规则全文/架构稿 | 不阻塞开发；规则以 `scripts/rules/*` + `tests/test_rules_v0.py` 双镜像为准 |
+| **文档镜像 `docs/`** | 旧机 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` —— **过程文件，未随仓库迁移，本机没有** | 看不到冻结规则全文/架构稿 | 不阻塞开发；规则权威 = `docs/rules/game-rules-v2.md`，可执行权威 = `scripts/rules/*` + `tests/test_rules_v2.py` 双镜像 |
 | 字体资源 | ✅ 已在仓库（`assets/fonts/NotoSansSC-Regular.otf`） | — | 不必跑 `dl_font.py` |
 
 > 旧机的 `D:\xiongxiong\xiongxiong`、`C:\Users\pc\...`、`XiaomiMiProjects` / `XiaomiMiMoProjects` 在本机都不存在。文档里出现的这些路径按本表换算。
@@ -58,7 +58,7 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 }
 ```
 
-3. 规则镜像：`$env:PYTHONIOENCODING='utf-8'; python tests/test_rules_v0.py`（14 条 `ALL PASS` / exit 0）。
+3. 规则镜像：`$env:PYTHONIOENCODING='utf-8'; python tests/test_rules_v2.py`（103 条 `ALL PASS` / exit 0）。
 4. 打 APK（环境已就绪，直接跑）：
 
 ```powershell
@@ -77,8 +77,8 @@ adb install -r build\xiongxiong-debug.apk
 ## 日常开发循环
 
 1. 改代码（`scripts/`、`scenes/`；结算语义在 `scripts/rules/*`，别口头改）。
-2. 跑回归：上方 7 个 `run_*_check`（全部 `ALL PASS` / exit 0，当前 241 条断言）。
-3. 改过 `resolve.gd` 就同步 `tests/test_rules_v0.py` 并跑一遍。
+2. 跑回归：上方 7 个 `run_*_check`（全部 `ALL PASS` / exit 0，当前 389 条断言）。
+3. 改过 `resolve.gd` 就同步 `tests/test_rules_v2.py` 并跑一遍。
 4. 新增 `class_name` 后：`& $g --headless --path . --import`，否则报「标识符未声明」。
 5. F5 真窗口 / 真机看布局、字体、特效（headless 测不出来）。
 6. 要装机就 `.\build\export_android.ps1` → `adb install -r build\xiongxiong-debug.apk`。
@@ -111,5 +111,5 @@ git push origin main
 
 - headless 测不出布局/字体/聚光灯/真机观感 → 用 F5 或真机看。
 - 联机/搜房/节奏数字：以 `scripts/session/battle_tempo.gd` 与本仓库 `SESSION-HANDOFF.md` 为准。
-- 结算语义只认 `scripts/rules/*` 与 `tests/test_rules_v0.py` 双镜像（冻结稿属旧机过程文件）。
+- 结算语义只认 `scripts/rules/*` 与 `tests/test_rules_v2.py` 双镜像（权威文档 `docs/rules/game-rules-v2.md`）。
 - 文案：只用「我 / 对手」，规则出处写「致敬童年」。

@@ -328,9 +328,15 @@ func _on_actions_revealed(actions: Array, results: Dictionary) -> void:
 	s.phase = GameRules.Phase.RESOLVING
 	phase_changed.emit(s.phase, s.round)
 	round_resolved.emit(results)
-	if s.is_over():
+	# 整场结束判据：小局 winner 已定（房主终场时保留胜者）或任一方分数已到 12。
+	# 小局结束但未到 12 分时 winner 已被房主复位成 -1 → 不算终场，等房主重开小局的回合 1 窗。
+	if s.is_over() or PeerManager.is_match_over(s):
 		_emit_over()
 		return
+	if bool(results.get("round_end", false)):
+		status_text.emit(
+			"本小局结束 · 比分 %d : %d" % [int(s.score[0]), int(s.score[1])]
+		)
 	s.phase = GameRules.Phase.PRESENTING
 	phase_changed.emit(s.phase, s.round)
 
