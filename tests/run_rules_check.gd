@@ -1,6 +1,6 @@
 ## run_rules_check.gd
 ## Godot 无头规则层自检 —— v2 结算镜像。
-## 权威：docs/rules/game-rules-v2.md §1–§9 + 契约 §2（逐条裁决）。
+## 权威：docs/rules/game-rules-v2.md §1–§9（逐条裁决）。
 ## 与 tests/test_rules_v2.py 是「同一套 103 条断言、两份独立实现」：
 ##   Python 侧不 import / 不调用 Godot，本文件直接跑 GameRules / BattleState / GameResolve。
 ## 改 scripts/rules/**.gd 的结算语义必须同步改 Python 侧（AGENTS 硬约束 2）。
@@ -604,11 +604,7 @@ func _init() -> void:
 	ok = _exp(ok, "[强断言] available_actions：0 分回合 2 → 仅 5 个基础动作",
 		avail == [ZAN, BAO1, BAO2, BAO3, FANG])
 
-	print("=".repeat(52))
-	if not ok:
-		for n in _failed:
-			print("  FAILED: ", n)
-	# ── ⑳ 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（契约 D_bare）
+	# ── ⑳ 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（game-rules-v2.md §2 注）
 	s = _mk([4, 4], [5, 5], [0, 3])
 	GameResolve.resolve_turn(s, FANG, BAO1)
 	ok = _exp(ok, "[裸防兜底] 0 盾出防御 vs 1连包：防御不生效 → 掉 1 血",
@@ -624,6 +620,64 @@ func _init() -> void:
 	ok = _exp(ok, "[裸防兜底] 0 盾出防御 vs 终极技：掉 2 血",
 		_chk(s, [2, 4], [5, 0], [0, 3]))
 
+	# ── ㉑ 判分 / 终场 / 平局保底（battle_state.gd 判分口径）────────────
+	s = _mk([4, 4], [10, 10], [3, 3], 2)
+	s.score = [3, 5]
+	s.winner = 0
+	var info: Dictionary = s.settle_round_after_resolve()
+	ok = _exp(ok, "[判分] 胜者 +1 分（3→4），未到 12 不终场",
+		info["score"] == [4, 5] and bool(info["scored"]) and bool(info["round_end"])
+		and not bool(info["match_over"]) and int(info["match_winner"]) == -1)
+
+	s = _mk([4, 4], [10, 10], [3, 3], 2)
+	s.score = [3, 5]
+	s.draw_count = 0
+	s.winner = 2
+	s.settle_round_after_resolve()
+	ok = _exp(ok, "[平局保底] 第 1 次平局不得分（draw_count=1）",
+		s.score == [3, 5] and s.draw_count == 1)
+	s.winner = 2
+	s.settle_round_after_resolve()
+	ok = _exp(ok, "[平局保底] 第 2 次平局不得分（draw_count=2）",
+		s.score == [3, 5] and s.draw_count == 2)
+	s.winner = 2
+	s.settle_round_after_resolve()
+	ok = _exp(ok, "[平局保底] 第 3 次平局双方各 +1（3:5→4:6）",
+		s.score == [4, 6] and s.draw_count == 3)
+
+	s = _mk([4, 4], [10, 10], [3, 3], 2)
+	s.score = [11, 11]
+	s.draw_count = 2
+	s.winner = 2
+	info = s.settle_round_after_resolve()
+	ok = _exp(ok, "[平局保底] 同时到 12 分 → 整场结束且整场判平",
+		bool(info["match_over"]) and int(info["match_winner"]) == 2
+		and s.score == [12, 12])
+
+	s = _mk([4, 4], [10, 10], [3, 3], 2)
+	s.score = [11, 5]
+	s.winner = 0
+	info = s.settle_round_after_resolve()
+	ok = _exp(ok, "[终场] 先到 12 分者胜（match_winner=0）",
+		bool(info["match_over"]) and int(info["match_winner"]) == 0 and s.score == [12, 5])
+
+	s = _mk([4, 4], [10, 10], [3, 3], 2)
+	s.score = [3, 5]
+	s.draw_count = 2
+	s.cooldowns = [{GameRules.Action.XIAO_YANG: 4}, {}]
+	s.sealed_round = [8, -1]
+	s.winner = 0
+	s.settle_round_after_resolve()
+	s.reset_round_keep_score()
+	ok = _exp(ok, "[小局重开] score/draw_count 保留，其余复位",
+		s.score == [4, 5] and s.draw_count == 2 and s.round == GameRules.OPENING_ROUND
+		and s.hp == [GameRules.MAX_HP, GameRules.MAX_HP] and s.qi == [0, 0] and s.winner == -1
+		and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
+
+	print("=".repeat(52))
+	if not ok:
+		for n in _failed:
+			print("  FAILED: ", n)
 	print("ALL PASS" if ok else "HAS FAILURES")
 	quit(0 if ok else 1)
 

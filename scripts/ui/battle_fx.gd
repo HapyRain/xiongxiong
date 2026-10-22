@@ -180,10 +180,11 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		return
 	# 重建前先杀掉上一轮的「循环呼吸」tween：它挂在即将被回收的边框上，
 	# 目标全失效后仍无限循环 → 引擎会报 "Infinite loop detected"。
-	var old_loop: Variant = root.get_meta("loop_tween", null)
-	if old_loop is Tween and (old_loop as Tween).is_valid():
-		(old_loop as Tween).kill()
-	root.set_meta("loop_tween", null)
+	if root.has_meta("loop_tween"):
+		var old_loop: Variant = root.get_meta("loop_tween")
+		if old_loop is Tween and (old_loop as Tween).is_valid():
+			(old_loop as Tween).kill()
+		root.remove_meta("loop_tween")
 	for c in root.get_children():
 		c.queue_free()
 	var r := _target_local_rect(root, target)

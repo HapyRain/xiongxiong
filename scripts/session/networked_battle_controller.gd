@@ -13,9 +13,6 @@ signal round_resolved(result: Dictionary)
 signal game_over(winner: int)
 signal status_text(text: String)
 
-const SELECT_WINDOW := 2.1
-const OPENING_SELECT_WINDOW := 2.1
-
 var peer: PeerManager = null
 var state: BattleState:
 	get:
@@ -137,16 +134,13 @@ func _mode_label() -> String:
 	return "对局"
 
 
-func _on_ai_takeover(reason: String) -> void:
+func _on_ai_takeover(_reason: String) -> void:
 	_ai_active = true
 	_running = true
 	if peer != null:
 		_ai_seat = 1 - peer.get_local_role()
 	_ai_timer = randf_range(0.8, 2.2)
-	if reason != "" and reason != "already":
-		status_text.emit("对方已离开，由人机接管")
-	else:
-		status_text.emit("对方已离开，由人机接管")
+	status_text.emit("对方已离开，由人机接管")
 
 
 ## 唯一输入闸：UI 禁用与 try_select 共用，避免“能点但无效 / 亮着却点不动”
@@ -223,9 +217,7 @@ func lock_in() -> void:
 				if _ai_active and i == _ai_seat:
 					act = AiOpponent.choose(s, i)
 				else:
-					act = GameRules.Action.FANG if s.shield[i] >= 1 else GameRules.Action.ZAN
-					if not s.can_use_action(i, act):
-						act = GameRules.Action.ZAN
+					act = s.default_action(i)
 			_local_preselect[i] = act
 			peer.submit_action(act, i)
 		peer.reveal_phase()
@@ -307,7 +299,6 @@ func _on_round_begun(round_no: int) -> void:
 	_select_left = _window_seconds()
 	_beat_fired = [false, false]
 	_local_preselect = [-1, -1]
-	_resolving = false
 	if _ai_active:
 		_ai_timer = randf_range(0.8, 2.2)
 	var s: BattleState = state
@@ -330,7 +321,7 @@ func _on_actions_revealed(actions: Array, results: Dictionary) -> void:
 	round_resolved.emit(results)
 	# 整场结束判据：小局 winner 已定（房主终场时保留胜者）或任一方分数已到 12。
 	# 小局结束但未到 12 分时 winner 已被房主复位成 -1 → 不算终场，等房主重开小局的回合 1 窗。
-	if s.is_over() or PeerManager.is_match_over(s):
+	if s.is_over() or s.is_match_over():
 		_emit_over()
 		return
 	if bool(results.get("round_end", false)):
@@ -350,5 +341,7 @@ func _emit_over() -> void:
 	var s: BattleState = state
 	s.phase = GameRules.Phase.GAME_OVER
 	phase_changed.emit(s.phase, s.round)
-	game_over.emit(s.winner)
+	# 整场胜者按分数裁决（平局保底可能让 winner=2 的一方/双方到 12 分）；网络判负时退回小局 winner
+	var w: int = s.match_winner()
+	game_over.emit(w if w >= 0 else s.winner)
 	_running = false

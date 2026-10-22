@@ -4,11 +4,10 @@
 
 权威来源：
   * docs/rules/game-rules-v2.md §1–§9（唯一规则权威）
-  * scratchpad/v2-contract.md §2（T1 冻结的逐条裁决）、§3（测试契约）
 
-本文件按同一套语义**独立重写**结算管线（§4 五步）+ 对撞矩阵（§3）+ 出招合法性，
+本文件按同一套语义**独立重写**结算管线（§4 六步）+ 对撞矩阵（§3）+ 出招合法性，
 与 tests/run_rules_check.gd 是「同一套断言、两份实现」：两边必须同时 ALL PASS。
-结论值一律从文档/契约手推，不从 resolve.gd 抄——两者若分歧必须报告，不得静默对齐。
+结论值一律从文档手推，不从 resolve.gd 抄——两者若分歧必须报告，不得静默对齐。
 
 运行：python tests\\test_rules_v2.py   → 末行 ALL PASS (exit 0)
 """
@@ -80,10 +79,11 @@ def kind(a):
 
 
 class State:
-    """对局状态（契约 §1 字段；cooldowns[who][action] = 上次使用回合）。"""
+    """对局状态（镜像 battle_state.gd 的结算相关字段；cooldowns[who][action] = 上次使用回合）。"""
 
     def __init__(self, hp=None, qi=None, shield=None, round=1,
-                 score=None, cooldowns=None, sealed_round=None, pending=None):
+                 score=None, cooldowns=None, sealed_round=None, pending=None,
+                 draw_count=0):
         self.round = round
         self.hp = list(hp if hp is not None else [MAX_HP, MAX_HP])
         self.qi = list(qi if qi is not None else [0, 0])
@@ -91,11 +91,12 @@ class State:
         self.pending = list(pending if pending is not None else [-1, -1])
         self.winner = -1
         self.score = list(score if score is not None else [0, 0])
+        self.draw_count = draw_count
         self.cooldowns = [dict(cooldowns[0]) if cooldowns else {},
                           dict(cooldowns[1]) if cooldowns else {}]
         self.sealed_round = list(sealed_round if sealed_round is not None else [-1, -1])
 
-    # ── 出招合法性（契约 §1 八条）──
+    # ── 出招合法性（battle_state.gd can_use_action 八条）──
     def is_sealed(self, who):
         return self.sealed_round[who] == self.round
 
@@ -121,6 +122,58 @@ class State:
 
     def available_actions(self, who):
         return [a for a in SKILLS if self.can_use_action(who, a)]
+
+    def is_over(self):
+        return self.winner >= 0
+
+    # ── 判分 / 终场 / 平局保底（battle_state.gd settle_round_after_resolve 镜像）──
+    def settle_round_after_resolve(self):
+        info = {"round_end": False, "match_over": False, "match_winner": -1,
+                "winner": -1, "score": [self.score[0], self.score[1]], "scored": False}
+        if not self.is_over():
+            return info
+        w = self.winner
+        info["winner"] = w
+        info["round_end"] = True
+        if w in (0, 1):
+            self.score[w] += 1
+            info["scored"] = True
+        elif w == 2:
+            self.draw_count += 1
+            if self.draw_count >= 3:
+                self.score[0] += 1
+                self.score[1] += 1
+                info["scored"] = True
+        info["score"] = [self.score[0], self.score[1]]
+        info["match_over"] = self.is_match_over()
+        info["match_winner"] = self.match_winner()
+        return info
+
+    def is_match_over(self):
+        return max(self.score) >= WIN_SCORE
+
+    def match_winner(self):
+        if not self.is_match_over():
+            return -1
+        if self.score[0] > self.score[1]:
+            return 0
+        if self.score[1] > self.score[0]:
+            return 1
+        return 2
+
+    def reset_round_keep_score(self):
+        keep_score = [self.score[0], self.score[1]]
+        keep_draws = self.draw_count
+        self.round = OPENING_ROUND
+        self.hp = [MAX_HP, MAX_HP]
+        self.qi = [0, 0]
+        self.shield = [MAX_SHIELD, MAX_SHIELD]
+        self.pending = [-1, -1]
+        self.winner = -1
+        self.score = keep_score
+        self.draw_count = keep_draws
+        self.cooldowns = [{}, {}]
+        self.sealed_round = [-1, -1]
 
 
 class Result:
@@ -183,7 +236,7 @@ def resolve_turn(s, a0, a1):
             r.text = "劝降：%d 胜" % i
             return r
 
-    # 盾 0 时出防御 = 非法出招 → 按「裸防」处理（契约 §2.2 D_bare）
+    # 盾 0 时出防御 = 非法出招 → 按「裸防」处理（game-rules-v2.md §2 注 D_bare）
     bare = [(acts[i] == FANG and s.shield[i] < 1) for i in (0, 1)]
 
     # ② 扣资源
@@ -464,8 +517,8 @@ def expect(name, cond):
 
 
 def mk(hp=None, qi=None, shield=None, rnd=2, score=None,
-       cooldowns=None, sealed_round=None, pending=None):
-    return State(hp, qi, shield, rnd, score, cooldowns, sealed_round, pending)
+       cooldowns=None, sealed_round=None, pending=None, draw_count=0):
+    return State(hp, qi, shield, rnd, score, cooldowns, sealed_round, pending, draw_count)
 
 
 def chk(s, hp, qi, sh):
@@ -969,7 +1022,7 @@ def main():
     ok &= expect("[强断言] 结算后 pending 清空（劝降路径）",
                  s.pending == [-1, -1] and s.winner == 0)
 
-    # ── 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（契约 D_bare）────
+    # ── 裸防兜底：盾 0 出防御 = 非法动作，按 §3.1 裸防结算（game-rules-v2.md §2 注）────
     s = mk(qi=[5, 5], shield=[0, 3])
     resolve_turn(s, FANG, BAO1)
     ok &= expect("[裸防兜底] 0 盾出防御 vs 1连包：防御不生效 → 掉 1 血",
@@ -1026,6 +1079,52 @@ def main():
     s = mk(qi=[10, 10], rnd=2, score=[0, 0])
     ok &= expect("[强断言] available_actions：0 分回合 2 → 仅 5 个基础动作",
                  sorted(s.available_actions(0)) == sorted([ZAN, BAO1, BAO2, BAO3, FANG]))
+
+    # ── ㉑ 判分 / 终场 / 平局保底（battle_state.gd 判分口径镜像）────────────
+    s = mk(score=[3, 5])
+    s.winner = 0
+    info = s.settle_round_after_resolve()
+    ok &= expect("[判分] 胜者 +1 分（3→4），未到 12 不终场",
+                 info["score"] == [4, 5] and info["scored"] and info["round_end"]
+                 and not info["match_over"] and info["match_winner"] == -1)
+
+    s = mk(score=[3, 5], draw_count=0)
+    s.winner = 2
+    s.settle_round_after_resolve()
+    ok &= expect("[平局保底] 第 1 次平局不得分（draw_count=1）",
+                 s.score == [3, 5] and s.draw_count == 1)
+    s.winner = 2
+    s.settle_round_after_resolve()
+    ok &= expect("[平局保底] 第 2 次平局不得分（draw_count=2）",
+                 s.score == [3, 5] and s.draw_count == 2)
+    s.winner = 2
+    s.settle_round_after_resolve()
+    ok &= expect("[平局保底] 第 3 次平局双方各 +1（3:5→4:6）",
+                 s.score == [4, 6] and s.draw_count == 3)
+
+    s = mk(score=[11, 11], draw_count=2)
+    s.winner = 2
+    info = s.settle_round_after_resolve()
+    ok &= expect("[平局保底] 同时到 12 分 → 整场结束且整场判平",
+                 info["match_over"] and info["match_winner"] == 2
+                 and s.score == [12, 12])
+
+    s = mk(score=[11, 5])
+    s.winner = 0
+    info = s.settle_round_after_resolve()
+    ok &= expect("[终场] 先到 12 分者胜（match_winner=0）",
+                 info["match_over"] and info["match_winner"] == 0 and s.score == [12, 5])
+
+    s = mk(score=[3, 5], draw_count=2)
+    s.cooldowns = [{XIAO_YANG: 4}, {}]
+    s.sealed_round = [8, -1]
+    s.winner = 0
+    s.settle_round_after_resolve()
+    s.reset_round_keep_score()
+    ok &= expect("[小局重开] score/draw_count 保留，其余复位",
+                 s.score == [4, 5] and s.draw_count == 2 and s.round == OPENING_ROUND
+                 and s.hp == [MAX_HP, MAX_HP] and s.qi == [0, 0] and s.winner == -1
+                 and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
 
     print("=" * 52)
     print("ALL PASS" if ok else "HAS FAILURES")

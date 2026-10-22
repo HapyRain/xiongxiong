@@ -181,7 +181,9 @@ func _initialize() -> void:
 ## T6 会话层判分 / 终场（单机、热座、联机房主共用同一份裁决）。
 ## 用例 1：score=[11,0] 时本小局 winner=0 → score[0] 收到 12 → 整场 GAME_OVER，winner 保留胜者。
 ## 用例 2：score 未到 12 → 小局结束只重开一小局：资源全复位、score 保留、winner 归 -1、仍是回合 1 开局窗。
-## 用例 3：平局（winner=2）双方不得分，同样重开一小局。
+## 用例 3：平局（winner=2）前 2 次双方不得分，同样重开一小局。
+## 用例 4：第 3 次平局 → 保底计分，双方各 +1（防无限拖，game-rules-v2.md §1/§5）。
+## 用例 5：平局保底使双方同时到 12 分 → 整场结束且整场判平（match_winner=2）。
 func _check_settle_v2() -> void:
 	var pm := _make_settle_pm(11, 0, [4, 1], [1, 0])
 	pm.reveal_phase()  # 包子×1 vs 攒气（裸防）→ 对手 -1 血 → 本小局 winner=0
@@ -196,7 +198,7 @@ func _check_settle_v2() -> void:
 	pm2.reveal_phase()
 	_exp("小局结束：score[0] 3→4 且保留对手分", int(pm2.state.score[0]) == 4 and int(pm2.state.score[1]) == 5)
 	_exp("小局结束：未终场仍 IN_BATTLE", pm2.get_session() == PeerManager.Session.IN_BATTLE)
-	_exp("小局结束：未到 12 分", not PeerManager.is_match_over(pm2.state))
+	_exp("小局结束：未到 12 分", not pm2.state.is_match_over())
 	_exp("小局重开：round 回 1", int(pm2.state.round) == GameRules.OPENING_ROUND)
 	_exp("小局重开：hp 复位 4/4",
 		int(pm2.state.hp[0]) == GameRules.MAX_HP and int(pm2.state.hp[1]) == GameRules.MAX_HP)
@@ -230,6 +232,28 @@ func _check_settle_v2() -> void:
 	_exp("平局：资源复位（血 4 / 气 0）",
 		int(pm3.state.hp[0]) == GameRules.MAX_HP and int(pm3.state.qi[0]) == 0)
 	pm3.leave()
+
+	# 用例 4：第 3 次平局 → 保底计分，双方各 +1
+	var pm4 := _make_settle_pm(8, 8, [1, 1], [5, 5])
+	pm4.state.draw_count = 2
+	pm4.state.pending = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm4._pending_actions = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm4.reveal_phase()
+	_exp("第3次平局：双方各 +1 分", int(pm4.state.score[0]) == 9 and int(pm4.state.score[1]) == 9)
+	_exp("第3次平局：draw_count 累计为 3", pm4.state.draw_count == 3)
+	_exp("第3次平局：未到 12 分仍重开", int(pm4.state.round) == GameRules.OPENING_ROUND and not pm4.state.is_over())
+	pm4.leave()
+
+	# 用例 5：平局保底使双方同时到 12 分 → 整场结束、整场判平
+	var pm5 := _make_settle_pm(11, 11, [1, 1], [5, 5])
+	pm5.state.draw_count = 2
+	pm5.state.pending = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm5._pending_actions = [GameRules.Action.ZHONG_JI, GameRules.Action.ZHONG_JI]
+	pm5.reveal_phase()
+	_exp("同时到12：比分 12:12", int(pm5.state.score[0]) == 12 and int(pm5.state.score[1]) == 12)
+	_exp("同时到12：整场 GAME_OVER", pm5.get_session() == PeerManager.Session.GAME_OVER)
+	_exp("同时到12：整场判平", pm5.state.match_winner() == 2)
+	pm5.leave()
 
 
 ## 联机双端「小局结束 → 重开一小局」：房主 round_result 里的快照即新小局初值
@@ -345,7 +369,7 @@ func _check_solo_round_restart() -> void:
 	solo.free()
 
 
-## AiOpponent v2 契约：返回的招必须满足 state.can_use_action（解锁分/耗气/盾/封盾/CD 全由规则层裁决）；
+## AiOpponent v2 约定：返回的招必须满足 state.can_use_action（解锁分/耗气/盾/封盾/CD 全由规则层裁决）；
 ## 开局回合只攒气；低气偏攒气；候选只从攒气/包子×1/防御这一小撮可用集里挑。
 func _check_ai_v2() -> void:
 	var bad := 0

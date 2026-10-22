@@ -10,16 +10,13 @@ signal selected_changed(who: int, action: int)
 signal round_resolved(result: GameRules.RoundResult)
 signal game_over(winner: int)
 
-const SELECT_WINDOW := 3.4
-const OPENING_SELECT_WINDOW := 3.4
-
 var state: BattleState = BattleState.new()
 var _select_left: float = 0.0
 var _beat_fired: Array = [false, false]
 var _ai_timer: float = 0.0
 var _resolving: bool = false
 var _opening_done: bool = false
-var _window_total: float = SELECT_WINDOW
+var _window_total: float = 0.0
 var _did_lock_fill: bool = false
 var _did_settle: bool = false
 
@@ -44,7 +41,7 @@ func is_pick_open() -> bool:
 func _start_opening(keep_score: bool = false) -> void:
 	if keep_score:
 		# 复位字段表由会话层统一给出，避免与热座/联机路径分叉
-		PeerManager.reset_round_keep_score(state)
+		state.reset_round_keep_score()
 	else:
 		# 整场（含再来一局）首次开局：score 归零
 		state = BattleState.new()
@@ -135,9 +132,7 @@ func try_select_change(who: int, action: int) -> bool:
 func _force_timeout() -> void:
 	for i in 2:
 		if state.pending[i] < 0:
-			var a: int = GameRules.Action.FANG if state.shield[i] >= 1 else GameRules.Action.ZAN
-			if not state.can_use_action(i, a):
-				a = GameRules.Action.ZAN
+			var a: int = state.default_action(i)
 			state.pending[i] = a
 			selected_changed.emit(i, a)
 
@@ -157,6 +152,8 @@ func _resolve_locked() -> void:
 		round_resolved.emit(ro)
 		# 结算画面独立停留（勿在 await 里调 BattleTempo，外部类会卡死）
 		await get_tree().create_timer(0.8).timeout
+		if not is_instance_valid(self) or not is_inside_tree():
+			return
 		_start_selecting(2)
 		return
 	state.phase = GameRules.Phase.RESOLVING
@@ -164,7 +161,7 @@ func _resolve_locked() -> void:
 	var r := GameResolve.resolve_turn(state, state.pending[0], state.pending[1])
 	# ── T6 小局判分 / 终场：与热座/联机路径共用同一份会话层裁决 ──
 	# winner∈{0,1} → score+1；score 到 12 → 整场结束；否则重开一小局（保留 score）。
-	var settled := PeerManager.settle_round_after_resolve(state)
+	var settled := state.settle_round_after_resolve()
 	state.phase = GameRules.Phase.PRESENTING
 	phase_changed.emit(state.phase, state.round)
 	round_resolved.emit(r)
@@ -172,6 +169,8 @@ func _resolve_locked() -> void:
 		_emit_over()
 		return
 	await get_tree().create_timer(0.8).timeout
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if bool(settled["round_end"]):
 		# 小局结束但整场未结束 → 重开一小局（资源复位、score 保留、回合 1 亮相）
 		_start_opening(true)
@@ -182,7 +181,9 @@ func _resolve_locked() -> void:
 func _emit_over() -> void:
 	state.phase = GameRules.Phase.GAME_OVER
 	phase_changed.emit(state.phase, state.round)
-	game_over.emit(state.winner)
+	# 整场胜者按分数裁决（平局保底可能让 winner=2 的一方/双方到 12 分）
+	var w: int = state.match_winner()
+	game_over.emit(w if w >= 0 else state.winner)
 
 
 func _ai_choose() -> int:

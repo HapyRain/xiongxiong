@@ -1,13 +1,13 @@
 ## resolve.gd
-## 同步结算 —— v2 契约 §2（五步管线）+ docs/rules/game-rules-v2.md §3 对撞矩阵 / §4 结算管线。
+## 同步结算 —— docs/rules/game-rules-v2.md §3 对撞矩阵 / §4 结算管线（唯一规则权威）。
 ## 纯逻辑：只读写 BattleState + RoundResult，不碰 UI / 网络 / 节点。静态函数，可 headless 单测。
 ##
-## resolve_turn 顺序（契约 §2.2；全程只在末尾调一次 _apply，再 _check_winner）：
+## resolve_turn 顺序（game-rules-v2.md §4 六步管线，Step A–F 一一对应；全程只在末尾调一次 _apply，再 _check_winner）：
 ##   Step A 劝降：满气满血 + 对方仅 1 血 → 直接判胜（不占动作 / 不扣资源 / 不进 CD），立即返回
 ##   Step B 扣资源：扣气；FANG 使用即耗 1 盾
 ##   Step C 吸收：XI_SHOU 对撞特例（偷增益 / 被攻击掉 1 血 / 对防御无事），先于 D、E
 ##   Step D 资源增益：ZAN +1气+1盾 / JI_QI +3气 / HUI_FU +1血 / BAO_QI 补满盾（被偷则跳过）
-##   Step E 对撞矩阵：契约 §2.2 Step E 的 1–19 条（_pair → _bao_vs / _break_vs / _zhong_vs）
+##   Step E 对撞矩阵：game-rules-v2.md §3 的 3.1–3.6（_pair → _bao_vs / _break_vs / _zhong_vs）
 ##   Step F 状态更新：CD 记录（顶招也进 CD、资源照扣）；封盾在 Step E 写入 sealed_round
 class_name GameResolve
 extends RefCounted
@@ -46,7 +46,7 @@ static func resolve_turn(state: BattleState, act_me: int, act_you: int) -> GameR
 			r.text = "劝降：%d 胜" % i
 			return r
 
-	# FANG 的合法性在扣资源前定格：盾为 0 时出 FANG = 非法出招 → 按「裸防」处理（契约 §2.2 D_bare）
+	# FANG 的合法性在扣资源前定格：盾为 0 时出 FANG = 非法出招 → 按「裸防」处理（game-rules-v2.md §2 注 D_bare）
 	var bare: Array = [false, false]
 	for i: int in 2:
 		bare[i] = int(acts[i]) == GameRules.Action.FANG and int(state.shield[i]) < 1
@@ -95,7 +95,7 @@ static func resolve_turn(state: BattleState, act_me: int, act_you: int) -> GameR
 
 # ══════════════════════════ Step E 对撞矩阵 ══════════════════════════════
 
-## 按「无先后」分情况裁决双方动作。契约 §2.2 Step E 的 1–19 条。
+## 按「无先后」分情况裁决双方动作。game-rules-v2.md §3 对撞矩阵。
 static func _pair(state: BattleState, r: GameRules.RoundResult, acts: Array, bare: Array) -> void:
 	var a: int = int(acts[0])
 	var b: int = int(acts[1])
@@ -270,9 +270,9 @@ static func _zhong_vs(state: BattleState, r: GameRules.RoundResult, i: int, op_a
 
 # ══════════════════════════ 结算辅助 ══════════════════════════════════════
 
-## 契约 §2.2 _bao_damage：k 个「剩余包子」打 victim —— 每包 2 盾伤，盾打穿后最多 1 血。
+## game-rules-v2.md §3.2 _bao_damage：k 个「剩余包子」打 victim —— 每包 2 盾伤，盾打穿后最多 1 血。
 ## 判盾用「有效盾」（当前盾 + 本轮已累积盾增量）：爆气「先补满盾再结算」要求如此；
-## 无本轮盾增量的场合与契约字面写法（读 state.shield）完全等价。
+## 无本轮盾增量的场合与文档字面写法（读 state.shield）完全等价。
 static func _bao_damage(state: BattleState, r: GameRules.RoundResult, victim: int, k: int) -> void:
 	var dmg: int = k * 2
 	var eff: int = _eff_shield(state, r, victim)

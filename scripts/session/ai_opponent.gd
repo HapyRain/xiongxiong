@@ -15,7 +15,7 @@ static func choose(state: BattleState, who: int = 1) -> int:
 	if state == null:
 		return GameRules.Action.ZAN
 	var seat: int = clampi(who, 0, 1)
-	# 开局回合：规则只放行攒气（契约 §1 can_use_action 第 1 条）
+	# 开局回合：规则只放行攒气（battle_state.gd can_use_action 第 1 条）
 	if state.round == GameRules.OPENING_ROUND:
 		return GameRules.Action.ZAN
 

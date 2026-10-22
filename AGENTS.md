@@ -14,12 +14,12 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 | 用途 | 路径 |
 |---|---|
-| Godot 工程（唯一） | `E:\github\xiongxiong` |
-| Godot 4.7.2 console 引擎（本机） | `C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe` |
-| 文档 / 规则冻结稿 | 旧机镜像 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` —— **过程文件，未随仓库迁移，本机没有** |
+| Godot 工程（唯一） | `D:\xiongxiong\xiongxiong`（旧机为 `E:\github\xiongxiong`） |
+| Godot 4.7.2 console 引擎（本机） | `C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`（旧机为 `C:\Users\Hollis\Desktop\...`） |
+| 文档 / 规则冻结稿 | 仓库内 `docs/rules/game-rules-v2.md`（已随 v2 提交入库）；旧机过程文件在 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` |
 
 - 引擎路径换机就变：脚本用 `-Godot <..._console.exe>` 或 `$env:GODOT` 覆盖，不要改死在本文件以外的脚本里。
-- 旧机的 `D:\xiongxiong\xiongxiong`、`C:\Users\pc\...`、`XiaomiMiProjects` / `XiaomiMiMoProjects` 在本机**都不存在**；代码注释里的 `docs/...` 是旧机出处，不是本机可读文件。
+- 本机是 `C:\Users\pc`（旧机是 `C:\Users\Hollis`）；`C:\Users\pc\XiaomiMiProjects\xiongxiong\godot\` 另有一份**旧工程副本**，不是当前工作区，别在上面改代码。
 - **本机环境细节（引擎/JDK/SDK/导出脚本/MCP 接入与验证方式）：`docs/ENVIRONMENT.md`**。该文件在 `.gitignore` 里，只作本机交接，**不要提交/推送**。
 - 规则权威：**`docs/rules/game-rules-v2.md`（已定稿，唯一实现依据；`minimal-rules-v0.md` 是历史）**。本机可执行的权威是 **`scripts/rules/*` 与 `tests/test_rules_v2.py` 双镜像**，两者必须一致。
 
@@ -28,8 +28,8 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 测试是 **Godot headless SceneTree 脚本**，`ALL PASS` + exit 0 = 通过：
 
 ```powershell
-$g = "C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
-& $g --headless --path E:\github\xiongxiong --script res://tests/run_rules_check.gd
+$g = "C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
+& $g --headless --path D:\xiongxiong\xiongxiong --script res://tests/run_rules_check.gd
 ```
 
 **7 个自检，全部都要跑**（都继承 `SceneTree`、单进程，不需要真实窗口/导出模板）：
@@ -39,14 +39,14 @@ $g = "C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_
 ```powershell
 # 一条命令跑完全部（首次先做一次 --import，见「硬约束 6」）
 foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_seal_check","run_netwindow_check","run_roundloop_check","run_nav_check") {
-  & $g --headless --path E:\github\xiongxiong --script "res://tests/$n.gd" > $null
+  & $g --headless --path D:\xiongxiong\xiongxiong --script "res://tests/$n.gd" > $null
   "$n exit=$LASTEXITCODE"
 }
 ```
 
-另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，103 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
+另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，110 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：7/7 全绿，断言合计 389 条**（2026-10-20，v2 规则落地）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 103 条、每小局判分/12 分终场。
+**当前基线：7/7 全绿，断言合计 405 条**（2026-10-22，平局保底 + 快照 draw_count + 判分镜像增补 16 条）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -66,7 +66,7 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 
 ## 架构边界
 
-- `scripts/rules/` — `GameRules` / `BattleState` / `GameResolve`，**纯逻辑，禁止耦合 UI、画质、网络**。
+- `scripts/rules/` — `GameRules` / `BattleState` / `GameResolve`，**纯逻辑，禁止耦合 UI、画质、网络**。判分/终场/兜底出招的唯一口径也在 `BattleState`（`settle_round_after_resolve` / `is_match_over` / `match_winner` / `reset_round_keep_score` / `default_action`），会话层只调用不重写。
 - `scripts/network/` — `NetworkProvider` 抽象 + `LocalProvider`（测试/热座）/ `EnetProvider`（真联机）/ `WebSocketProvider`（抖音预留桩）。
 - `scripts/session/` — `PeerManager`(autoload `Net`)、`BattleController`（单机）、`NetworkedBattleController`、`NetworkSessionFSM`（断线封存 7 态）、`AiOpponent`。
 - `scripts/performance/` — `QualitySettings`(autoload) + `FpsGuard`，**只动表现层**（帧率/特效/降采样），不读写 rules 与对局状态。
@@ -113,17 +113,18 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 
 ## 工作约定
 
-- 终端用 **PowerShell 7 (pwsh)**；跑自检时直接调引擎并读 `$LASTEXITCODE`（需要退出码时才这样，一般交互式启动用 `Start-Process`）。
+- 终端**完全使用 PowerShell 7 (pwsh)**，不用 Windows PowerShell 5.1：执行命令一律显式走 `pwsh -NoProfile`（agent 默认 shell 是 PS 5.1，不得依赖）；跑自检时直接调引擎并读 `$LASTEXITCODE`（需要退出码时才这样，一般交互式启动用 `Start-Process`）。
 - 推送走本机代理：`$env:HTTPS_PROXY="http://127.0.0.1:7897"`。**github.com 直连不稳（时通时断）**，`git fetch/push` 失败先挂代理再试；下载大文件可改用镜像（`https://gh-proxy.com/https://github.com/...` 实测可用）。
+- **走代理时 git 必须加 `-c http.sslBackend=openssl`**：默认 schannel 在 CONNECT 隧道里 TLS 握手必失败（`schannel: failed to receive handshake`）。完整可用命令：`git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pull --ff-only origin main`。
 - 大改动先拆 subagent；派单时写清工程路径、禁止改 `scripts/rules/*`、验收命令。
 - **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
 - DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前状态（2026-10-20）
+## 当前状态（2026-10-22）
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、五步结算管线）；`scripts/session/*` 加每小局判分、按分解锁、12 分终场；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（103 条）；**7 个自检 389 条断言全绿**。
-- **UI 只做了保编译**：旧 3 按钮映射到 攒气/包子×1/防御；技能条 + CD 角标 + 分数条待做（v2 §8）。
-- `main` 上一版本 `c106e21`：修复断线封存死锁 / 房主权威漏洞 / 网络质量误报（自检 199 → 241）。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（103 条）；**7 个自检 399 条断言全绿**。
+- **UI 已有 v2 §8 技能条**：13 技能格 + CD/解锁角标 + 顶部分数条（单机/联机都有）；视觉仍是一次性实现，随前端重做再换。
+- `main` 头部 **`b5e94d2`**：v2 规则三方验收收口（反向座位镜像 / 联机序列化 / 权威边界）。本机复跑 7 个自检 + Python 镜像，全绿。
 - 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
 - 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。

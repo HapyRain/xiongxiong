@@ -104,7 +104,7 @@ func get_state_name() -> String:
 	return state_name(state)
 
 
-## 仅 Connected 允许 try_select / 回合推进 RPC（迁移不变式 1）。
+## Connected 或 Degraded 允许 try_select / 回合推进 RPC（迁移不变式 1）。
 func is_input_open() -> bool:
 	# Degraded 仍可出招：质量差不应把操作闸关死（假死）
 	return state == State.CONNECTED or state == State.DEGRADED

@@ -20,10 +20,6 @@ extends Control
 @onready var center_label: Label = %CenterLabel
 @onready var log_label: Label = %LogLabel
 
-@onready var btn_zan: Button = %BtnZan
-@onready var btn_bo: Button = %BtnBo
-@onready var btn_fang: Button = %BtnFang
-
 const COLOR_OK := Color(0.357, 0.722, 0.788, 1)
 const COLOR_EMPTY := Color(0.78, 0.74, 0.68, 1)
 const COLOR_WIN := Color(0.12, 0.45, 0.22, 1)
@@ -48,6 +44,8 @@ var _players: Array = []
 var _reveal_layer: CanvasLayer
 var _spot_layer: Control
 var _menu_btn: Button
+var _score_label: Label
+var _skill_btns: Dictionary = {}
 var _top_menu_btn: Button
 var _tempo_root: Control
 var _tempo_bg: ColorRect
@@ -61,14 +59,9 @@ func _ready() -> void:
 	_build_resource_icons()
 	_setup_audio()
 	_build_nav()
+	_build_skill_bar()
 	_build_tempo_bar()
 	_tint_labels()
-	btn_zan.pressed.connect(func(): _pick(GameRules.Action.ZAN))
-	btn_bo.pressed.connect(func(): _pick(GameRules.Action.BAO1))
-	btn_fang.pressed.connect(func(): _pick(GameRules.Action.FANG))
-	BattleFx.bind_press(btn_zan, "zan")
-	BattleFx.bind_press(btn_bo, "bo")
-	BattleFx.bind_press(btn_fang, "fang")
 
 	controller.phase_changed.connect(_on_phase)
 	controller.beat.connect(_on_beat)
@@ -296,7 +289,86 @@ func _build_shield_pips() -> void:
 		_you_shield_pips.append(b)
 
 
+func _build_skill_bar() -> void:
+	# 13 技能紧凑技能条（GridContainer 多行），替代场景里的 攒/波/防 三按钮
+	_score_label = UiTheme.ink_label("", 15, UiTheme.INK_SOFT)
+	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for old in ["BtnZan", "BtnBo", "BtnFang"]:
+		var n := get_node_or_null("Margin/VBox/Buttons/" + old)
+		if n != null:
+			n.visible = false
+	var vbox := get_node_or_null("Margin/VBox") as VBoxContainer
+	var buttons := get_node_or_null("Margin/VBox/Buttons")
+	if vbox != null:
+		vbox.add_child(_score_label)
+		vbox.move_child(_score_label, 0)
+		vbox.add_child(grid)
+		if buttons != null:
+			vbox.move_child(grid, buttons.get_index())
+	else:
+		add_child(_score_label)
+		add_child(grid)
+	for a in GameRules.SKILLS:
+		var act := int(a)
+		var col: Color = UiTheme.ACCENT
+		if GameRules.is_attack(act):
+			col = UiTheme.WAVE
+		elif GameRules.is_defense(act):
+			col = UiTheme.SHIELD
+		var fg := UiTheme.INK if col == UiTheme.ACCENT else Color.WHITE
+		var b := Button.new()
+		b.text = GameRules.action_name(act)
+		b.custom_minimum_size = Vector2(0, 48)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.clip_text = true
+		b.add_theme_font_size_override("font_size", 12)
+		b.add_theme_color_override("font_color", fg)
+		b.add_theme_color_override("font_hover_color", fg)
+		b.add_theme_color_override("font_pressed_color", fg)
+		b.add_theme_color_override("font_disabled_color", Color(0.35, 0.33, 0.3))
+		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 10))
+		b.add_theme_stylebox_override("hover", UiTheme.button_style(col.lightened(0.08), 10))
+		b.add_theme_stylebox_override("pressed", UiTheme.button_style(col.darkened(0.1), 10))
+		b.add_theme_stylebox_override("disabled", UiTheme.button_style(Color(0.78, 0.76, 0.72), 10))
+		b.pressed.connect(func(): _pick(act))
+		var kind := "default"
+		if act == GameRules.Action.ZAN:
+			kind = "zan"
+		elif GameRules.is_bao(act):
+			kind = "bo"
+		elif GameRules.is_defense(act):
+			kind = "fang"
+		BattleFx.bind_press(b, kind)
+		grid.add_child(b)
+		_skill_btns[act] = b
+
+
+## 按钮文案：技能名 + 耗气；冷却中挂「CDn」，未解锁挂「解锁 n 分」
+func _skill_label(s: BattleState, who: int, a: int) -> String:
+	var name := GameRules.action_name(a)
+	var unlock := GameRules.unlock_score(a)
+	if s.score[who] < unlock:
+		return "%s\n解锁 %d 分" % [name, unlock]
+	var cd := GameRules.cooldown_of(a)
+	if cd > 0:
+		var left := maxi(0, int(s.cooldowns[who].get(a, 0)) + cd + 1 - s.round)
+		if left > 0:
+			name += " CD%d" % left
+	var cost := GameRules.qi_cost(a)
+	if cost > 0:
+		name += "\n%d气" % cost
+	return name
+
+
 func _pick(action: int) -> void:
+	var s: BattleState = controller.state
+	if not s.can_use_action(0, action):
+		return
 	if action == GameRules.Action.ZAN:
 		_hide_spotlight()
 	controller.try_select(0, action)
@@ -307,7 +379,10 @@ func _pick(action: int) -> void:
 func _show_spotlight() -> void:
 	if _spot_layer != null and is_instance_valid(_spot_layer):
 		return
-	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), btn_zan, "点击「攒」开始对决")
+	var zan_btn: Button = _skill_btns.get(GameRules.Action.ZAN) as Button
+	if zan_btn == null:
+		return
+	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), zan_btn, "点击「攒气」开始对决")
 
 
 func _hide_spotlight() -> void:
@@ -330,7 +405,7 @@ func _on_phase(phase: int, round_no: int) -> void:
 			_hide_spotlight()
 		GameRules.Phase.SELECTING, GameRules.Phase.CLAP1:
 			if round_no == GameRules.OPENING_ROUND and not controller._opening_done:
-				center_label.text = "点击「攒」开始对决"
+				center_label.text = "点击「攒气」开始对决"
 				_show_spotlight()
 			else:
 				center_label.text = "同步出招"
@@ -383,9 +458,8 @@ func _on_game_over(winner: int) -> void:
 			center_label.text = "平局"
 			center_label.add_theme_color_override("font_color", COLOR_DRAW)
 	_pulse(center_label, 1.2)
-	btn_zan.disabled = true
-	btn_bo.disabled = true
-	btn_fang.disabled = true
+	for b in _skill_btns.values():
+		b.disabled = true
 	if _menu_btn != null:
 		_menu_btn.visible = true
 	if _fx_layer != null:
@@ -546,6 +620,8 @@ func _flash_color(card: Control, color: Color) -> void:
 
 func _refresh_all() -> void:
 	var s: BattleState = controller.state
+	if _score_label != null:
+		_score_label.text = "比分 我 %d : %d · 先到 %d 分" % [int(s.score[0]), int(s.score[1]), GameRules.WIN_SCORE]
 	me_hp.value = float(int(s.hp[0]))
 	me_qi.value = float(int(s.qi[0]))
 	you_hp.value = float(int(s.hp[1]))
@@ -572,6 +648,8 @@ func _refresh_actions() -> void:
 	var s: BattleState = controller.state
 	# 与 controller.is_pick_open 同源，禁止“亮着点不动”
 	var open: bool = controller != null and controller.is_pick_open()
-	btn_zan.disabled = (not open) or not s.can_use_action(0, GameRules.Action.ZAN)
-	btn_bo.disabled = (not open) or not s.can_use_action(0, GameRules.Action.BAO1)
-	btn_fang.disabled = (not open) or not s.can_use_action(0, GameRules.Action.FANG)
+	for a in _skill_btns.keys():
+		var b: Button = _skill_btns[a]
+		var act := int(a)
+		b.disabled = (not open) or not s.can_use_action(0, act)
+		b.text = _skill_label(s, 0, act)

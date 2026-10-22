@@ -266,11 +266,6 @@ func leave() -> void:
 	_self_closing = false
 	ai_takeover = false
 	_remote_peer_id = -1
-	_pending_actions = [-1, -1]
-	_locks = [false, false]
-	_revealing = false
-	_opening_done = false
-	_opening_applied = false
 	_grace_left = 0.0
 	_reset_rules_state()
 	_set_session(Session.IDLE)
@@ -281,12 +276,23 @@ func leave() -> void:
 ## 整场（再来一局）复位：score 也归零。
 func _reset_rules_state() -> void:
 	state = BattleState.new()
+	_reset_round_flags()
+	_reset_opening_flags()
+
+
+## 回合选招窗复位表：点选/锁定/揭示/超时角标（新窗必清，漏清会把上回合招式当「已选」）。
+func _reset_round_flags() -> void:
+	state.pending = [-1, -1]
 	_pending_actions = [-1, -1]
 	_locks = [false, false]
 	_revealing = false
+	_timeout_flags = [false, false]
+
+
+## 开局亮相/小局重开标记复位表。
+func _reset_opening_flags() -> void:
 	_opening_done = false
 	_opening_applied = false
-	_timeout_flags = [false, false]
 	_round_restart_pending = false
 
 
@@ -508,7 +514,7 @@ func auto_fill_missing() -> void:
 			if a < 0:
 				a = int(_pending_actions[i])
 			if a < 0:
-				a = _default_action(i)
+				a = state.default_action(i)
 				_timeout_flags[i] = true
 			if not state.can_use_action(i, a):
 				a = GameRules.Action.ZAN
@@ -568,9 +574,6 @@ func submit_resume_vote(yes: bool) -> void:
 		fsm.on_link_ok(now)
 		if is_host():
 			_broadcast(_envelope("sys_link_ok", state.round, {}))
-	if fsm.state != NetworkSessionFSM.State.AWAITING_CONSENT:
-		# 仍把票发出去，让对端能补齐状态
-		pass
 	# 本地立刻记一票
 	fsm.submit_consent(my_peer, yes, now)
 	if not is_host():
@@ -607,7 +610,7 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 		_opening_done = bool(sess_meta["opening_done"])
 		_opening_applied = _opening_done
 	# 整场结束判据：小局 winner 已定 或 任一方 score 到 12（max(score) >= WIN_SCORE）
-	var match_over_now: bool = state.is_over() or is_match_over(state)
+	var match_over_now: bool = state.is_over() or state.is_match_over()
 	if match_over_now:
 		_set_session(Session.GAME_OVER)
 	else:
@@ -617,7 +620,10 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 		if is_host() or _mode == Mode.HOTSEAT or ai_takeover:
 			round_begun.emit(state.round)
 			if is_host():
-				_broadcast(_envelope("select_window", state.round, {"round": state.round, "window_ms": 5000}))
+				var window_ms := int(BattleTempo.total_window(state.round) * 1000.0)
+				if state.round == GameRules.OPENING_ROUND and not _opening_done:
+					window_ms = int(OPENING_SELECT_WINDOW * 1000.0)
+				_broadcast(_envelope("select_window", state.round, {"round": state.round, "window_ms": window_ms}))
 		else:
 			round_begun.emit(state.round)
 	if is_session_snap:
@@ -808,11 +814,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				else:
 					_local_role = 1
 				# 新一局：清掉上一局残留
-				_pending_actions = [-1, -1]
-				_locks = [false, false]
-				_revealing = false
-				_opening_done = false
-				_opening_applied = false
+				_reset_round_flags()
+				_reset_opening_flags()
 				_rematch_want = false
 				_peer_rematch_want = false
 				restore_from_snapshot(snap)
@@ -828,14 +831,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				var res: Dictionary = payload.get("result", {})
 				var snap: Dictionary = payload.get("snapshot", {})
 				# 开窗前清残留，避免旧 pending 让按钮灰死
-				state.pending = [-1, -1]
-				_pending_actions = [-1, -1]
-				_locks = [false, false]
+				_reset_round_flags()
 				if not snap.is_empty():
 					restore_from_snapshot(snap)
-				state.pending = [-1, -1]
-				_pending_actions = [-1, -1]
-				_locks = [false, false]
+				_reset_round_flags()
 				_opening_done = true
 				_opening_applied = true
 				actions_revealed.emit([GameRules.Action.ZAN, GameRules.Action.ZAN], res)
@@ -914,6 +913,7 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			_set_session(Session.SEALED)
 			sealed.emit(rreason)
 		"resume_vote":
+			# 协议面保留兼容，不处理
 			pass
 		"sys_link_ok":
 			# 链路恢复由房主发起广播；房主本地走 on_link_ok，不采纳对端
@@ -1006,9 +1006,7 @@ func _on_submit_received(role: int, payload: Dictionary) -> void:
 		return
 	var action := int(payload.get("action", -1))
 	if not state.can_use_action(role, action):
-		action = GameRules.Action.FANG if state.shield[role] >= 1 else GameRules.Action.ZAN
-		if not state.can_use_action(role, action):
-			action = GameRules.Action.ZAN
+		action = _default_action(role)
 	_pending_actions[role] = action
 	_locks[role] = true
 	action_committed.emit(role, action)
@@ -1125,20 +1123,16 @@ func _do_host_reveal() -> void:
 
 
 ## 房主/热座侧：一小局结算完成后的会话层裁决（判分 → 终场 / 重开一小局）。
-## 判分内核是 settle_round_after_resolve()（与单机 BattleController 共用同一份）。
-## 返回 {"round_end","match_over","winner","score","scored"}。
+## 判分内核是 state.settle_round_after_resolve()（与单机 BattleController 共用同一份）。
+## 返回 {"round_end","match_over","match_winner","winner","score","scored"}。
 func _settle_match_after_round() -> Dictionary:
-	var info := settle_round_after_resolve(state)
+	var info := state.settle_round_after_resolve()
 	if bool(info["round_end"]) and not bool(info["match_over"]):
 		# 本小局结束、整场未到 12 分 → 重开一小局：资源复位、保留 score、winner 归 -1
-		reset_round_keep_score(state)
-		_pending_actions = [-1, -1]
-		_locks = [false, false]
-		_revealing = false
-		_timeout_flags = [false, false]
+		state.reset_round_keep_score()
+		_reset_round_flags()
+		_reset_opening_flags()
 		_grace_left = 0.0
-		_opening_done = false
-		_opening_applied = false
 		_round_restart_pending = true
 	return info
 
@@ -1147,10 +1141,7 @@ func _default_action(who: int) -> int:
 	# 开局窗口：未点也算「攒」确认
 	if state.round == GameRules.OPENING_ROUND and not _opening_done:
 		return GameRules.Action.ZAN
-	var a: int = GameRules.Action.FANG if state.shield[who] >= 1 else GameRules.Action.ZAN
-	if not state.can_use_action(who, a):
-		a = GameRules.Action.ZAN
-	return a
+	return state.default_action(who)
 
 
 func _schedule_next_round() -> void:
@@ -1160,6 +1151,8 @@ func _schedule_next_round() -> void:
 	# 结算画面独立停留 0.8s，退下后再进下一回合
 	# 结算画面独立停留（勿在 await 里调 BattleTempo）
 	await get_tree().create_timer(0.8).timeout
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if _session == Session.IN_BATTLE and not state.is_over():
 		_begin_next_round()
 
@@ -1170,6 +1163,8 @@ func _schedule_round_restart() -> void:
 	if not is_inside_tree() or get_tree() == null:
 		return
 	await get_tree().create_timer(0.8).timeout
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if _session == Session.IN_BATTLE and _round_restart_pending:
 		_do_opening()
 
@@ -1188,11 +1183,7 @@ func debug_advance_round() -> void:
 func _begin_next_round() -> void:
 	_opening_done = true
 	state.round += 1
-	state.pending = [-1, -1]
-	_pending_actions = [-1, -1]
-	_locks = [false, false]
-	_timeout_flags = [false, false]
-	_revealing = false
+	_reset_round_flags()
 	state.phase = GameRules.Phase.SELECTING
 	round_begun.emit(state.round)
 	if is_host() or _mode == Mode.HOTSEAT:
@@ -1203,11 +1194,7 @@ func _begin_remote_round(round_no: int) -> void:
 	# 客户端开局窗也必须保持 _opening_done=false，否则聚光灯/6s 窗全丢
 	_opening_done = round_no > GameRules.OPENING_ROUND
 	# 新窗清空点选残留，否则 UI 把上回合招式当「已选」永久灰
-	state.pending = [-1, -1]
-	_pending_actions = [-1, -1]
-	_locks = [false, false]
-	_timeout_flags = [false, false]
-	_revealing = false
+	_reset_round_flags()
 	state.phase = GameRules.Phase.SELECTING
 	round_begun.emit(round_no)
 
@@ -1216,15 +1203,10 @@ func _do_opening() -> void:
 	# 产品：开局不再强制结算，改为双方点「攒」确认后再亮相
 	# 整场首局与「小局重开」共用本流程：小局的资源/score 复位由
 	# _reset_rules_state()（整场）或 _settle_match_after_round()（小局）负责。
-	_round_restart_pending = false
-	_opening_done = false
-	_opening_applied = false
+	_reset_opening_flags()
 	state.round = GameRules.OPENING_ROUND
 	state.phase = GameRules.Phase.SELECTING
-	state.pending = [-1, -1]
-	_pending_actions = [-1, -1]
-	_locks = [false, false]
-	_revealing = false
+	_reset_round_flags()
 	_set_session(Session.IN_BATTLE)
 	round_begun.emit(GameRules.OPENING_ROUND)
 	if _mode != Mode.HOTSEAT:
@@ -1261,6 +1243,8 @@ func _schedule_opening_to_select() -> void:
 	if not is_inside_tree() or get_tree() == null:
 		return
 	await get_tree().create_timer(0.8).timeout
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if _session == Session.IN_BATTLE and not state.is_over():
 		# 开局后进入回合 2 选招；round 仍为 1 时 next 会 +1 → 2
 		if state.round == GameRules.OPENING_ROUND:
@@ -1486,73 +1470,6 @@ func _result_to_dict(r: GameRules.RoundResult) -> Dictionary:
 	}
 
 
-# ═════════════════════════ T6 小局判分 / 终场 ═════════════════════════
-#
-# v2 规则（docs/rules/game-rules-v2.md §1 + 契约 §4）：
-#   · 每赢一小局 +1 分（GameResolve 把本小局胜者写进 state.winner：0/1 胜，2 平）；
-#   · 先到 12 分（GameRules.WIN_SCORE）获胜 → 整场结束；
-#   · 未到 12 分 → 重开一小局：资源全复位、**保留 score**、沿用回合 1 开局亮相；
-#   · 平局（winner=2）双方不得分，同样重开一小局；
-#   · 网络判负（forfeit / consent 超时 / 校验失败）是**整场**结束，不走本判分（见 _on_fsm_failed）。
-#
-# 下面三个 static 是会话层对「小局 / 整场」的唯一裁决口径：
-# 单机 BattleController、热座与联机房主 PeerManager、表现层 NetworkedBattleController 共用同一份，
-# 不要在别处再写一遍 score 累加 / 12 分判定 / 复位字段表。
-
-## 一小局结束后的判分：winner∈{0,1} → score[winner] += 1；winner==2（平局）不得分。
-## 返回 {"round_end", "match_over", "winner", "score", "scored"}；小局未分胜负时 round_end=false。
-## 注意「整场是否结束」的判据是 max(score) >= WIN_SCORE，而不是 state.is_over()（后者只说明小局结束）。
-static func settle_round_after_resolve(state: BattleState) -> Dictionary:
-	var info := {
-		"round_end": false,
-		"match_over": false,
-		"winner": -1,
-		"score": [0, 0],
-		"scored": false,
-	}
-	if state == null:
-		return info
-	info["score"] = [int(state.score[0]), int(state.score[1])]
-	if not state.is_over():
-		return info
-	var w: int = int(state.winner)
-	info["winner"] = w
-	info["round_end"] = true
-	if w == 0 or w == 1:
-		state.score[w] = int(state.score[w]) + 1
-		info["scored"] = true
-	info["score"] = [int(state.score[0]), int(state.score[1])]
-	info["match_over"] = maxi(int(state.score[0]), int(state.score[1])) >= GameRules.WIN_SCORE
-	return info
-
-
-## 整场是否已结束：任一方分数达到 WIN_SCORE（12）。这是「整场结束」的唯一判据。
-static func is_match_over(state: BattleState) -> bool:
-	if state == null:
-		return false
-	return maxi(int(state.score[0]), int(state.score[1])) >= GameRules.WIN_SCORE
-
-
-## 重开一小局：局部资源复位、**保留 score**；winner 归 -1（否则 is_over() 恒真 → 整局卡死）。
-## 复位字段与 v2 契约一致：round=1 / hp=[4,4] / qi=[0,0] / shield=[3,3] /
-## pending=[-1,-1] / cooldowns=[{},{}] / sealed_round=[-1,-1]。
-## 开局亮相（回合 1 点「攒」）由调用方接：PeerManager._do_opening() / BattleController._start_opening(true)。
-## 就地改字段而**不换对象**：UI / 对端快照都持有同一个 BattleState 引用。
-static func reset_round_keep_score(state: BattleState) -> void:
-	if state == null:
-		return
-	var keep_score: Array = [0, 0]
-	if state.score.size() >= 2:
-		keep_score = [int(state.score[0]), int(state.score[1])]
-	state.restore({
-		"round": GameRules.OPENING_ROUND,
-		"hp": [GameRules.MAX_HP, GameRules.MAX_HP],
-		"qi": [0, 0],
-		"shield": [GameRules.MAX_SHIELD, GameRules.MAX_SHIELD],
-		"pending": [-1, -1],
-		"phase": GameRules.Phase.SELECTING,
-		"winner": -1,
-		"score": keep_score,
-		"cooldowns": [{}, {}],
-		"sealed_round": [-1, -1],
-	})
+# T6 小局判分 / 终场裁决已迁至 BattleState：settle_round_after_resolve / is_match_over /
+# match_winner / reset_round_keep_score（scripts/rules/battle_state.gd，含平局保底计分）。
+# 单机 / 热座 / 联机房主共用同一份，不要在会话层重写 score 累加 / 12 分判定 / 复位字段表。

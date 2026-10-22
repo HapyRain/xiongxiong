@@ -34,8 +34,8 @@ func _initialize() -> void:
 	_setup_pm()
 
 
-# ================= T6：断线快照必须带 score / cooldowns / sealed_round =================
-# v2 会话层把「分数 / CD / 封盾」放在 BattleState 里（BattleState.snapshot/restore 三项齐全），
+# ================= T6：断线快照必须带 score / draw_count / cooldowns / sealed_round =================
+# v2 会话层把「分数 / 平局累计 / CD / 封盾」放在 BattleState 里（BattleState.snapshot/restore 四项齐全），
 # 但断线恢复若只还原血/气/盾，就会出现「分数回 0、CD 清空 → 技能又被锁」的静默分叉。
 # 这里直接验证 seal() / get_session_snapshot() / restore_from_snapshot() 三条路径。
 func _check_snapshot_carry_score() -> void:
@@ -71,6 +71,7 @@ func _check_snapshot_carry_score() -> void:
 		{GameRules.Action.HUI_FU: 6},
 	]
 	host.state.sealed_round = [8, -1]
+	host.state.draw_count = 2
 
 	# ① get_session_snapshot()：rules 段必须带三项
 	var sess_snap: Dictionary = host.get_session_snapshot()
@@ -83,6 +84,7 @@ func _check_snapshot_carry_score() -> void:
 		(s_rules.get("cooldowns", []) as Array).size() == 2
 		and int(((s_rules.get("cooldowns", []) as Array)[0] as Dictionary).get(GameRules.Action.XIAO_YANG, -1)) == 4)
 	_exp("session_snapshot rules 带 sealed_round", (s_rules.get("sealed_round", []) as Array) == [8, -1])
+	_exp("session_snapshot rules 带 draw_count", int(s_rules.get("draw_count", -1)) == 2)
 
 	# ② seal()：对端也要拿到同一份带分数的快照
 	host.seal("test_score_snapshot")
@@ -94,18 +96,21 @@ func _check_snapshot_carry_score() -> void:
 		rules = v_rules
 	_exp("seal 快照 rules 带 score", (rules.get("score", []) as Array) == [5, 7])
 	_exp("seal 快照 rules 带 sealed_round", (rules.get("sealed_round", []) as Array) == [8, -1])
+	_exp("seal 快照 rules 带 draw_count", int(rules.get("draw_count", -1)) == 2)
 	var c_rules: Dictionary = {}
 	var v_cr: Variant = client.last_session_snap.get("rules", {})
 	if typeof(v_cr) == TYPE_DICTIONARY:
 		c_rules = v_cr
 	_exp("对端封存快照带 score", (c_rules.get("score", []) as Array) == [5, 7])
 
-	# ③ restore_from_snapshot()：恢复后三项必须逐字段一致
+	# ③ restore_from_snapshot()：恢复后各项必须逐字段一致
 	host.state.score = [0, 0]
+	host.state.draw_count = 0
 	host.state.cooldowns = [{}, {}]
 	host.state.sealed_round = [-1, -1]
 	host.restore_from_snapshot(snap.duplicate(true))
 	_exp("restore 后 score 一致", int(host.state.score[0]) == 5 and int(host.state.score[1]) == 7)
+	_exp("restore 后 draw_count 一致", host.state.draw_count == 2)
 	_exp("restore 后 cooldowns 一致（含具体回合号）",
 		(host.state.cooldowns[0] as Dictionary).size() == 1
 		and int((host.state.cooldowns[0] as Dictionary).get(GameRules.Action.XIAO_YANG, -1)) == 4

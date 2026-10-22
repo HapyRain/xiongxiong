@@ -7,6 +7,7 @@ var controller: NetworkedBattleController
 var _status_label: Label
 var _round_label: Label
 var _log_label: Label
+var _score_label: Label
 var _tempo_root: Control
 var _tempo_bg: ColorRect
 var _tempo_fill: ColorRect
@@ -110,6 +111,11 @@ func _build_ui() -> void:
 	v.add_theme_constant_override("separation", 10)
 	margin.add_child(v)
 
+	# 分数条（顶部）：我 = 本地角色座位，别按 0/1 写死
+	_score_label = UiTheme.ink_label("", 15, UiTheme.INK_SOFT)
+	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_score_label)
+
 	# 对手（上）
 	var you_panel := PanelContainer.new()
 	you_panel.add_theme_stylebox_override("panel", UiTheme.card_style())
@@ -161,7 +167,7 @@ func _build_ui() -> void:
 	var me_title := UiTheme.ink_label("我", 16, UiTheme.INK)
 	me_v.add_child(me_title)
 	me_v.add_child(_make_stat_row("me", _me_boxes))
-	me_v.add_child(_make_action_row(0, _me_btns))
+	me_v.add_child(_make_skill_grid(0, _me_btns))
 
 
 func _make_tempo_bar() -> Control:
@@ -268,48 +274,64 @@ func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
 	return col
 
 
-func _make_action_row(who: int, btns: Dictionary) -> HBoxContainer:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	var styles := {
-		GameRules.Action.ZAN: UiTheme.ACCENT,
-		GameRules.Action.BAO1: UiTheme.WAVE,
-		GameRules.Action.FANG: UiTheme.SHIELD,
-	}
-	var names := {
-		GameRules.Action.ZAN: "攒",
-		GameRules.Action.BAO1: "包子",
-		GameRules.Action.FANG: "防",
-	}
-	for a in [GameRules.Action.ZAN, GameRules.Action.BAO1, GameRules.Action.FANG]:
+## 13 技能紧凑技能条（GridContainer 多行），提交仍走 _on_pick → controller.try_select
+func _make_skill_grid(who: int, btns: Dictionary) -> GridContainer:
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	for a in GameRules.SKILLS:
+		var act := int(a)
+		var col: Color = UiTheme.ACCENT
+		if GameRules.is_attack(act):
+			col = UiTheme.WAVE
+		elif GameRules.is_defense(act):
+			col = UiTheme.SHIELD
+		var fg := UiTheme.INK if col == UiTheme.ACCENT else Color.WHITE
 		var b := Button.new()
-		b.text = names[a]
-		b.custom_minimum_size = Vector2(96, 72)
-		b.add_theme_font_size_override("font_size", 22)
-		# 亮底（攒）用深字，避免白字发虚
-		var fg := UiTheme.INK if a == GameRules.Action.ZAN else Color.WHITE
+		b.text = GameRules.action_name(act)
+		b.custom_minimum_size = Vector2(0, 44)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.clip_text = true
+		b.add_theme_font_size_override("font_size", 12)
 		b.add_theme_color_override("font_color", fg)
 		b.add_theme_color_override("font_hover_color", fg)
 		b.add_theme_color_override("font_pressed_color", fg)
-		var col: Color = styles[a]
-		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 16))
-		b.add_theme_stylebox_override("hover", UiTheme.button_style(col.lightened(0.08), 16))
-		b.add_theme_stylebox_override("pressed", UiTheme.button_style(col.darkened(0.1), 16))
-		var act: int = a
+		b.add_theme_color_override("font_disabled_color", Color(0.35, 0.33, 0.3))
+		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 10))
+		b.add_theme_stylebox_override("hover", UiTheme.button_style(col.lightened(0.08), 10))
+		b.add_theme_stylebox_override("pressed", UiTheme.button_style(col.darkened(0.1), 10))
+		b.add_theme_stylebox_override("disabled", UiTheme.button_style(Color(0.78, 0.76, 0.72), 10))
 		var seat: int = who
 		b.pressed.connect(func(): _on_pick(seat, act))
 		var kind := "default"
-		if a == GameRules.Action.ZAN:
+		if act == GameRules.Action.ZAN:
 			kind = "zan"
-		elif a == GameRules.Action.BAO1:
+		elif GameRules.is_bao(act):
 			kind = "bo"
-		else:
+		elif GameRules.is_defense(act):
 			kind = "fang"
 		BattleFx.bind_press(b, kind)
-		row.add_child(b)
-		btns[a] = b
-	return row
+		grid.add_child(b)
+		btns[act] = b
+	return grid
+
+
+## 按钮文案：技能名 + 耗气；冷却中挂「CDn」，未解锁挂「解锁 n 分」
+func _skill_label(s: BattleState, who: int, a: int) -> String:
+	var name := GameRules.action_name(a)
+	var unlock := GameRules.unlock_score(a)
+	if s.score[who] < unlock:
+		return "%s\n解锁 %d 分" % [name, unlock]
+	var cd := GameRules.cooldown_of(a)
+	if cd > 0:
+		var left := maxi(0, int(s.cooldowns[who].get(a, 0)) + cd + 1 - s.round)
+		if left > 0:
+			name += " CD%d" % left
+	var cost := GameRules.qi_cost(a)
+	if cost > 0:
+		name += "\n%d气" % cost
+	return name
 
 
 func _on_top_menu() -> void:
@@ -557,7 +579,7 @@ func _show_spotlight() -> void:
 	var zan_btn: Button = _me_btns.get(GameRules.Action.ZAN) as Button
 	if zan_btn == null:
 		return
-	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), zan_btn, "点击「攒」开始对决")
+	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), zan_btn, "点击「攒气」开始对决")
 
 
 func _hide_spotlight() -> void:
@@ -591,7 +613,7 @@ func _on_phase(phase: int, round_no: int) -> void:
 	match phase:
 		GameRules.Phase.SELECTING:
 			if is_opening:
-				_status_label.text = "点击「攒」开始对决"
+				_status_label.text = "点击「攒气」开始对决"
 				_show_spotlight()
 			else:
 				_status_label.text = "同步出招"
@@ -874,6 +896,8 @@ func _refresh_all() -> void:
 		mine = 0
 	_set_row(_me_boxes, s, mine)
 	_set_row(_you_boxes, s, 1 - mine)
+	if _score_label != null:
+		_score_label.text = "比分 我 %d : %d · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), GameRules.WIN_SCORE]
 	var input_ok: bool = controller.is_pick_open()
 	var can_lock: bool = input_ok and _overlay.visible == false
 	var picked: int = int(controller._local_preselect[mine]) if controller._local_preselect.size() > mine else -1
@@ -881,6 +905,7 @@ func _refresh_all() -> void:
 		var b: Button = _me_btns[a]
 		var act := int(a)
 		b.disabled = (not can_lock) or (not s.can_use_action(mine, act))
+		b.text = _skill_label(s, mine, act)
 	if not can_lock and _overlay != null and not _overlay.visible and not s.is_over():
 		if _status_label != null and controller != null and (controller._resolving or controller._did_settle):
 			_status_label.text = "结算中"
@@ -891,29 +916,6 @@ func _refresh_all() -> void:
 	elif not input_ok and _overlay != null and not _overlay.visible and not s.is_over():
 		if _log_label != null and _log_label.text == "……":
 			_log_label.text = "网络同步中，请稍候…"
-
-
-## 选中态：金边 + 稍暗，肉眼可辨「点成功了」
-func _set_btn_selected(b: Button, on: bool) -> void:
-	if b == null:
-		return
-	if on:
-		b.add_theme_color_override("font_color", UiTheme.INK)
-		b.add_theme_color_override("font_hover_color", UiTheme.INK)
-		b.add_theme_stylebox_override("normal", UiTheme.button_style(Color(1.0, 0.85, 0.35), 16, UiTheme.ACCENT_DEEP))
-		b.add_theme_stylebox_override("disabled", UiTheme.button_style(Color(1.0, 0.85, 0.35), 16, UiTheme.ACCENT_DEEP))
-	else:
-		# 恢复各招式默认色
-		var col: Color = UiTheme.ACCENT
-		if b.text == "波":
-			col = UiTheme.WAVE
-		elif b.text == "防":
-			col = UiTheme.SHIELD
-		var fg := UiTheme.INK if b.text == "攒" else Color.WHITE
-		b.add_theme_color_override("font_color", fg)
-		b.add_theme_color_override("font_hover_color", fg)
-		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 16))
-		b.add_theme_stylebox_override("disabled", UiTheme.button_style(col.darkened(0.25), 16))
 
 
 func _set_row(boxes: Array, s: BattleState, i: int) -> void:
