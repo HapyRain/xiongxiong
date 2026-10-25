@@ -14,12 +14,12 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 | 用途 | 路径 |
 |---|---|
-| Godot 工程（唯一） | `D:\xiongxiong\xiongxiong`（旧机为 `E:\github\xiongxiong`） |
-| Godot 4.7.2 console 引擎（本机） | `C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`（旧机为 `C:\Users\Hollis\Desktop\...`） |
-| 文档 / 规则冻结稿 | 仓库内 `docs/rules/game-rules-v2.md`（已随 v2 提交入库）；旧机过程文件在 `C:\Users\pc\XiaomiMiProjects\xiongxiong\docs\` |
+| Godot 工程（唯一） | **仓库根目录**（命令里一律 `--path .`，不写绝对路径） |
+| Godot 4.7.2 console 引擎 | 优先 `$env:GODOT`；否则由 `tools/run_checks.ps1` 自动探测（各机路径见 `docs/ENVIRONMENT.md`） |
+| 文档 / 规则冻结稿 | 仓库内 `docs/rules/game-rules-v2.md`（已随 v2 提交入库） |
 
-- 引擎路径换机就变：脚本用 `-Godot <..._console.exe>` 或 `$env:GODOT` 覆盖，不要改死在本文件以外的脚本里。
-- 本机是 `C:\Users\pc`（旧机是 `C:\Users\Hollis`）；`C:\Users\pc\XiaomiMiProjects\xiongxiong\godot\` 另有一份**旧工程副本**，不是当前工作区，别在上面改代码。
+- **受版本控制的文档（AGENTS / WORKSPACE / SESSION-HANDOFF 等）禁止写机器绝对路径**：换机一拉就错。机器差异只写 `docs/ENVIRONMENT.md`（已 ignore，每台机各留一份）。
+- 引擎路径一律走 `$env:GODOT` 或 `.\tools\run_checks.ps1` 自动探测；其它脚本用 `-Godot` / `$env:GODOT` 覆盖，不写死。
 - **本机环境细节（引擎/JDK/SDK/导出脚本/MCP 接入与验证方式）：`docs/ENVIRONMENT.md`**。该文件在 `.gitignore` 里，只作本机交接，**不要提交/推送**。
 - 规则权威：**`docs/rules/game-rules-v2.md`（已定稿，唯一实现依据；`minimal-rules-v0.md` 是历史）**。本机可执行的权威是 **`scripts/rules/*` 与 `tests/test_rules_v2.py` 双镜像**，两者必须一致。
 
@@ -28,8 +28,9 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 测试是 **Godot headless SceneTree 脚本**，`ALL PASS` + exit 0 = 通过：
 
 ```powershell
-$g = "C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
-& $g --headless --path D:\xiongxiong\xiongxiong --script res://tests/run_rules_check.gd
+# 推荐：.\tools\run_checks.ps1（自动探测引擎，两机通用）
+$g = $env:GODOT
+& $g --headless --path . --script res://tests/run_rules_check.gd
 ```
 
 **7 个自检，全部都要跑**（都继承 `SceneTree`、单进程，不需要真实窗口/导出模板）：
@@ -39,14 +40,14 @@ $g = "C:\Users\pc\XiaomiMiMoProjects\xiongxiong\Godot_v4.7.2-stable_win64.exe\Go
 ```powershell
 # 一条命令跑完全部（首次先做一次 --import，见「硬约束 6」）
 foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_seal_check","run_netwindow_check","run_roundloop_check","run_nav_check") {
-  & $g --headless --path D:\xiongxiong\xiongxiong --script "res://tests/$n.gd" > $null
+  & $g --headless --path . --script "res://tests/$n.gd" > $null
   "$n exit=$LASTEXITCODE"
 }
 ```
 
 另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，110 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：7/7 全绿，断言合计 405 条**（2026-10-22，平局保底 + 快照 draw_count + 判分镜像增补 16 条）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
+**当前基线：7/7 全绿，断言合计 422 条**（2026-10-26，平局保底 + 快照 draw_count + 判分镜像增补）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -92,7 +93,7 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 .\build\export_android.ps1 -Godot "C:\path\Godot_v4.7.2-stable_win64_console.exe"
 ```
 
-**本机已装好（2026-10-17）**：JDK `E:\github\tools\jdk-17.0.20.1+1`、Android SDK `E:\github\tools\android-sdk`（platform-tools + build-tools 36.0.0 + platforms android-36）、导出模板已装进 `%APPDATA%\Godot\export_templates\4.7.2.stable`、debug keystore 已生成。`export_android.ps1` 会自动探测这些位置（不再依赖 `JAVA_HOME`/`ANDROID_HOME`），并在每次导出前调用 `setup_android_env.ps1` 对齐编辑器设置。
+**导出链已装好（各机具体路径见 `docs/ENVIRONMENT.md`）**：JDK 17、Android SDK（platform-tools + build-tools 36.0.0 + platforms android-36）、导出模板 `%APPDATA%\Godot\export_templates\4.7.2.stable`、debug keystore。`export_android.ps1` 会自动探测，不依赖 `JAVA_HOME`/`ANDROID_HOME`，并在导出前调用 `setup_android_env.ps1` 对齐编辑器设置。
 
 包名 `com.xiongxiong.demo`，产物 `build/xiongxiong-debug.apk`。`-CheckOnly` 会逐项报缺。
 
@@ -103,28 +104,29 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 3. JDK 17 → 编辑器设置 `export/android/java_sdk_path`
 4. Android SDK（platform-tools + build-tools **28–36，建议 36.0.0**；4.7.2 默认 target SDK 36）→ 编辑器设置 `export/android/android_sdk_path`
 5. debug keystore → `%APPDATA%\Godot\keystores\debug.keystore`（配好 JDK 后 Godot 自动生成）
-6. 首次导入：`& $g --headless --path E:\github\xiongxiong --import`
+6. 首次导入：`.\tools\run_checks.ps1 -Import`（或 `& $g --headless --path . --import`）
 
-不需要 NDK / CMake / gradle（`use_gradle_build=false`，用官方预构建模板）。安装：`adb install -r build\xiongxiong-debug.apk`（本机可用 `D:\software\MuMuPlayer\nx_main\adb.exe`）。
+不需要 NDK / CMake / gradle（`use_gradle_build=false`，用官方预构建模板）。安装：`adb install -r build\xiongxiong-debug.apk`（adb 路径见 `docs/ENVIRONMENT.md`）。
 
 ## Godot MCP（重要）
 
-`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`，要求 node ≥ 22）只跟**编辑器里当前打开的工程**通信。要让它作用到本仓库，**必须先在 Godot 编辑器里打开 `E:\github\xiongxiong`**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
+`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`，要求 node ≥ 22）只跟**编辑器里当前打开的工程**通信。要让它作用到本仓库，**必须先在 Godot 编辑器里打开本仓库根目录**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
 
 ## 工作约定
 
 - 终端**完全使用 PowerShell 7 (pwsh)**，不用 Windows PowerShell 5.1：执行命令一律显式走 `pwsh -NoProfile`（agent 默认 shell 是 PS 5.1，不得依赖）；跑自检时直接调引擎并读 `$LASTEXITCODE`（需要退出码时才这样，一般交互式启动用 `Start-Process`）。
 - 推送走本机代理：`$env:HTTPS_PROXY="http://127.0.0.1:7897"`。**github.com 直连不稳（时通时断）**，`git fetch/push` 失败先挂代理再试；下载大文件可改用镜像（`https://gh-proxy.com/https://github.com/...` 实测可用）。
 - **走代理时 git 必须加 `-c http.sslBackend=openssl`**：默认 schannel 在 CONNECT 隧道里 TLS 握手必失败（`schannel: failed to receive handshake`）。完整可用命令：`git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pull --ff-only origin main`。
+- **拉代码用 fast-forward merge**：本地 APK 常有未提交改动，git pull（rebase）会直接报错 → 用 git merge --ff-only origin/main（不覆盖本地改动），或先 git stash。
 - 大改动先拆 subagent；派单时写清工程路径、禁止改 `scripts/rules/*`、验收命令。
 - **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
 - DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前状态（2026-10-22）
+## 当前状态（2026-10-26）
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（103 条）；**7 个自检 399 条断言全绿**。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（110 条）；**7 个自检 422 条断言全绿**。
 - **UI 已有 v2 §8 技能条**：13 技能格 + CD/解锁角标 + 顶部分数条（单机/联机都有）；视觉仍是一次性实现，随前端重做再换。
-- `main` 头部 **`b5e94d2`**：v2 规则三方验收收口（反向座位镜像 / 联机序列化 / 权威边界）。本机复跑 7 个自检 + Python 镜像，全绿。
+- `main` 头部 **`e099669`**：平局保底 / 判分下放 / 文档勘误 / UI 技能条 + 会话层清理。本机复跑 7 个自检（422 断言）+ Python 镜像（110 条），全绿。
 - 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
 - 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。

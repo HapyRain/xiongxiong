@@ -17,3 +17,5 @@ docs/ENVIRONMENT.md
 *.keystore
 *.jks
 *.idsig
+# per-machine Godot engine path override for tools/run_checks.ps1
+tools/godot_path.local
