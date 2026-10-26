@@ -102,7 +102,9 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 ## Godot MCP（重要）
 
-`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`，要求 node ≥ 22）只跟**编辑器里当前打开的工程**通信。要让它作用到本仓库，**必须先在 Godot 编辑器里打开本仓库根目录**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
+`addons/godot_mcp_toolkit` 是**编辑器内插件**，`.mcp.json` 里的 npm 桥（`npx -y @npgamedev/godot-mcp-server`，要求 node ≥ 22）只跟**编辑器里当前打开的工程**通信。
+- **MCP 开着时优先用它做 Godot 开发**：场景/节点增删改（`scene_create_node`/`node_set_property`/`control_set_layout`）、截图（`editor_screenshot`/`runtime_screenshot`）、运行时状态检查（`runtime_get_node_state`）都比手写 `.tscn` 可靠；脚本内容大改仍走文本工具。
+- **导出 APK 会停掉 MCP server**：`build\export_android.ps1` 结束后 MCP 断连（`[MCPServer] stopped`）。顺序建议：先做完 MCP 相关操作 → 再导出；导出后需要 MCP 就**重启 Godot 编辑器**（重新打开本工程）。要让它作用到本仓库，**必须先在 Godot 编辑器里打开本仓库根目录**，否则工具会连到别的工程实例上（甚至另一个 MCP runtime 端口 6570–6585）。改场景/UI/脚本优先走 MCP，而不是手写 `.tscn`。
 
 ## 工作约定
 
