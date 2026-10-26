@@ -1,13 +1,14 @@
 ## run_rules_check.gd
 ## Godot 无头规则层自检 —— v2 结算镜像。
 ## 权威：docs/rules/game-rules-v2.md §1–§9（逐条裁决）。
-## 与 tests/test_rules_v2.py 是「同一套 103 条断言、两份独立实现」：
+## 与 tests/test_rules_v2.py 是「同一套断言、两份独立实现」：
 ##   Python 侧不 import / 不调用 Godot，本文件直接跑 GameRules / BattleState / GameResolve。
 ## 改 scripts/rules/**.gd 的结算语义必须同步改 Python 侧（AGENTS 硬约束 2）。
 ##
 ## 历史坑：旧版本文件只有 14 条断言（旧 v1 数值）——删掉 clamp_i / _check_winner 仍 ALL PASS。
 ## 现在按 §3 矩阵逐类覆盖（包子 1/2/3 连 vs 全技能、破防技互撞、吸收碰撞、劝降、
 ## CD 计时、封盾、clamp/封顶、终局判定、can_use_action 合法性），并保留「能失败」原则。
+## 双模式：classic 预设（血1/单包/3 动作/无劝降/无保底/一局定胜负）+ 精通（旁路解锁分，CD 照旧）。
 extends SceneTree
 
 const ZAN := GameRules.Action.ZAN
@@ -674,6 +675,121 @@ func _init() -> void:
 		and s.hp == [GameRules.MAX_HP, GameRules.MAX_HP] and s.qi == [0, 0] and s.winner == -1
 		and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
 
+	# ── ㉒ classic 模式预设（docs/rules/game-rules-classic.md）──────────────
+	var c: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[经典] 预设：血1/气5/盾3/单包/3 动作/无劝降/无保底/一局定胜负",
+		c.mode == "classic" and not c.mastery
+		and c.max_hp() == 1 and c.max_qi() == 5 and c.max_shield() == 3 and c.bao_max() == 1
+		and c.score_to_win() == 1 and not c.skills_enabled() and not c.quan_jiang_enabled()
+		and not c.draw_backstop() and c.draw_replay_max() == 3 and c.round_cap() == 40
+		and c.hp == [1, 1] and c.shield == [3, 3])
+
+	s = _mk_mode("classic", [5, 5], 9)
+	s.score = [1, 1]
+	avail = s.available_actions(0)
+	avail.sort()
+	ok = _exp(ok, "[经典] 可用动作仅 攒/包子×1/防御（分数再高也不解锁技能）",
+		avail == [ZAN, BAO1, FANG])
+
+	s = _mk_mode("classic", [5, 5])
+	GameResolve.resolve_turn(s, BAO1, ZAN)
+	ok = _exp(ok, "[经典] 包子打攒气 = 即死（1 血归零 → winner=0；气封顶 5）",
+		s.winner == 0 and _chk(s, [1, 0], [4, 5], [3, 3]))
+
+	s = _mk_mode("classic", [3, 3])
+	GameResolve.resolve_turn(s, FANG, ZAN)
+	ok = _exp(ok, "[经典] 防御 vs 攒气：无事发生（防御只耗 1 盾）",
+		_chk(s, [1, 1], [3, 4], [2, 3]))
+
+	s = _mk_mode("classic", [5, 5])
+	r = GameResolve.resolve_turn(s, BAO1, FANG)
+	ok = _exp(ok, "[经典] 包子 vs 防御：被挡、防御方盾 3→2、不掉血",
+		_chk(s, [1, 1], [4, 5], [3, 2]) and bool(r.blocked[1]))
+
+	s = _mk_mode("classic", [5, 5])
+	s.shield = [0, 3]
+	GameResolve.resolve_turn(s, FANG, BAO1)
+	ok = _exp(ok, "[经典] 盾 0 出防御 = 裸防：被打 1 血即负（winner=1）",
+		s.winner == 1 and _chk(s, [0, 1], [5, 4], [0, 3]))
+
+	s = _mk_mode("classic", [5, 5])
+	r = GameResolve.resolve_turn(s, BAO3, FANG)
+	ok = _exp(ok, "[经典] 非法 3 连包按上限收口为单包（不破防、被挡）",
+		_chk(s, [1, 1], [2, 5], [3, 2]) and bool(r.blocked[1]))
+
+	s = _mk_mode("classic", [5, 5])
+	GameResolve.resolve_turn(s, ZAN, ZAN)
+	ok = _exp(ok, "[经典] 气上限 5 / 盾上限 3（5 气再攒不溢出）",
+		_chk(s, [1, 1], [5, 5], [3, 3]))
+
+	s = _mk_mode("classic", [5, 0])
+	r = GameResolve.resolve_turn(s, ZAN, ZAN)
+	ok = _exp(ok, "[经典] 无劝降：满气满血 + 对手 1 血也不触发",
+		s.winner == -1 and int(r.quan_jiang) == -1)
+
+	s = _mk_mode("classic", [5, 5], GameRules.MAX_ROUND)
+	GameResolve.resolve_turn(s, ZAN, ZAN)
+	ok = _exp(ok, "[经典] 40 回合血同 → 平局（一局定胜负，靠重开本局）", s.winner == 2)
+
+	s = _mk_mode("classic", [0, 0])
+	s.winner = 2
+	info = s.settle_round_after_resolve()
+	ok = _exp(ok, "[经典] 第 1 次平局：不得分、不终场（重开本局）",
+		bool(info["round_end"]) and not bool(info["match_over"])
+		and s.score == [0, 0] and s.draw_count == 1)
+	s.winner = 2
+	s.settle_round_after_resolve()
+	s.winner = 2
+	s.settle_round_after_resolve()
+	ok = _exp(ok, "[经典] 第 2/3 次平局仍不终场（draw_count=3）",
+		not s.is_match_over() and s.score == [0, 0] and s.draw_count == 3)
+	s.winner = 2
+	info = s.settle_round_after_resolve()
+	ok = _exp(ok, "[经典] 第 4 次平局 → 整场判平（match_over + match_winner=2）",
+		bool(info["match_over"]) and int(info["match_winner"]) == 2 and s.score == [0, 0])
+
+	s = _mk_mode("classic", [5, 5])
+	GameResolve.resolve_turn(s, BAO1, ZAN)
+	info = s.settle_round_after_resolve()
+	ok = _exp(ok, "[经典] 一局定胜负：胜者 +1 分即整场结束（match_winner=0）",
+		bool(info["match_over"]) and int(info["match_winner"]) == 0 and s.score == [1, 0])
+
+	# ── ㉓ 精通（mastery）：只旁路解锁分支，CD / 气 / 盾照旧（v2 §1）──────────
+	s = BattleState.new("lesson", true)
+	s.qi = [10, 10]
+	s.round = 2
+	s.score = [0, 0]
+	avail = s.available_actions(0)
+	avail.sort()
+	ok = _exp(ok, "[精通] 第 2 回合解锁旁路：6 个可用（CD3+ 仍按 §1 计时，不是 13）",
+		s.mastery and avail == [ZAN, BAO1, BAO2, BAO3, FANG, STRONG_FANG])
+	s.round = 9
+	avail = s.available_actions(0)
+	avail.sort()
+	ok = _exp(ok, "[精通] 回合 9（CD 全过）：13 个动作全可用（0 分也解锁）",
+		avail.size() == 13 and avail == all_skills)
+	s.score = [1, 0]
+	var avail2: Array = s.available_actions(0)
+	avail2.sort()
+	ok = _exp(ok, "[精通] 解锁不累加：分数变化不改变动作集合（0 分即全解锁）",
+		avail2 == avail)
+
+	# ── ㉔ 快照：mode + mastery 随包，restore 校验一致 ───────────────────
+	s = BattleState.new("classic")
+	var snap_c: Dictionary = s.snapshot()
+	ok = _exp(ok, "[快照] snapshot 带 mode + mastery",
+		str(snap_c.get("mode", "")) == "classic" and not bool(snap_c.get("mastery", true)))
+	var c2: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 同模式：mode/mastery/血上限保留",
+		c2.restore(snap_c) and c2.mode == "classic" and c2.hp == [1, 1])
+	var lesson_s: BattleState = BattleState.new()
+	ok = _exp(ok, "[快照] restore 校验：mode 不一致 → 拒绝（状态不动）",
+		not lesson_s.restore(snap_c) and lesson_s.mode == "lesson"
+		and lesson_s.hp == [4, 4])
+	lesson_s.hp = [3, 2]
+	ok = _exp(ok, "[快照] restore 校验失败时不改任何字段",
+		not lesson_s.restore(snap_c) and lesson_s.hp == [3, 2])
+
 	print("=".repeat(52))
 	if not ok:
 		for n in _failed:
@@ -688,6 +804,14 @@ func _mk(hp: Array, qi: Array, shield: Array, round_no: int = 2) -> BattleState:
 	s.hp = hp.duplicate()
 	s.qi = qi.duplicate()
 	s.shield = shield.duplicate()
+	s.round = round_no
+	return s
+
+
+## 按模式构造局面：资源上限取自预设（hp / 盾默认满），qi / round 显式给。
+func _mk_mode(mode: String, qi: Array, round_no: int = 2, mastery: bool = false) -> BattleState:
+	var s := BattleState.new(mode, mastery)
+	s.qi = qi.duplicate()
 	s.round = round_no
 	return s
 

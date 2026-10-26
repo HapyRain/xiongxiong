@@ -10,7 +10,11 @@ signal selected_changed(who: int, action: int)
 signal round_resolved(result: GameRules.RoundResult)
 signal game_over(winner: int)
 
+## 单人选择页 → 对战页的配置槽（无 autoload，跨场景用静态变量；main.gd 取走即清空）。
+static var pending_cfg: Dictionary = {}
+
 var state: BattleState = BattleState.new()
+var difficulty: String = "normal"
 var _select_left: float = 0.0
 var _beat_fired: Array = [false, false]
 var _ai_timer: float = 0.0
@@ -21,8 +25,19 @@ var _did_lock_fill: bool = false
 var _did_settle: bool = false
 
 
+## 开局由 start_match(cfg) 触发，_ready 不再自动开打（避免没选模式就进对局）。
 func _ready() -> void:
-	_start_opening()
+	pass
+
+
+## 单人开局入口。cfg = {mode:"classic"|"lesson", mastery:bool, difficulty:"normal"|"hard"}
+func start_match(cfg: Dictionary) -> void:
+	difficulty = str(cfg.get("difficulty", "normal"))
+	var mode: String = str(cfg.get("mode", "lesson"))
+	if not GameRules.PRESETS.has(mode):
+		mode = "lesson"
+	state = BattleState.new(mode, bool(cfg.get("mastery", false)))
+	_start_opening(false)
 
 
 ## 唯一输入闸：UI 禁用与 try_select 共用
@@ -43,8 +58,8 @@ func _start_opening(keep_score: bool = false) -> void:
 		# 复位字段表由会话层统一给出，避免与热座/联机路径分叉
 		state.reset_round_keep_score()
 	else:
-		# 整场（含再来一局）首次开局：score 归零
-		state = BattleState.new()
+		# 整场（含再来一局）首次开局：score 归零，保留模式/精通（不能退回默认 lesson）
+		state = BattleState.new(state.mode, state.mastery)
 	_opening_done = false
 	state.round = GameRules.OPENING_ROUND
 	state.phase = GameRules.Phase.SELECTING
@@ -187,4 +202,4 @@ func _emit_over() -> void:
 
 
 func _ai_choose() -> int:
-	return AiOpponent.choose(state, 1)
+	return AiOpponent.choose(state, 1, difficulty)

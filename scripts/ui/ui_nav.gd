@@ -11,6 +11,48 @@ const SETTINGS_GROUP := "settings_panel_overlay"
 ## 右上角「设置」齿轮（挂在 QualitySettings autoload 下的 SettingsEntryLayer 里）
 const SETTINGS_ENTRY_GROUP := "settings_entry_button"
 
+## 系统返回键路由：当前场景路径 → 回退场景路径。新屏必须自己注册。
+static var BACK_ROUTES: Dictionary = {}
+## 返回前守卫：当前场景路径 → Callable；返回 true 表示已接管（如弹二次确认），不再自动切场景。
+static var BACK_GUARDS: Dictionary = {}
+## 回退到 menu 时要打开「联机入口」页的场景路径（lobby_* 用）。
+static var BACK_NET_ENTRY: Dictionary = {}
+## menu.gd 读它决定 _ready 后打开主页还是联机入口页。
+const NET_ENTRY_META := "xiongxiong_net_entry"
+
+
+## 注册回退目标（screen = 当前场景 res:// 路径，parent = 回退场景 res:// 路径）。
+## net_entry=true：回退到 menu 时直接打开联机入口页，而不是主菜单首页。
+static func register_back_target(screen: String, parent: String, net_entry: bool = false) -> void:
+	BACK_ROUTES[screen] = parent
+	if net_entry:
+		BACK_NET_ENTRY[screen] = true
+	else:
+		BACK_NET_ENTRY.erase(screen)
+
+
+## 注册返回前守卫（如对局页二次确认）：guard 返回 true 表示已接管，go_back 不再切场景。
+static func register_back_guard(screen: String, guard: Callable) -> void:
+	BACK_GUARDS[screen] = guard
+
+
+## 按当前场景路径查路由并切场景；未注册返回 false，交给调用方决定。
+static func go_back(tree: SceneTree) -> bool:
+	if tree == null or tree.current_scene == null:
+		return false
+	var screen := str(tree.current_scene.scene_file_path)
+	var guard: Callable = BACK_GUARDS.get(screen, Callable())
+	if guard.is_valid() and bool(guard.call()):
+		return true
+	var target := str(BACK_ROUTES.get(screen, ""))
+	if target.is_empty():
+		return false
+	if bool(BACK_NET_ENTRY.get(screen, false)):
+		Engine.set_meta(NET_ENTRY_META, true)
+	cleanup_overlays(tree)
+	tree.change_scene_to_file(target)
+	return true
+
 
 ## 设置面板是否已打开（按 group 查，兼容面板被搬到 SettingsPanelLayer 之后）。
 static func is_settings_open(tree: SceneTree) -> bool:

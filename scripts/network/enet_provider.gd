@@ -359,7 +359,9 @@ func get_last_host_err() -> String:
 func poll(delta: float) -> void:
 	if _conn != null and _open:
 		_pump_service()
-		_conn.flush()
+		# 上层处理 packet_received 时可能同步 close()（拒绝/离开）→ flush 前再判一次
+		if _conn != null and _open:
+			_conn.flush()
 	# 房主监听必须一直 pump，否则永远不应答 DISCOVER（_discover_timeout 常为 0）
 	if _discover != null:
 		if _discover_listening:
@@ -415,6 +417,9 @@ func _subnet_broadcast(ip: String) -> String:
 
 func _pump_service() -> void:
 	for i in MAX_SERVICE_EVENTS:
+		# 上层可能在上一个事件里同步 close()（拒绝入房/离开）→ 不能再用已销毁的 _conn
+		if _conn == null or not _open:
+			break
 		var ev = _conn.service(0)
 		if ev == null or not (ev is Array) or ev.is_empty():
 			break
@@ -651,12 +656,15 @@ func _pump_discover() -> void:
 		var msg: Dictionary = parsed
 		var magic := str(msg.get("magic", ""))
 		if magic == DISCOVER_MAGIC and _is_host and _discover_listening:
-			# 回房卡
+			# 回房卡（room_announce：房间名 + 模式/精通 + 人数）
 			var announce := {
 				"v": 1,
 				"magic": ANNOUNCE_MAGIC,
+				"room_id": str(_room_info.get("room_id", "")),
 				"room_name": str(_room_info.get("room_name", "xiongxiong")),
 				"host_name": str(_room_info.get("host_name", "host")),
+				"mode": str(_room_info.get("game_mode", "lesson")),
+				"mastery": bool(_room_info.get("mastery", false)),
 				"port": int(_room_info.get("port", DEFAULT_GAME_PORT)),
 				"token": _token,
 				"players": _id_to_peer.size() + 1,

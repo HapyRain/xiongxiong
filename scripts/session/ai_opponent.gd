@@ -7,22 +7,31 @@
 ##     （解锁分 / 耗气 / 盾≥1 / 封盾 / CD 全部由规则层裁决，AI 不再自己记一套数值）；
 ##   · 回合 1（开局亮相）规则只允许攒气 → 直接攒；
 ##   · 低气优先攒气（攒气还是唯一「无耗气 + 加盾」的基本招）；简单加权随机，够用即可。
+## 难度（PLAN v1.1 R3）：normal = 现权重（攒气/包子×1/防御）；
+## hard = 候选追加包子 2/3 连（lesson 才有，classic 会被 can_use_action 挡掉），
+##        且「对方在攒气」时加重包子；自己盾少时收着防御。
 class_name AiOpponent
 extends RefCounted
 
-## who=0/1 座位。返回 GameRules.Action。
-static func choose(state: BattleState, who: int = 1) -> int:
+## 候选权重表（choose 的唯一来源；测试直接比对权重，不依赖随机采样）。
+## 只含 can_use_action 放行的招，权重 0 = 不进池。
+static func weights(state: BattleState, who: int = 1, difficulty: String = "normal") -> Dictionary:
 	if state == null:
-		return GameRules.Action.ZAN
+		return {}
 	var seat: int = clampi(who, 0, 1)
-	# 开局回合：规则只放行攒气（battle_state.gd can_use_action 第 1 条）
-	if state.round == GameRules.OPENING_ROUND:
-		return GameRules.Action.ZAN
-
-	# 候选集：攒气 / 包子×1 / 防御（低气时攒气权重最高）
+	var hard: bool = difficulty == "hard"
+	var foe: int = 1 - seat
+	# hard 的「对方气量较上回合增长」：state 没有上一回合气量字段，用 qi[foe] >= 2 近似
+	# （对方只有出攒气才会涨气，等价于「上回合攒过」的短记）。
+	# shortcut: 久攒不用的气也会被当成刚增长；要精确需在 BattleState 记上一回合 qi（rules 层，走冻结流程）。
+	var foe_building: bool = hard and int(state.qi[foe]) >= 2
+	# 候选集：攒气 / 包子 1-3 连 / 防御（hard 才放 2/3 连，normal 维持原三招）
 	var candidates: Array = [GameRules.Action.ZAN, GameRules.Action.BAO1, GameRules.Action.FANG]
+	if hard:
+		candidates = [GameRules.Action.ZAN, GameRules.Action.BAO1,
+			GameRules.Action.BAO2, GameRules.Action.BAO3, GameRules.Action.FANG]
 	var low_qi: bool = int(state.qi[seat]) <= 1
-	var pool: Array = []
+	var out: Dictionary = {}
 	for a: int in candidates:
 		if not state.can_use_action(seat, a):
 			continue
@@ -30,13 +39,34 @@ static func choose(state: BattleState, who: int = 1) -> int:
 		match a:
 			GameRules.Action.ZAN:
 				w = 4 if low_qi else 2
-			GameRules.Action.BAO1:
-				w = 3 if not low_qi else 1
+			GameRules.Action.BAO1, GameRules.Action.BAO2, GameRules.Action.BAO3:
+				# 低气只有 ×1 有边际价值；连数越高耗气越多，权重递减
+				w = maxi(1, (3 if not low_qi else 1) - (a - GameRules.Action.BAO1))
+				if foe_building:
+					w += 3
 			GameRules.Action.FANG:
 				w = 2 if int(state.shield[seat]) >= 1 else 0
-		for _i in maxi(0, w):
-			pool.append(a)
+				# hard：自己盾少时省着用（盾 0 本来就非法，这里覆盖盾 1）
+				if hard and int(state.shield[seat]) <= 1:
+					w = 0
+		out[a] = maxi(0, w)
+	return out
 
+
+## who=0/1 座位；difficulty = normal|hard。返回 GameRules.Action。
+static func choose(state: BattleState, who: int = 1, difficulty: String = "normal") -> int:
+	if state == null:
+		return GameRules.Action.ZAN
+	var seat: int = clampi(who, 0, 1)
+	# 开局回合：规则只放行攒气（battle_state.gd can_use_action 第 1 条）
+	if state.round == GameRules.OPENING_ROUND:
+		return GameRules.Action.ZAN
+
+	var pool: Array = []
+	var w := weights(state, seat, difficulty)
+	for a in w:
+		for _i in maxi(0, int(w[a])):
+			pool.append(a)
 	if pool.is_empty():
 		# 兜底：候选全被规则挡住时，退到本回合可用集里的第一个（含 ZAN）
 		var avail: Array = state.available_actions(seat)

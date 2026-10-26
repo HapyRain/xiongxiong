@@ -28,26 +28,18 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 测试是 **Godot headless SceneTree 脚本**，`ALL PASS` + exit 0 = 通过：
 
 ```powershell
-# 推荐：.\tools\run_checks.ps1（自动探测引擎，两机通用）
-$g = $env:GODOT
-& $g --headless --path . --script res://tests/run_rules_check.gd
+# 推荐：一条命令跑完全部（自动探测引擎，两机通用；首次先做一次 --import，见「硬约束 6」）
+.\tools\run_checks.ps1
+# 只跑部分：.\tools\run_checks.ps1 -Only ui,nav
 ```
 
-**7 个自检，全部都要跑**（都继承 `SceneTree`、单进程，不需要真实窗口/导出模板）：
+**8 个自检，全部都要跑**（都继承 `SceneTree`、单进程，不需要真实窗口/导出模板）：
 
-`run_rules_check` · `run_network_check` · `run_seal_check` · `run_quality_check` · `run_netwindow_check` · `run_roundloop_check` · `run_nav_check`
-
-```powershell
-# 一条命令跑完全部（首次先做一次 --import，见「硬约束 6」）
-foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_seal_check","run_netwindow_check","run_roundloop_check","run_nav_check") {
-  & $g --headless --path . --script "res://tests/$n.gd" > $null
-  "$n exit=$LASTEXITCODE"
-}
-```
+`run_rules_check` · `run_network_check` · `run_seal_check` · `run_quality_check` · `run_netwindow_check` · `run_roundloop_check` · `run_nav_check` · `run_ui_check`
 
 另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，110 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：7/7 全绿，断言合计 422 条**（2026-10-26，平局保底 + 快照 draw_count + 判分镜像增补）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
+**当前基线：8/8 全绿，断言合计 614 条**（2026-10-27，新增 `run_ui_check` + 经典模式边界）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -122,11 +114,11 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 - **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
 - DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前状态（2026-10-26）
+## 当前状态（2026-10-27）
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（110 条）；**7 个自检 422 条断言全绿**。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（110 条）；**8 个自检 614 条断言全绿**。
 - **UI 已有 v2 §8 技能条**：13 技能格 + CD/解锁角标 + 顶部分数条（单机/联机都有）；视觉仍是一次性实现，随前端重做再换。
-- `main` 头部 **`e099669`**：平局保底 / 判分下放 / 文档勘误 / UI 技能条 + 会话层清理。本机复跑 7 个自检（422 断言）+ Python 镜像（110 条），全绿。
+- 本轮**初版全功能**：经典/课间双模式（规则预设）、单人难度、技能精通、联机房间/搜索/准备/5s 倒计时/离开回落、12 屏占位 UI、返回路由与二次确认、第 8 个 UI 冒烟自检。桌面/真机视觉仍是占位（`【占位】`），下一阶段做前端重做。
 - 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
 - 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。
@@ -134,4 +126,4 @@ foreach ($n in "run_rules_check","run_quality_check","run_network_check","run_se
 
 ## 交接文档
 
-`SESSION-HANDOFF.md`（根目录）记录待办优先级与「节奏约定」。其回归清单与上方「验证命令」一致（**7 个**），两边任一改动都要同步。
+`SESSION-HANDOFF.md`（根目录）记录待办优先级与「节奏约定」。其回归清单与上方「验证命令」一致（**8 个**，统一跑 `.\tools\run_checks.ps1`），两边任一改动都要同步。

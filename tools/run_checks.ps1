@@ -1,7 +1,8 @@
 # Run all headless checks + python mirror. Engine auto-detected; override with $env:GODOT.
 # Usage: .\tools\run_checks.ps1 [-Only rules,quality,...] [-Import]
 param(
-    [string]$Only = "",
+    # string[]：`-Only rules,py` 不写引号时 PowerShell 绑成数组，这里统一再按逗号拆
+    [string[]]$Only = @(),
     [switch]$Import
 )
 $ErrorActionPreference = "Stop"
@@ -44,9 +45,9 @@ if ($Import) {
     Write-Host "import exit=$LASTEXITCODE"
 }
 
-$all = @("rules", "quality", "network", "seal", "netwindow", "roundloop", "nav", "py")
-$list = if ($Only) {
-    $Only -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$all = @("rules", "quality", "network", "seal", "netwindow", "roundloop", "nav", "ui", "py")
+$list = if ($Only.Count -gt 0) {
+    $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 } else {
     $all
 }
@@ -55,16 +56,24 @@ $failed = 0
 foreach ($n in $list) {
     if ($n -eq "py") {
         $env:PYTHONIOENCODING = "utf-8"
-        & python tests\test_rules_v2.py
-        if ($LASTEXITCODE -ne 0) { $failed++ }
-        Write-Host "py exit=$LASTEXITCODE"
-        continue
+        $gname = "py"
+        $lines = @(& python tests\test_rules_v2.py 2>&1 | ForEach-Object { "$_" })
+    } else {
+        $gname = "run_${n}_check"
+        $lines = @(& $engine --headless --path $root --script "res://tests/$gname.gd" 2>&1 | ForEach-Object { "$_" })
     }
-    $gname = "run_${n}_check"
-    & $engine --headless --path $root --script "res://tests/$gname.gd" > $null
     $code = $LASTEXITCODE
-    if ($code -ne 0) { $failed++ }
+    # 只看 exit code 会假绿：push_error 不改退出码，必须扫输出。
+    # 排除退出时 "resources still in use at exit" 这类已知噪音。
+    $errs = @($lines | Where-Object {
+        ($_ -match "(USER )?(SCRIPT )?ERROR") -and
+        $_ -notmatch "resources still in use at exit"
+    })
+    if ($code -ne 0 -or $errs.Count -gt 0) { $failed++ }
     Write-Host "$gname exit=$code"
+    if ($errs.Count -gt 0) {
+        Write-Host "  $($errs.Count) error line(s), first: $($errs[0])" -ForegroundColor Red
+    }
 }
 
 if ($failed -gt 0) {

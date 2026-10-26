@@ -46,6 +46,47 @@ const SKILLS := [
 	Action.DA_YANG, Action.BAO_QI, Action.HUI_FU, Action.ZHONG_JI,
 ]
 
+## 双模式预设（docs/PLAN-v1-first-build.md v1.1 R1；字段固定）。字典只读 —— 取值走 preset()。
+## classic = docs/rules/game-rules-classic.md；lesson = 现有 v2 行为。
+## draw_replay_max 仅 classic 用：平局重开本局最多 3 次，第 4 次整场判平；lesson 用 draw_backstop，不用此字段。
+const PRESETS := {
+	"classic": {
+		"mode": "classic",
+		"max_hp": 1,
+		"max_qi": 5,
+		"max_shield": 3,
+		"bao_max": 1,
+		"actions": [Action.ZAN, Action.BAO1, Action.FANG],
+		"skills_enabled": false,
+		"quan_jiang_enabled": false,
+		"draw_backstop": false,
+		"score_to_win": 1,
+		"round_cap": 40,
+		"cap_rule": "hp_then_draw",
+		"draw_replay_max": 3,
+	},
+	"lesson": {
+		"mode": "lesson",
+		"max_hp": MAX_HP,
+		"max_qi": MAX_QI,
+		"max_shield": MAX_SHIELD,
+		"bao_max": BAO_MAX,
+		"actions": SKILLS,
+		"skills_enabled": true,
+		"quan_jiang_enabled": true,
+		"draw_backstop": true,
+		"score_to_win": WIN_SCORE,
+		"round_cap": MAX_ROUND,
+		"cap_rule": "hp_then_draw",
+		"draw_replay_max": 0,
+	},
+}
+
+
+## 取某模式的预设深拷贝（未知 mode 回退 lesson，不返回只读的 const 字典）。
+static func preset(mode: String) -> Dictionary:
+	return (PRESETS.get(mode, PRESETS["lesson"]) as Dictionary).duplicate(true)
+
 # 结算结果（供 UI/音效/会话层消费，规则层不播表现）
 class RoundResult:
 	extends RefCounted

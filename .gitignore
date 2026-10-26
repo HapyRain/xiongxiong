@@ -13,6 +13,9 @@ Thumbs.db
 # 本机环境交接（不入库，勿推送）
 docs/ENVIRONMENT.md
 
+# agent 工具本地目录
+.commandcode/
+
 # 调试签名与本地密钥（勿上传）
 *.keystore
 *.jks

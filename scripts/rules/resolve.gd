@@ -32,19 +32,20 @@ static func resolve_turn(state: BattleState, act_me: int, act_you: int) -> GameR
 	var acts: Array = [act_me, act_you]
 	r.actions = [act_me, act_you]
 
-	# ── Step A 劝降（结算前自动触发，不占动作、不扣资源、不进 CD）────────────
-	for i: int in 2:
-		var can_quan_jiang: bool = (
-			int(state.qi[i]) == GameRules.MAX_QI
-			and int(state.hp[i]) == GameRules.MAX_HP
-			and int(state.hp[1 - i]) == 1
-		)
-		if can_quan_jiang:
-			state.winner = i
-			state.pending = [-1, -1]
-			r.quan_jiang = i
-			r.text = "劝降：%d 胜" % i
-			return r
+	# ── Step A 劝降（结算前自动触发，不占动作、不扣资源、不进 CD；classic 关闭）────
+	if state.quan_jiang_enabled():
+		for i: int in 2:
+			var can_quan_jiang: bool = (
+				int(state.qi[i]) == state.max_qi()
+				and int(state.hp[i]) == state.max_hp()
+				and int(state.hp[1 - i]) == 1
+			)
+			if can_quan_jiang:
+				state.winner = i
+				state.pending = [-1, -1]
+				r.quan_jiang = i
+				r.text = "劝降：%d 胜" % i
+				return r
 
 	# FANG 的合法性在扣资源前定格：盾为 0 时出 FANG = 非法出招 → 按「裸防」处理（game-rules-v2.md §2 注 D_bare）
 	var bare: Array = [false, false]
@@ -104,10 +105,10 @@ static func _pair(state: BattleState, r: GameRules.RoundResult, acts: Array, bar
 	if a == GameRules.Action.XI_SHOU or b == GameRules.Action.XI_SHOU:
 		return
 
-	# 1) 包子 vs 包子
+	# 1) 包子 vs 包子（连数先按模式上限收口：classic bao_max=1，非法多连包只算 1 包）
 	if GameRules.is_bao(a) and GameRules.is_bao(b):
-		var m: int = GameRules.bao_count(a)
-		var n: int = GameRules.bao_count(b)
+		var m: int = mini(GameRules.bao_count(a), state.bao_max())
+		var n: int = mini(GameRules.bao_count(b), state.bao_max())
 		if m > n:
 			_bao_damage(state, r, 1, m - n)
 		elif n > m:
@@ -116,10 +117,10 @@ static func _pair(state: BattleState, r: GameRules.RoundResult, acts: Array, bar
 
 	# 2)–8) 包子 vs 其它
 	if GameRules.is_bao(a):
-		_bao_vs(state, r, 0, GameRules.bao_count(a), b, bare)
+		_bao_vs(state, r, 0, mini(GameRules.bao_count(a), state.bao_max()), b, bare)
 		return
 	if GameRules.is_bao(b):
-		_bao_vs(state, r, 1, GameRules.bao_count(b), a, bare)
+		_bao_vs(state, r, 1, mini(GameRules.bao_count(b), state.bao_max()), a, bare)
 		return
 
 	# 9)–10) 破防技互撞
@@ -176,7 +177,8 @@ static func _bao_vs(
 	var op: int = 1 - i
 	match op_act:
 		GameRules.Action.FANG:
-			# 2) 防御：1–2 连被挡；3 连破防掉 1 血（FANG 使用耗盾已在 Step B 扣）
+			# 2) 防御：1–2 连被挡；3 连破防掉 1 血（FANG 使用耗盾已在 Step B 扣）。
+			# 破防阈值固定为 3 连（矩阵常量，不是 bao_max）：classic 单包永远不破防。
 			if bare[op]:
 				_hit(r, op, 1)
 			elif n >= GameRules.BAO_MAX:
@@ -284,10 +286,10 @@ static func _bao_damage(state: BattleState, r: GameRules.RoundResult, victim: in
 		r.hit[victim] = true
 
 
-## 结算中的「有效盾」= 当前盾 + 本轮已累积盾增量，clamp 到 [0, 3]。
+## 结算中的「有效盾」= 当前盾 + 本轮已累积盾增量，clamp 到 [0, 模式盾上限]。
 static func _eff_shield(state: BattleState, r: GameRules.RoundResult, who: int) -> int:
 	return GameRules.clamp_i(
-		int(state.shield[who]) + int(r.shield_delta[who]), 0, GameRules.MAX_SHIELD
+		int(state.shield[who]) + int(r.shield_delta[who]), 0, state.max_shield()
 	)
 
 
@@ -315,33 +317,33 @@ static func _gain(state: BattleState, r: GameRules.RoundResult, who: int, act: i
 		GameRules.Action.JI_QI:
 			r.qi_delta[who] = int(r.qi_delta[who]) + 3
 		GameRules.Action.HUI_FU:
-			# +1 血（上限 4）；溢出作废、不结转（§1）——只能补到当前空位，
+			# +1 血（上限按模式，classic 1 / lesson 4）；溢出作废、不结转（§1）——只能补到当前空位，
 			# 否则满血出回复会把 +1 结转为「免疫本回合伤害」。
-			var room: int = GameRules.MAX_HP - GameRules.clamp_i(
-				int(state.hp[who]) + int(r.hp_delta[who]), 0, GameRules.MAX_HP
+			var room: int = state.max_hp() - GameRules.clamp_i(
+				int(state.hp[who]) + int(r.hp_delta[who]), 0, state.max_hp()
 			)
 			r.hp_delta[who] = int(r.hp_delta[who]) + maxi(0, mini(1, room))
 		GameRules.Action.BAO_QI:
-			r.shield_delta[who] = GameRules.MAX_SHIELD - int(state.shield[who])  # 补满 3
+			r.shield_delta[who] = state.max_shield() - int(state.shield[who])  # 补满
 		_:
 			pass
 
 
 # ══════════════════════════ 收尾 ══════════════════════════════════════════
 
-## 落地本轮增量：气 / 盾 / 血各自 clamp 到 [0, 上限]；清空 pending。
+## 落地本轮增量：气 / 盾 / 血各自 clamp 到 [0, 本模式上限]；清空 pending。
 ## 不动 cooldowns / score / sealed_round（分别由 Step F、会话层、Step E 写）。
 static func _apply(state: BattleState, r: GameRules.RoundResult) -> void:
 	for i: int in 2:
-		state.qi[i] = GameRules.clamp_i(int(state.qi[i]) + int(r.qi_delta[i]), 0, GameRules.MAX_QI)
+		state.qi[i] = GameRules.clamp_i(int(state.qi[i]) + int(r.qi_delta[i]), 0, state.max_qi())
 		state.shield[i] = GameRules.clamp_i(
-			int(state.shield[i]) + int(r.shield_delta[i]), 0, GameRules.MAX_SHIELD
+			int(state.shield[i]) + int(r.shield_delta[i]), 0, state.max_shield()
 		)
-		state.hp[i] = GameRules.clamp_i(int(state.hp[i]) + int(r.hp_delta[i]), 0, GameRules.MAX_HP)
+		state.hp[i] = GameRules.clamp_i(int(state.hp[i]) + int(r.hp_delta[i]), 0, state.max_hp())
 	state.pending = [-1, -1]
 
 
-## 终局判定：血量归零判负；双亡 = 平局；40 回合比血（血同判平，不比盾）。
+## 终局判定：血量归零判负；双亡 = 平局；回合上限比血（血同判平，不比盾）。
 static func _check_winner(state: BattleState) -> void:
 	var me_dead: bool = int(state.hp[0]) <= 0
 	var you_dead: bool = int(state.hp[1]) <= 0
@@ -354,7 +356,7 @@ static func _check_winner(state: BattleState) -> void:
 	if me_dead:
 		state.winner = 1
 		return
-	if state.round >= GameRules.MAX_ROUND:
+	if state.round >= state.round_cap():
 		if int(state.hp[0]) > int(state.hp[1]):
 			state.winner = 0
 		elif int(state.hp[1]) > int(state.hp[0]):

@@ -17,6 +17,9 @@ const SHIELD := Color(0.165, 0.615, 0.560)      # #2A9D8F 防
 const DANGER := Color(0.760, 0.260, 0.210)      # #C24235
 const OK := Color(0.180, 0.550, 0.320)
 const SHADOW := Color(0, 0, 0, 0.08)
+## W0 占位块（UiPlaceholder）：半透明灰底 + 弱化字，和正式页面区分
+const PLACEHOLDER_BG := Color(0.820, 0.784, 0.714, 0.55)
+const PLACEHOLDER_FG := Color(0.420, 0.376, 0.302)
 
 const FONT_PATH := "res://assets/fonts/NotoSansSC-Regular.otf"
 

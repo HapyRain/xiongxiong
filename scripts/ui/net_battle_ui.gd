@@ -3,6 +3,8 @@
 ## 热座入口已移除（底层 HOTSEAT 仅测试）；对方离开 → 人机接管提示并继续。
 extends Control
 
+const SCENE := "res://scenes/net_battle.tscn"
+
 var controller: NetworkedBattleController
 var _status_label: Label
 var _round_label: Label
@@ -39,10 +41,16 @@ var _btn_decline: Button
 var _btn_menu: Button
 var _btn_rematch: Button
 var _overlay_mode: String = ""
+var _result_placeholder: Control
+## 返回菜单二次确认（返回键 / 遮罩「返回菜单」都走这里，确认前不切场景）
+var _leave_dialog: Control
 
 
 func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
+	UiNav.register_back_target(SCENE, UiNav.MENU_SCENE)
+	UiNav.register_back_guard(SCENE, _on_back_requested)
+	add_child(UiBackRouter.new())
 	controller = NetworkedBattleController.new()
 	controller.name = "NetworkedBattleController"
 	add_child(controller)
@@ -149,6 +157,10 @@ func _build_ui() -> void:
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center.add_child(_status_label)
 
+	# 按房间 config 渲染：classic 3 按钮 / lesson 技能盘；此处只占位亮招与结算区。
+	# TODO(ui): 替换为真实亮招 / 结算区
+	center.add_child(UiPlaceholder.block("亮招 / 结算区", Vector2(300, 64)))
+
 	# 节奏进度条：替代文字拍点，更好把控 2.1s
 	_tempo_root = _make_tempo_bar()
 	center.add_child(_tempo_root)
@@ -241,11 +253,12 @@ func _process(_delta: float) -> void:
 
 
 func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
+	var s: BattleState = controller.state
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
-	var hp_row := BattleFx.make_hp_row(GameRules.MAX_HP, GameRules.MAX_HP)
-	var qi_row := BattleFx.make_qi_row(GameRules.MAX_QI, 0)
-	var sh_row := BattleFx.make_shield_row(GameRules.MAX_SHIELD, 0)
+	var hp_row := BattleFx.make_hp_row(s.max_hp(), s.max_hp())
+	var qi_row := BattleFx.make_qi_row(s.max_qi(), 0)
+	var sh_row := BattleFx.make_shield_row(s.max_shield(), 0)
 	if prefix == "me":
 		_me_hp_row = hp_row
 		_me_qi_row = qi_row
@@ -254,13 +267,13 @@ func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
 		_you_qi_row = qi_row
 	var hp_lab := Label.new()
 	hp_lab.name = prefix + "_hp"
-	hp_lab.text = "%d/%d" % [GameRules.MAX_HP, GameRules.MAX_HP]
+	hp_lab.text = "%d/%d" % [s.max_hp(), s.max_hp()]
 	var qi_lab := Label.new()
 	qi_lab.name = prefix + "_qi"
-	qi_lab.text = "0/%d" % GameRules.MAX_QI
+	qi_lab.text = "0/%d" % s.max_qi()
 	var sh_lab := Label.new()
 	sh_lab.name = prefix + "_shield"
-	sh_lab.text = "0/%d" % GameRules.MAX_SHIELD
+	sh_lab.text = "0/%d" % s.max_shield()
 	boxes.append(hp_lab)
 	boxes.append(qi_lab)
 	boxes.append(sh_lab)
@@ -274,13 +287,14 @@ func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
 	return col
 
 
-## 13 技能紧凑技能条（GridContainer 多行），提交仍走 _on_pick → controller.try_select
+## 技能盘：按房间 config 渲染（classic 只有攒/包子×1/防御 3 个按钮），提交仍走 _on_pick。
 func _make_skill_grid(who: int, btns: Dictionary) -> GridContainer:
+	var acts: Array = GameRules.preset(controller.state.mode)["actions"]
 	var grid := GridContainer.new()
-	grid.columns = 4
+	grid.columns = 3 if acts.size() <= 3 else 4
 	grid.add_theme_constant_override("h_separation", 6)
 	grid.add_theme_constant_override("v_separation", 6)
-	for a in GameRules.SKILLS:
+	for a in acts:
 		var act := int(a)
 		var col: Color = UiTheme.ACCENT
 		if GameRules.is_attack(act):
@@ -317,12 +331,13 @@ func _make_skill_grid(who: int, btns: Dictionary) -> GridContainer:
 	return grid
 
 
-## 按钮文案：技能名 + 耗气；冷却中挂「CDn」，未解锁挂「解锁 n 分」
+## 按钮文案：技能名 + 耗气；冷却中挂「CDn」，未解锁挂「解锁 n 分」（精通旁路）。
 func _skill_label(s: BattleState, who: int, a: int) -> String:
 	var name := GameRules.action_name(a)
-	var unlock := GameRules.unlock_score(a)
-	if s.score[who] < unlock:
-		return "%s\n解锁 %d 分" % [name, unlock]
+	if s.skills_enabled() and not s.mastery:
+		var unlock := GameRules.unlock_score(a)
+		if s.score[who] < unlock:
+			return "%s\n解锁 %d 分" % [name, unlock]
 	var cd := GameRules.cooldown_of(a)
 	if cd > 0:
 		var left := maxi(0, int(s.cooldowns[who].get(a, 0)) + cd + 1 - s.round)
@@ -390,6 +405,11 @@ func _build_overlay() -> void:
 	_overlay_body.add_theme_color_override("font_color", UiTheme.INK_SOFT)
 	v.add_child(_overlay_body)
 
+	# TODO(ui): 替换为真实小局结算 / 终场面板
+	_result_placeholder = UiPlaceholder.block("结算 / 终场", Vector2(280, 110))
+	_result_placeholder.visible = false
+	v.add_child(_result_placeholder)
+
 	var btn_col := VBoxContainer.new()
 	btn_col.add_theme_constant_override("separation", 10)
 	btn_col.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -416,11 +436,7 @@ func _build_overlay() -> void:
 	_btn_menu = Button.new()
 	_btn_menu.text = "返回菜单"
 	_btn_menu.custom_minimum_size = Vector2(200, 48)
-	_btn_menu.pressed.connect(func():
-		if _overlay_mode == "rematch":
-			_on_rematch_no()
-		else:
-			UiNav.return_to_menu(get_tree()))
+	_btn_menu.pressed.connect(_request_leave)
 	BattleFx.bind_press(_btn_menu, "menu")
 	btn_col.add_child(_btn_menu)
 
@@ -446,11 +462,15 @@ func _show_overlay(mode: String, title: String, body: String, show_continue: boo
 		if mode == "game_over":
 			_btn_rematch.text = "再来一局"
 	_set_input_buttons_enabled(false)
+	if _result_placeholder != null:
+		_result_placeholder.visible = mode == "game_over" or mode == "rematch"
 
 
 func _hide_overlay() -> void:
 	_overlay_mode = ""
 	_overlay.visible = false
+	if _result_placeholder != null:
+		_result_placeholder.visible = false
 	_set_input_buttons_enabled(true)
 
 
@@ -607,7 +627,7 @@ func _on_battle_started_ui() -> void:
 
 
 func _on_phase(phase: int, round_no: int) -> void:
-	_round_label.text = "回合 %d / %d" % [round_no, GameRules.MAX_ROUND]
+	_round_label.text = "回合 %d / %d" % [round_no, controller.state.round_cap()]
 	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null \
 		and controller.peer != null and not controller.peer._opening_done
 	match phase:
@@ -857,10 +877,77 @@ func _on_rematch_yes() -> void:
 	Net.answer_rematch(true)
 
 
-func _on_rematch_no() -> void:
-	_hide_overlay()
-	Net.answer_rematch(false)
+# ---------- 返回菜单：二次确认 ----------
+
+func _on_back_requested() -> bool:
+	_request_leave()
+	return true
+
+
+func _request_leave() -> void:
+	if _leave_dialog != null and is_instance_valid(_leave_dialog):
+		return
+	var layer := Control.new()
+	layer.name = "LeaveConfirm"
+	layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(layer)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.5)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(300, 0)
+	panel.add_theme_stylebox_override("panel", UiTheme.card_style())
+	center.add_child(panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 12)
+	panel.add_child(v)
+	var title := UiTheme.ink_label("离开对局？", 20, UiTheme.INK)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(title)
+	var body := UiTheme.ink_label(UiNav.leave_confirm_text(), 13, UiTheme.INK_SOFT)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.custom_minimum_size = Vector2(260, 48)
+	v.add_child(body)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	v.add_child(row)
+	var yes := UiTheme.make_btn("确定", UiTheme.DANGER, Color.WHITE, 16, 44)
+	yes.name = "LeaveConfirmYes"
+	yes.custom_minimum_size.x = 120
+	yes.pressed.connect(_confirm_leave)
+	BattleFx.bind_press(yes, "danger")
+	row.add_child(yes)
+	var no := UiTheme.make_btn("取消", UiTheme.LINE, UiTheme.INK, 16, 44)
+	no.name = "LeaveConfirmNo"
+	no.custom_minimum_size.x = 120
+	no.pressed.connect(_close_leave_dialog)
+	BattleFx.bind_press(no, "menu")
+	row.add_child(no)
+	_leave_dialog = layer
+
+
+func _confirm_leave() -> void:
+	_close_leave_dialog()
+	if _overlay_mode == "rematch":
+		Net.answer_rematch(false)
 	UiNav.return_to_menu(get_tree())
+
+
+func _close_leave_dialog() -> void:
+	if _leave_dialog != null and is_instance_valid(_leave_dialog):
+		_leave_dialog.queue_free()
+	_leave_dialog = null
 
 
 func _on_rematch_answered(yes: bool) -> void:
@@ -897,7 +984,7 @@ func _refresh_all() -> void:
 	_set_row(_me_boxes, s, mine)
 	_set_row(_you_boxes, s, 1 - mine)
 	if _score_label != null:
-		_score_label.text = "比分 我 %d : %d · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), GameRules.WIN_SCORE]
+		_score_label.text = "比分 我 %d : %d · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), s.score_to_win()]
 	var input_ok: bool = controller.is_pick_open()
 	var can_lock: bool = input_ok and _overlay.visible == false
 	var picked: int = int(controller._local_preselect[mine]) if controller._local_preselect.size() > mine else -1
@@ -923,12 +1010,12 @@ func _set_row(boxes: Array, s: BattleState, i: int) -> void:
 		return
 	if i < 0 or i > 1:
 		i = 0
-	var hp := clampi(int(s.hp[i]), 0, GameRules.MAX_HP)
-	var qi := clampi(int(s.qi[i]), 0, GameRules.MAX_QI)
-	var shield_n := clampi(int(s.shield[i]), 0, GameRules.MAX_SHIELD)
-	boxes[0].text = "血 %d/%d" % [hp, GameRules.MAX_HP]
-	boxes[1].text = "气 %d/%d" % [qi, GameRules.MAX_QI]
-	boxes[2].text = "盾 %d/%d" % [shield_n, GameRules.MAX_SHIELD]
+	var hp := clampi(int(s.hp[i]), 0, s.max_hp())
+	var qi := clampi(int(s.qi[i]), 0, s.max_qi())
+	var shield_n := clampi(int(s.shield[i]), 0, s.max_shield())
+	boxes[0].text = "血 %d/%d" % [hp, s.max_hp()]
+	boxes[1].text = "气 %d/%d" % [qi, s.max_qi()]
+	boxes[2].text = "盾 %d/%d" % [shield_n, s.max_shield()]
 	# 从该 panel 的列 meta 取图标行（盾一直正确，血/气曾按座位 i 选错行）
 	var src: Control = boxes[0].get_parent() as Control
 	var col: Control = src

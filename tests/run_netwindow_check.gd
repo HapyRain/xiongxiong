@@ -71,9 +71,57 @@ func _initialize() -> void:
 	_pump()
 	_exp("round2 revealed", _reveals >= 2)
 
+	_check_lobby_countdown()
+
 	if _host_pm != null:
 		_host_pm.leave()
 	_finish()
+
+
+## 等待页 5s 倒计时必须可注入（debug_tick_countdown），不依赖真实时钟。
+func _check_lobby_countdown() -> void:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	var client := PeerManager.new()
+	root.add_child(client)
+	client.install_provider(cp, PeerManager.Mode.ENET)
+	var ticks: Array = []
+	host.lobby_countdown_tick.connect(func(ms: int): ticks.append(ms))
+
+	host.host_game({"mode": PeerManager.Mode.ENET, "game_mode": "classic", "use_discover": false})
+	client.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host, client)
+	host.accept_join()
+	_pump_pair(host, client)
+	host.set_ready(true)
+	client.set_ready(true)
+	_pump_pair(host, client)
+
+	_exp("lobby both ready → countdown", host.get_session() == PeerManager.Session.COUNTDOWN
+		and client.get_session() == PeerManager.Session.COUNTDOWN)
+	_exp("lobby countdown starts at 5000ms", host.get_lobby_countdown_ms() == 5000
+		and client.get_lobby_countdown_ms() == 5000)
+	host.debug_tick_countdown(5000)
+	_pump_pair(host, client)
+	_exp("lobby 5s tick → battle", host.get_session() == PeerManager.Session.IN_BATTLE
+		and client.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("lobby countdown tick reached 0", not ticks.is_empty() and int(ticks[ticks.size() - 1]) == 0)
+	_exp("lobby config applied to client", client.state.mode == "classic")
+	host.leave()
+	client.leave()
+
+
+func _pump_pair(a: PeerManager, b: PeerManager) -> void:
+	if a != null and a.provider != null:
+		a.provider.poll(0.0)
+		a._pump_session(0.0)
+	if b != null and b.provider != null:
+		b.provider.poll(0.0)
+		b._pump_session(0.0)
 
 
 func _process(_d: float) -> bool:

@@ -117,6 +117,7 @@ func _initialize() -> void:
 	_check_solo_round_restart()
 	_check_forfeit_ends_match()
 	_check_ai_v2()
+	_check_solo_modes()
 
 	# ---------- rematch：强制终局后再来一局 ----------
 	_host_pm.state.winner = 0
@@ -389,14 +390,17 @@ func _check_ai_v2() -> void:
 						seen[a] = true
 						if not s.can_use_action(1, a):
 							bad += 1
-	_exp("AI v2：返回的招全部可用（can_use_action）", bad == 0)
+						# hard：候选扩到包子 2/3 连，也必须过规则层
+						if not s.can_use_action(1, AiOpponent.choose(s, 1, "hard")):
+							bad += 1
+	_exp("AI v2：返回的招全部可用（can_use_action，含 hard）", bad == 0)
 	_exp("AI v2：开局回合只会攒气",
 		AiOpponent.choose(BattleState.new(), 1) == GameRules.Action.ZAN)
 	var only_basic := true
 	for k in seen.keys():
 		if k != GameRules.Action.ZAN and k != GameRules.Action.BAO1 and k != GameRules.Action.FANG:
 			only_basic = false
-	_exp("AI v2：只从 攒气/包子×1/防御 里挑", only_basic)
+	_exp("AI v2：normal 只从 攒气/包子×1/防御 里挑", only_basic)
 	seed(20261021)
 	var low := BattleState.new()
 	low.round = 5
@@ -425,6 +429,79 @@ func _check_ai_v2() -> void:
 		rich_seen.has(GameRules.Action.ZAN)
 		and rich_seen.has(GameRules.Action.BAO1)
 		and rich_seen.has(GameRules.Action.FANG))
+
+
+## W2 单人配置：classic 一局定胜负 / mastery 第 2 回合可用数 / difficulty 传到 AI。
+func _check_solo_modes() -> void:
+	var ctrl := BattleController.new()
+	root.add_child(ctrl)
+	ctrl.start_match({"mode": "classic", "mastery": false, "difficulty": "normal"})
+	var over := {"winner": -1}
+	ctrl.game_over.connect(func(w): over["winner"] = w)
+	_exp("单人 classic：按 cfg 构造状态（1 血 / 无技能）",
+		ctrl.state.mode == "classic" and ctrl.state.max_hp() == 1 and not ctrl.state.skills_enabled())
+	# 一局定胜负：单小局 winner=0 即 1 分到顶 → 整场 GAME_OVER
+	ctrl._opening_done = true
+	ctrl.state.round = 2
+	ctrl.state.phase = GameRules.Phase.SELECTING
+	ctrl.state.hp = [1, 1]
+	ctrl.state.qi = [1, 0]
+	ctrl.state.pending = [GameRules.Action.BAO1, GameRules.Action.ZAN]
+	ctrl._resolve_locked()
+	_exp("单人 classic：一小局结束 = 整场结束（score 1:0，game_over 0）",
+		ctrl.state.is_match_over() and int(over["winner"]) == 0 and ctrl.state.score == [1, 0])
+	root.remove_child(ctrl)
+	ctrl.free()
+
+	var m := BattleController.new()
+	root.add_child(m)
+	m.start_match({"mode": "lesson", "mastery": true, "difficulty": "normal"})
+	m.state.round = 2
+	m.state.qi = [10, 10]
+	var acts: Array = m.state.available_actions(0)
+	acts.sort()
+	_exp("单人 mastery：第 2 回合可用 6 个（解锁旁路，CD 照旧）",
+		m.state.mastery and acts == [GameRules.Action.ZAN, GameRules.Action.BAO1,
+			GameRules.Action.BAO2, GameRules.Action.BAO3, GameRules.Action.FANG,
+			GameRules.Action.STRONG_FANG])
+	root.remove_child(m)
+	m.free()
+
+	var h := BattleController.new()
+	root.add_child(h)
+	h.start_match({"mode": "lesson", "difficulty": "hard"})
+	_exp("单人 difficulty：cfg 的 hard 传到控制器", h.difficulty == "hard")
+	root.remove_child(h)
+	h.free()
+
+	# AI hard：权重表直测（不靠随机采样，断言可失败）。
+	# 对方 qi=3（≈上回合攒过）→ hard 包子权重必须整体高于 normal；normal 不扩包子 2/3 连。
+	var s := BattleState.new()
+	s.round = 5
+	s.qi = [3, 3]
+	s.shield = [3, 3]
+	var bao_weight := func(w: Dictionary) -> int:
+		return int(w.get(GameRules.Action.BAO1, 0)) + int(w.get(GameRules.Action.BAO2, 0)) + int(w.get(GameRules.Action.BAO3, 0))
+	var w_normal := AiOpponent.weights(s, 1)
+	var w_hard := AiOpponent.weights(s, 1, "hard")
+	_exp("AI hard：对方气高时包子权重高于 normal",
+		bao_weight.call(w_hard) > bao_weight.call(w_normal))
+	_exp("AI hard：候选含包子 2/3 连（lesson）",
+		w_hard.has(GameRules.Action.BAO2) and w_hard.has(GameRules.Action.BAO3))
+	_exp("AI normal：候选仍是 攒气/包子×1/防御",
+		not w_normal.has(GameRules.Action.BAO2) and not w_normal.has(GameRules.Action.BAO3))
+	var hard_legal := true
+	for a in w_hard:
+		hard_legal = hard_legal and s.can_use_action(1, int(a))
+	_exp("AI hard：权重表只含 can_use_action 合法招", hard_legal)
+
+	var low_shield := BattleState.new()
+	low_shield.round = 5
+	low_shield.qi = [3, 3]
+	low_shield.shield = [3, 1]
+	_exp("AI hard：自己盾少时收着防御（normal 有，hard 权重 0）",
+		int(AiOpponent.weights(low_shield, 1, "hard").get(GameRules.Action.FANG, 0)) == 0
+		and int(AiOpponent.weights(low_shield, 1).get(GameRules.Action.FANG, 0)) > 0)
 
 
 ## 网络判负（forfeit / 拒绝继续 / 同意超时）是**整场**结束，不能当小局处理：

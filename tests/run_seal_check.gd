@@ -126,6 +126,31 @@ func _check_snapshot_carry_score() -> void:
 	host.leave()
 	client.leave()
 
+	# ④ mode/mastery 必须进快照：联机恢复按房主 config 构造，不允许默认 lesson
+	var cfg_pm := PeerManager.new()
+	root.add_child(cfg_pm)
+	cfg_pm._wire_fsm()
+	cfg_pm.room = {"mode": "classic", "mastery": true}
+	cfg_pm._reset_rules_state()
+	var cfg_rules: Dictionary = cfg_pm.get_snapshot()
+	_exp("rules 快照带 mode", str(cfg_rules.get("mode", "")) == "classic")
+	_exp("rules 快照带 mastery", bool(cfg_rules.get("mastery", false)))
+	var cfg_sess: Dictionary = cfg_pm.get_session_snapshot()
+	var cfg_sess_rules: Dictionary = {}
+	var v_csr: Variant = cfg_sess.get("rules", {})
+	if typeof(v_csr) == TYPE_DICTIONARY:
+		cfg_sess_rules = v_csr
+	_exp("session 快照 rules 带 mode/mastery",
+		str(cfg_sess_rules.get("mode", "")) == "classic"
+		and bool(cfg_sess_rules.get("mastery", false)))
+	# 反证：lesson 快照恢复进 classic 配置必须被拒绝（房主权威）
+	var bad_snap: Dictionary = cfg_pm.state.snapshot()
+	bad_snap["mode"] = "lesson"
+	bad_snap["mastery"] = false
+	_exp("配置不一致快照被拒绝", not cfg_pm.state.restore(bad_snap))
+	_exp("拒绝后局面未被改写", cfg_pm.state.mode == "classic" and cfg_pm.state.mastery)
+	cfg_pm.leave()
+
 
 # ================= P0-1 回归：自主封存（心跳超时）必须带真实局面 =================
 # 旧 bug：_eval_quality 走 _do_seal(..., {}) → 快照 rules 为空 → 恢复后 round=1/血满，

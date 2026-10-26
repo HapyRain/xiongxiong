@@ -17,12 +17,12 @@
 | 远端 | `https://github.com/HapyRain/xiongxiong`（**必须走本机代理 `127.0.0.1:7897`**） |
 | 文档镜像 | 旧机 `C:\Users\pc\XiaomiMiProjects\xiongxiong\`——**过程文件，未迁移，本机没有，不再依赖** |
 
-**回归（改完必跑，7 个）：**
+**回归（改完必跑，8 个；统一走 `.\tools\run_checks.ps1`）：**
 ```
 run_rules_check / run_quality_check / run_network_check / run_seal_check /
-run_netwindow_check / run_roundloop_check / run_nav_check
+run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 ```
-命令：`& $Godot --headless --path E:\github\xiongxiong --script res://tests/run_XXX_check.gd`
+命令：`.\tools\run_checks.ps1`（只跑部分：`-Only ui,nav`）
 
 **注意：** headless 测不出布局/聚光灯/真机字体类问题，必须 F5 真窗口 + 双机验证。
 
@@ -108,9 +108,9 @@ run_netwindow_check / run_roundloop_check / run_nav_check
 读取 E:\github\xiongxiong\SESSION-HANDOFF.md，按「已知风险/下一步」继续。
 
 当前最优先：
-1) **MVP 基线已达成**（7 自检全绿 / 241 断言 / 提交 `c106e21`）；下一阶段按需求加功能、模块、前端页面
+1) **MVP 基线已达成**（8 自检全绿 / 提交 `c106e21`）；下一阶段按需求加功能、模块、前端页面
 2) 真机回归：搜索/建房/接受/对局/再来一局/断线（用户已试玩体感 OK，现阶段只需确认没退化）
 3) 需要视觉或复杂联机问题时拆 subagent 分工（模型路由以当前会话注册为准）
 
-约束：不改 scripts/rules/* 结算；改完跑全部 7 个 run_*_check；打包 build/export_android.ps1；推送走 127.0.0.1:7897 代理。
+约束：不改 scripts/rules/* 结算；改完跑 `.\tools\run_checks.ps1`（8 项）；打包 build/export_android.ps1；推送走 127.0.0.1:7897 代理。
 ```

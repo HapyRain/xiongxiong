@@ -25,6 +25,7 @@ var _enet_host: PeerManager
 var _enet_client: PeerManager
 var _enet_reveals: int = 0
 var _enet_connected: bool = false
+var _enet_join_req: bool = false
 var _enet_step: String = "boot"
 var _enet_t: float = 0.0
 
@@ -33,6 +34,7 @@ var _finished: bool = false
 
 func _initialize() -> void:
 	print("NETCHECK_START")
+	_check_room_names()
 	_phase = "hotseat"
 	_setup_hotseat()
 
@@ -117,7 +119,139 @@ func _setup_hotseat() -> void:
 	_exp("restore round", _hs_pm.state.round == int(snap["round"]))
 
 	_phase = "local"
+	_setup_room_flow()
 	_setup_local()
+
+
+# ================= 房间名 / 等待页 / 房主离开 =================
+
+func _check_room_names() -> void:
+	var model := OS.get_model_name()
+	_exp("room name classic", PeerManager.default_room_name("classic", false) == model + " · 经典")
+	_exp("room name lesson", PeerManager.default_room_name("lesson", false) == model + " · 课间")
+	_exp("room name mastery suffix", PeerManager.default_room_name("lesson", true) == model + " · 课间 · 精通")
+	_exp("room name classic ignores mastery",
+		PeerManager.default_room_name("classic", true) == model + " · 经典")
+
+
+func _setup_room_flow() -> void:
+	# ① 经典房：join_request → 房主同意 → 双准备 → 5s 倒计时 → config 下发
+	var a := _make_pair()
+	var host: PeerManager = a[0]
+	var client: PeerManager = a[1]
+	var jr := [0]
+	host.join_requested.connect(func(_id: int, _p: Dictionary): jr[0] += 1)
+
+	var herr := host.host_game({
+		"mode": PeerManager.Mode.ENET,
+		"game_mode": "classic",
+		"mastery": true,  # 经典无精通：应被忽略
+		"use_discover": false,
+	})
+	_exp("room host_game", herr == OK)
+	_exp("room model fields", str(host.room.get("room_id", "")) != ""
+		and str(host.room.get("name", "")) == PeerManager.default_room_name("classic", false)
+		and str(host.room.get("mode", "")) == "classic"
+		and not bool(host.room.get("mastery", true))
+		and int(host.room.get("players", 0)) == 1
+		and int(host.room.get("max", 0)) == 2)
+	_exp("room session lobby", host.get_session() == PeerManager.Session.LOBBY)
+
+	var jerr := client.join_game({"mode": PeerManager.Mode.ENET})
+	_exp("room client join", jerr == OK)
+	_pump_pair(host, client)
+	_exp("host got join_request", jr[0] >= 1)
+	_exp("client stays lobby before accept", client.get_session() == PeerManager.Session.LOBBY)
+
+	host.accept_join()
+	_pump_pair(host, client)
+	_exp("host ready_check after accept", host.get_session() == PeerManager.Session.READY_CHECK)
+	_exp("client ready_check after accept", client.get_session() == PeerManager.Session.READY_CHECK)
+	_exp("client got room config", str(client.room.get("mode", "")) == "classic")
+
+	host.set_ready(true)
+	client.set_ready(true)
+	_pump_pair(host, client)
+	_exp("both ready → host countdown", host.get_session() == PeerManager.Session.COUNTDOWN)
+	_exp("both ready → client countdown", client.get_session() == PeerManager.Session.COUNTDOWN)
+	_exp("countdown starts at 5s", host.get_lobby_countdown_ms() == 5000)
+	_exp("client countdown 5s", client.get_lobby_countdown_ms() == 5000)
+
+	host.debug_tick_countdown(4999)
+	_exp("4.999s still countdown", host.get_session() == PeerManager.Session.COUNTDOWN
+		and host.get_lobby_countdown_ms() == 1)
+	host.debug_tick_countdown(1)
+	_pump_pair(host, client)
+	_exp("5s → host in battle", host.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("5s → client in battle", client.get_session() == PeerManager.Session.IN_BATTLE)
+	_exp("battle_start config downlink",
+		(client.last_battle_config as Dictionary) == {"mode": "classic", "mastery": false, "difficulty": "normal"})
+	_exp("client builds classic BattleState", client.state.mode == "classic" and client.state.max_hp() == 1)
+	_exp("client snapshot carries mode", str(client.state.snapshot().get("mode", "")) == "classic")
+	host.leave()
+	client.leave()
+
+	# ② 课间+精通房：mastery 必须随 config 下发（客户端默认 false）
+	var b := _make_pair()
+	var host2: PeerManager = b[0]
+	var client2: PeerManager = b[1]
+	host2.host_game({"mode": PeerManager.Mode.ENET, "game_mode": "lesson", "mastery": true, "use_discover": false})
+	client2.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host2, client2)
+	host2.accept_join()
+	_pump_pair(host2, client2)
+	_exp("mastery room propagated", bool(client2.room.get("mastery", false)))
+	host2.set_ready(true)
+	client2.set_ready(true)
+	_pump_pair(host2, client2)
+	host2.debug_tick_countdown(5000)
+	_pump_pair(host2, client2)
+	_exp("mastery config downlink",
+		(client2.last_battle_config as Dictionary) == {"mode": "lesson", "mastery": true, "difficulty": "normal"})
+	_exp("client builds mastery BattleState", client2.state.mode == "lesson" and client2.state.mastery)
+	host2.leave()
+	client2.leave()
+
+	# ③ 房主未开局离开 → 客户端提示 + 回入口（IDLE）
+	var c := _make_pair()
+	var host3: PeerManager = c[0]
+	var client3: PeerManager = c[1]
+	var left_reason := [""]
+	client3.lobby_left.connect(func(r: String): left_reason[0] = r)
+	host3.host_game({"mode": PeerManager.Mode.ENET, "game_mode": "lesson", "use_discover": false})
+	client3.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host3, client3)
+	host3.accept_join()
+	_pump_pair(host3, client3)
+	_exp("leave case client in waiting", client3.get_session() == PeerManager.Session.READY_CHECK)
+	host3.leave_room()
+	_pump_pair(host3, client3)
+	_exp("host left → client notice", str(left_reason[0]).contains("房主已离开"))
+	_exp("host left → client idle", client3.get_session() == PeerManager.Session.IDLE)
+	_exp("host left → host idle", host3.get_session() == PeerManager.Session.IDLE)
+
+
+## 造一对 LocalProvider 房主/客户端（未 open；host_game/join_game 负责 open）。
+func _make_pair() -> Array:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	var client := PeerManager.new()
+	root.add_child(client)
+	client.install_provider(cp, PeerManager.Mode.ENET)
+	return [host, client]
+
+
+func _pump_pair(a: PeerManager, b: PeerManager, dt: float = 0.0) -> void:
+	if a != null and a.provider != null:
+		a.provider.poll(dt)
+		a._pump_session(dt)
+	if b != null and b.provider != null:
+		b.provider.poll(dt)
+		b._pump_session(dt)
 
 
 # ================= LocalProvider 双端协议 =================
@@ -215,6 +349,28 @@ func _setup_local() -> void:
 		"payload": {"loser": 1, "reason": "forged"}})
 	_exp("client drops stranger sys_game_over", int(_client_pm.state.winner) == client_winner_before)
 
+	# ===== 回归：对局中 leave_room / 迟到 room_state 不得把客户端弹回大厅 =====
+	_client_pm._on_provider_packet(1, {"type": "leave_room", "round": 2, "payload": {}})
+	_exp("ignore leave_room in battle", _client_pm.get_session() == PeerManager.Session.IN_BATTLE)
+	_client_pm._on_provider_packet(1, {"type": "room_state", "round": 2,
+		"payload": {"room": {"mode": "lesson", "mastery": false}, "host_ready": true, "client_ready": true}})
+	_exp("ignore room_state in battle", _client_pm.get_session() == PeerManager.Session.IN_BATTLE)
+
+	# ===== 回归：房主拒绝一个客户端后解绑对端，房间能接待下一个 =====
+	var gate := PeerManager.new()
+	root.add_child(gate)
+	gate.install_provider(LocalProvider.new(), PeerManager.Mode.ENET)
+	var gate_joins: Array = []
+	gate.join_requested.connect(func(id: int, _p: Dictionary): gate_joins.append(id))
+	gate.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	gate._on_provider_packet(2, {"type": "join_request", "round": 0, "payload": {}})
+	gate.reject_join()
+	_exp("reject resets remote peer id", gate._remote_peer_id == -1)
+	gate._on_provider_packet(3, {"type": "join_request", "round": 0, "payload": {}})
+	_exp("second client can join after reject",
+		gate_joins == [2, 3] and gate.get_session() == PeerManager.Session.LOBBY)
+	gate.leave()
+
 	_phase = "enet"
 	_setup_enet()
 
@@ -232,6 +388,7 @@ func _setup_enet() -> void:
 		_enet_connected = true
 		if _enet_step == "wait_battle" or _enet_step == "connecting":
 			_enet_step = "play")
+	_enet_host.join_requested.connect(func(_id: int, _p: Dictionary): _enet_join_req = true)
 
 	_enet_host.install_provider(EnetProvider.new(), PeerManager.Mode.ENET)
 	_enet_client.install_provider(EnetProvider.new(), PeerManager.Mode.ENET)
@@ -269,14 +426,20 @@ func _tick_enet(delta: float) -> void:
 				_enet_step = "wait_battle"
 				_enet_t = 0.0
 		"wait_battle":
-			# 房主需点「接受」才开局（测试直接 accept_join）
-			if _enet_host.get_session() == PeerManager.Session.READY_CHECK:
+			# 新房流程：客户端 join_request → 房主同意进等待页 → 双准备 → 倒计时 → 开局
+			if _enet_host.get_session() == PeerManager.Session.LOBBY and _enet_join_req:
 				_enet_host.accept_join()
+			elif _enet_client.get_session() == PeerManager.Session.READY_CHECK \
+					and not bool(_enet_host.get_ready_flags()[0]):
+				_enet_host.set_ready(true)
+				_enet_client.set_ready(true)
+			elif _enet_host.get_session() == PeerManager.Session.COUNTDOWN:
+				_enet_host.debug_tick_countdown(5000)
 			if _enet_connected or _enet_client.get_session() == PeerManager.Session.IN_BATTLE:
 				_enet_step = "play"
 				_enet_t = 0.0
 				_exp("enet client in battle", _enet_client.get_session() == PeerManager.Session.IN_BATTLE)
-			elif _enet_t > 3.0:
+			elif _enet_t > 6.0:
 				_fail("enet battle start timeout (host_session=%d client_session=%d)" % [
 					_enet_host.get_session(), _enet_client.get_session()])
 				_enet_step = "end"
@@ -311,6 +474,14 @@ func _tick_enet(delta: float) -> void:
 					_enet_host._locks, _enet_client._locks])
 				_enet_step = "end"
 		"end":
+			# 回归：provider.close() 后再 poll 不得碰已销毁的 ENetConnection（旧代码 SCRIPT ERROR）
+			var p := EnetProvider.new()
+			p.open_as_client({"address": "127.0.0.1", "port": 47888})
+			p.close()
+			p.poll(0.0)
+			p._pump_service()
+			_exp("enet poll after close is safe",
+				p.get_peer_ids().is_empty() and p.send_reliable(1, {}) == ERR_UNCONFIGURED)
 			if _enet_host != null:
 				_enet_host.leave()
 			if _enet_client != null:

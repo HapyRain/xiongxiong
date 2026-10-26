@@ -36,6 +36,8 @@ func _process(delta: float) -> bool:
 		"ui":
 			_check_menu_scene()
 			_check_settings_panel()
+			_check_solo_select()
+			_check_main_scene()
 			_setup_ai_takeover()
 			_phase = "ai"
 			_ai_t = 0.0
@@ -141,6 +143,55 @@ func _check_ai_opponent() -> void:
 		if AiOpponent.choose(s, 1) == GameRules.Action.ZAN:
 			zan_count += 1
 	_exp("ai low-qi prefers zan", zan_count >= 20)
+
+
+## W2：单人选择页可加载 + 竖版单屏不滚动（390×820 契约）。
+func _check_solo_select() -> void:
+	var packed: PackedScene = load("res://scenes/solo_select.tscn")
+	_exp("solo_select.tscn loads", packed != null)
+	if packed == null:
+		return
+	var solo: Control = packed.instantiate()
+	root.add_child(solo)
+	if not solo.is_node_ready():
+		solo.notification(Node.NOTIFICATION_READY)
+	var flat := _collect_all_text(solo)
+	_exp("solo_select 模式卡 经典/课间", flat.contains("经典模式") and flat.contains("课间模式"))
+	_exp("solo_select 难度 普通/困难", flat.contains("普通") and flat.contains("困难"))
+	_exp("solo_select 开始/返回", flat.contains("开始") and flat.contains("返回"))
+	_exp("solo_select back route → menu",
+		str(UiNav.BACK_ROUTES.get("res://scenes/solo_select.tscn", "")) == UiNav.MENU_SCENE)
+	var content := solo.get_node_or_null("Margin/Content") as Control
+	_exp("solo_select 竖版单屏不滚动（内容最小高 ≤ 820）",
+		content != null and content.get_combined_minimum_size().y <= 820.0)
+	root.remove_child(solo)
+	solo.free()
+
+
+## W2：对战页按 cfg 渲染底部出招区（classic 3 按钮 / lesson 13 格）。
+func _check_main_scene() -> void:
+	var packed: PackedScene = load("res://scenes/main.tscn")
+	_exp("main.tscn loads", packed != null)
+	if packed == null:
+		return
+	BattleController.pending_cfg = {"mode": "classic", "mastery": false, "difficulty": "normal"}
+	var classic: Control = packed.instantiate()
+	root.add_child(classic)
+	if not classic.is_node_ready():
+		classic.notification(Node.NOTIFICATION_READY)
+	_exp("main classic：三个出招按钮", _count_action_buttons(classic) == 3)
+	root.remove_child(classic)
+	classic.free()
+
+	BattleController.pending_cfg = {"mode": "lesson", "mastery": false, "difficulty": "normal"}
+	var lesson: Control = packed.instantiate()
+	root.add_child(lesson)
+	if not lesson.is_node_ready():
+		lesson.notification(Node.NOTIFICATION_READY)
+	_exp("main lesson：技能盘占位 13 格", _count_action_buttons(lesson) == 13)
+	root.remove_child(lesson)
+	lesson.free()
+	BattleController.pending_cfg = {}
 
 
 # ================= 人机接管联机 =================
@@ -270,6 +321,14 @@ func _collect_all_text(node: Node) -> String:
 		elif n is Button:
 			parts.append(str((n as Button).text)))
 	return "\n".join(parts)
+
+
+func _count_action_buttons(node: Node) -> int:
+	var count := {"n": 0}
+	_walk(node, func(n: Node):
+		if n is Button and str(n.name).begins_with("Action"):
+			count["n"] += 1)
+	return int(count["n"])
 
 
 func _walk(node: Node, cb: Callable) -> void:

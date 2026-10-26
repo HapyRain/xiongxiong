@@ -6,9 +6,12 @@ class_name PeerManager
 extends Node
 
 enum Mode { HOTSEAT, ENET, WEBSOCKET }
-enum Session { IDLE, LOBBY, READY_CHECK, IN_BATTLE, SEALED, GAME_OVER }
+## COUNTDOWN 加在尾部：旧枚举值不变（快照/测试都按名字判断）。
+enum Session { IDLE, LOBBY, READY_CHECK, IN_BATTLE, SEALED, GAME_OVER, COUNTDOWN }
 
 const ENVELOPE_VERSION := 1
+## 双方准备后的开局倒计时（可注入时钟：debug_tick_countdown）。
+const LOBBY_COUNTDOWN_MS := 5000
 ## 锁招宽限：双方 UI 开窗可能有时间差，给足 3.5s 避免超时默认吞掉对方已选招
 const LOCK_GRACE_SEC := 3.5
 const OPENING_DELAY := 0.8
@@ -37,8 +40,17 @@ signal session_failed(loser_role: int, reason: String)
 signal session_restored(snap: Dictionary)
 ## 对方离开/掉线后本地改由人机接管（对局继续）
 signal ai_takeover_started(reason: String)
-## 对方申请加入，等房主「接受并开战」
+## 对方申请加入，等房主「同意 / 拒绝」
 signal join_requested(peer_id: int, profile: Dictionary)
+## 房主答复（客户端侧）：true=进等待页，false=回入口
+signal join_answered(yes: bool)
+## 房间信息 / 座位状态变化（房主本地与客户端都会发）
+signal room_updated(room: Dictionary)
+signal ready_changed(host_ready: bool, client_ready: bool)
+## 等待页 5s 倒计时（可注入）
+signal lobby_countdown_tick(remain_ms: int)
+## 未开局时对方/房主离开 → 提示并回入口
+signal lobby_left(reason: String)
 ## 对方提出再来一局
 signal rematch_offer()
 ## 对方答复再来一局（true=开打，false=回菜单）
@@ -58,7 +70,17 @@ var _mode: int = Mode.HOTSEAT
 var _session: int = Session.IDLE
 var _local_role: int = 0
 var _token: String = ""
-var _room_name: String = ""
+
+## 房间模型：{room_id,name,mode,mastery,host_name,players,max}
+var room: Dictionary = {}
+## 最近一次 battle_start 下发的 MatchConfig（房主=发出的，客户端=收到的）
+var last_battle_config: Dictionary = {}
+var _host_ready: bool = false
+var _client_ready: bool = false
+var _lobby_cd_left_ms: int = 0
+## 已弹过加入请求的 peer，防重复弹窗（只保留一个确认弹窗）
+var _join_peer_id: int = -1
+
 var _self_closing: bool = false
 ## 传输层唯一对端 id：客户端固定为房主 1（传输层已把 src 改写为 1）；
 ## 房主在收到第一包 hello 时学习。<=0 表示未知（热座/测试直连）→ 不启用发送者过滤。
@@ -125,6 +147,8 @@ func _wire_fsm() -> void:
 func _process(delta: float) -> void:
 	if provider != null:
 		provider.poll(delta)
+	if _session == Session.COUNTDOWN and _lobby_cd_left_ms > 0:
+		_tick_lobby_countdown(int(delta * 1000.0))
 	_pump_grace(delta)
 	_pump_session(delta)
 
@@ -199,19 +223,40 @@ func _disconnect_provider() -> void:
 
 # ---------- 建房 / 加入 / 离开 ----------
 
-## opts: {room_name?, port?, token?, max_players?, use_discover?, discover_port?}
+## opts: {room_name?, game_mode?, mastery?, host_name?, port?, token?, max_players?, use_discover?, discover_port?}
+## 注意：opts["mode"] 仍是传输后端（Mode.ENET）；规则模式用 game_mode（"classic"|"lesson"）。
 func host_game(opts: Dictionary) -> Error:
-	# 新开房间：清干净上一局
-	_reset_rules_state()
 	if provider == null:
-		var err := set_backend(int(opts.get("mode", Mode.ENET)))
-		if err != OK:
-			return err
+		var err0 := set_backend(int(opts.get("mode", Mode.ENET)))
+		if err0 != OK:
+			return err0
 	_token = str(opts.get("token", ""))
-	_room_name = str(opts.get("room_name", "xiongxiong-room"))
+	var gm := str(opts.get("game_mode", "lesson"))
+	if not GameRules.PRESETS.has(gm):
+		gm = "lesson"
+	# 精通是课间专用选项（经典无技能解锁）
+	var mastery := bool(opts.get("mastery", false)) and gm == "lesson"
+	room = {
+		"room_id": "%s-%d" % [OS.get_model_name(), Time.get_ticks_msec()],
+		"name": str(opts.get("room_name", "")).strip_edges(),
+		"mode": gm,
+		"mastery": mastery,
+		"host_name": str(opts.get("host_name", OS.get_model_name())),
+		"players": 1,
+		"max": int(opts.get("max_players", 2)),
+	}
+	if str(room["name"]).is_empty():
+		room["name"] = default_room_name(gm, mastery)
+	_reset_lobby_state()
+	# 新开房间：清干净上一局（按本房模式构造 BattleState）
+	_reset_rules_state()
 	var open_opts := opts.duplicate(true)
 	open_opts["token"] = _token
-	open_opts["room_name"] = _room_name
+	open_opts["room_name"] = room["name"]
+	open_opts["room_id"] = room["room_id"]
+	open_opts["host_name"] = room["host_name"]
+	open_opts["game_mode"] = gm
+	open_opts["mastery"] = mastery
 	var err := provider.open_as_host(open_opts)
 	if err != OK:
 		battle_error.emit("host_failed", "open_as_host failed: %s" % error_string(err))
@@ -219,13 +264,25 @@ func host_game(opts: Dictionary) -> Error:
 	_local_role = 0
 	_set_session(Session.LOBBY)
 	_sync_fsm_identity()
-	status_text.emit("已创建房间 %s，等待对手…" % _room_name)
+	room_updated.emit(room.duplicate(true))
+	status_text.emit("已创建房间 %s，等待对手…" % str(room["name"]))
 	return OK
+
+
+## 默认房间名：<机型> · <经典|课间>[ · 精通]（精通仅课间）。
+static func default_room_name(game_mode: String, mastery: bool = false) -> String:
+	var title := "经典" if game_mode == "classic" else "课间"
+	var name := "%s · %s" % [OS.get_model_name(), title]
+	if mastery and game_mode != "classic":
+		name += " · 精通"
+	return name
 
 
 ## ENET: {address, port, token}；HOTSEAT: {}；WEBSOCKET: {url, token}
 func join_game(opts: Dictionary) -> Error:
 	# 新加入：同样清干净
+	room = {}
+	_reset_lobby_state()
 	_reset_rules_state()
 	if provider == null:
 		var err0 := set_backend(int(opts.get("mode", Mode.ENET)))
@@ -257,8 +314,8 @@ func join_game(opts: Dictionary) -> Error:
 func leave() -> void:
 	_self_closing = true
 	if provider != null:
-		# 主动离开：尽量通知对方，由对方走人机接管
-		if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED or _session == Session.GAME_OVER:
+		# 主动离开：对局内尽量通知对方（对方走人机接管）；未开局由 leave_room 先发消息
+		if _session == Session.IN_BATTLE or _session == Session.SEALED or _session == Session.GAME_OVER:
 			_broadcast(_envelope("bye", state.round, {"reason": "local_leave"}))
 		_disconnect_provider()
 		provider.close()
@@ -267,17 +324,29 @@ func leave() -> void:
 	ai_takeover = false
 	_remote_peer_id = -1
 	_grace_left = 0.0
+	room = {}
+	_reset_lobby_state()
 	_reset_rules_state()
 	_set_session(Session.IDLE)
 	status_text.emit("已离开")
 
 
 ## 清空血/气/盾/回合/胜负，避免下一局继承上一局（0 血满气开局等）。
-## 整场（再来一局）复位：score 也归零。
+## 整场（再来一局）复位：score 也归零。规则模式/精通来自房间配置（未建房时默认 lesson）。
 func _reset_rules_state() -> void:
-	state = BattleState.new()
+	var gm := str(room.get("mode", "lesson"))
+	var mastery := bool(room.get("mastery", false))
+	state = BattleState.new(gm, mastery)
 	_reset_round_flags()
 	_reset_opening_flags()
+
+
+## 等待页状态复位（不清房间：开局配置还要用）。
+func _reset_lobby_state() -> void:
+	_host_ready = false
+	_client_ready = false
+	_lobby_cd_left_ms = 0
+	_join_peer_id = -1
 
 
 ## 回合选招窗复位表：点选/锁定/揭示/超时角标（新窗必清，漏清会把上回合招式当「已选」）。
@@ -303,11 +372,9 @@ func begin_ai_takeover(reason: String = "peer_left") -> bool:
 		return false
 	if state.is_over():
 		return false
-	# 未开局（大厅/等待接受）不接管，避免菜单页被推进 IN_BATTLE
+	# 未开局（大厅/等待/倒计时）不接管，避免菜单页被推进 IN_BATTLE
 	if _session != Session.IN_BATTLE and _session != Session.SEALED:
-		peer_left.emit(0, reason)
-		_set_session(Session.IDLE)
-		status_text.emit("对方已离开")
+		_handle_lobby_peer_gone(reason)
 		return false
 	ai_takeover = true
 	_self_closing = true
@@ -338,7 +405,7 @@ func stop_discover() -> void:
 		provider.stop_discover()
 
 
-## 房主确认接受后开局（客户端发 ready 仍走此路径由房主触发）。
+## 房主开局（等待页倒计时结束 / 测试直调）：下发 battle_start + MatchConfig。
 func start_battle() -> Error:
 	if _mode == Mode.HOTSEAT:
 		_set_session(Session.IN_BATTLE)
@@ -346,37 +413,193 @@ func start_battle() -> Error:
 		_do_opening()
 		return OK
 	if not is_host():
-		# 客户端发 ready，等房主 accept → battle_start
-		_send_to_host(_envelope("ready", 1, {}))
-		_set_session(Session.READY_CHECK)
+		# 客户端不自行开局：只表示自己准备
+		set_ready(true)
 		return OK
 	_local_role = 0
+	_reset_lobby_state()
 	_set_session(Session.IN_BATTLE)
-	# 新一局必须重置规则状态，否则快照会带上一局的血/气
+	# 新一局必须重置规则状态，否则快照会带上一局的血/气（按房间 config 构造）
 	_reset_rules_state()
+	last_battle_config = get_match_config()
 	var snap := state.snapshot()
-	_broadcast(_envelope("battle_start", 1, {"snapshot": snap, "seat": {"host": 0, "client": 1}}))
+	_broadcast(_envelope("battle_start", 1, {
+		"snapshot": snap,
+		"seat": {"host": 0, "client": 1},
+		"config": last_battle_config.duplicate(true),
+	}))
 	battle_started.emit(snap)
 	_do_opening()
 	return OK
 
 
-## 房主点「接受并开启对战」
+## 当前 MatchConfig（battle_start 下发；房主保存的唯一配置源）。
+func get_match_config() -> Dictionary:
+	return {
+		"mode": str(room.get("mode", "lesson")),
+		"mastery": bool(room.get("mastery", false)),
+		"difficulty": str(room.get("difficulty", "normal")),
+	}
+
+
+## 客户端采纳房主下发的房间 config，并按它重建规则状态。
+func _apply_room(r: Dictionary) -> void:
+	if r.is_empty():
+		return
+	room = r.duplicate(true)
+	_reset_rules_state()
+
+
+## 客户端采纳 battle_start 的 MatchConfig（config 缺失时沿用房间值）。
+func _apply_match_config(cfg: Dictionary) -> void:
+	if not cfg.is_empty():
+		last_battle_config = cfg.duplicate(true)
+	room["mode"] = str(cfg.get("mode", room.get("mode", "lesson")))
+	room["mastery"] = bool(cfg.get("mastery", room.get("mastery", false)))
+	room["difficulty"] = str(cfg.get("difficulty", "normal"))
+	_reset_rules_state()
+
+
+## 房主点「同意加入」：进等待页（不是直接开战，双方都准备后才倒计时）。
 func accept_join() -> Error:
 	if _mode == Mode.HOTSEAT or not is_host():
 		return start_battle()
 	if _session != Session.LOBBY and _session != Session.READY_CHECK:
 		return ERR_ALREADY_IN_USE
-	status_text.emit("已接受，开始对战")
-	return start_battle()
+	_reset_lobby_state()
+	room["players"] = 2
+	_set_session(Session.READY_CHECK)
+	_broadcast(_envelope("join_answer", 0, {"yes": true}))
+	_broadcast_room_state()
+	status_text.emit("已接受，等待双方准备")
+	return OK
 
 
-## 房主点「拒绝」：踢掉对端
+## 房主点「拒绝」：通知客户端被拒，房间继续等待其他人。
 func reject_join() -> void:
 	if not is_host():
 		return
-	_broadcast(_envelope("join_rejected", 0, {"reason": "host_declined"}))
+	_broadcast(_envelope("join_answer", 0, {"yes": false, "reason": "host_declined"}))
+	_reset_lobby_peer()
 	status_text.emit("已拒绝加入")
+
+
+# ---------- 等待页：准备 / 倒计时 / 离开 ----------
+
+## 本方准备/取消准备（双方都要点；房主汇总后广播 room_state）。
+func set_ready(yes: bool) -> void:
+	if _mode == Mode.HOTSEAT:
+		return
+	if _session == Session.COUNTDOWN or _session == Session.IN_BATTLE:
+		return
+	if _session != Session.LOBBY and _session != Session.READY_CHECK:
+		return
+	if is_host():
+		if _host_ready == yes:
+			return
+		_host_ready = yes
+		_broadcast_room_state()
+	else:
+		if _client_ready == yes:
+			return
+		_client_ready = yes
+		_send_to_host(_envelope("ready", 0, {"yes": yes}))
+		ready_changed.emit(_host_ready, _client_ready)
+	_maybe_start_lobby_countdown()
+
+
+func get_room() -> Dictionary:
+	return room.duplicate(true)
+
+
+## [host_ready, client_ready]（测试/UI 共用）
+func get_ready_flags() -> Array:
+	return [_host_ready, _client_ready]
+
+
+func get_lobby_countdown_ms() -> int:
+	return _lobby_cd_left_ms
+
+
+## 测试钩子：注入等待页倒计时（不依赖真实时钟）。5s 断言用它推进。
+func debug_tick_countdown(ms: int) -> void:
+	_tick_lobby_countdown(ms)
+
+
+## 未开局时离开房间：通知对方 → 对方提示并回入口。对局内离开走 leave()（人机接管）。
+func leave_room() -> void:
+	if _session != Session.LOBBY and _session != Session.READY_CHECK and _session != Session.COUNTDOWN:
+		return
+	if provider != null and _mode != Mode.HOTSEAT:
+		_broadcast(_envelope("leave_room", 0, {}))
+	leave()
+
+
+func _maybe_start_lobby_countdown() -> void:
+	if not is_host() or _session != Session.READY_CHECK:
+		return
+	if not _host_ready or not _client_ready:
+		return
+	_begin_lobby_countdown(LOBBY_COUNTDOWN_MS)
+	_broadcast(_envelope("countdown_start", 0, {"remain_ms": LOBBY_COUNTDOWN_MS}))
+	status_text.emit("双方已准备，%d 秒后开局" % int(ceil(LOBBY_COUNTDOWN_MS / 1000.0)))
+
+
+func _begin_lobby_countdown(remain_ms: int) -> void:
+	_lobby_cd_left_ms = maxi(0, remain_ms)
+	_set_session(Session.COUNTDOWN)
+	lobby_countdown_tick.emit(_lobby_cd_left_ms)
+
+
+## 房主本地推进倒计时；到 0 由房主开局（客户端只更新显示，等 battle_start）。
+func _tick_lobby_countdown(ms: int) -> void:
+	if _session != Session.COUNTDOWN:
+		return
+	if ms <= 0 and _lobby_cd_left_ms <= 0:
+		return
+	_lobby_cd_left_ms = maxi(0, _lobby_cd_left_ms - ms)
+	lobby_countdown_tick.emit(_lobby_cd_left_ms)
+	if _lobby_cd_left_ms <= 0 and is_host():
+		start_battle()
+
+
+## 房主汇总座位状态：本地 emit + 广播（房主权威）。
+func _broadcast_room_state() -> void:
+	if is_host():
+		_broadcast(_envelope("room_state", 0, {
+			"room": room.duplicate(true),
+			"host_ready": _host_ready,
+			"client_ready": _client_ready,
+		}))
+	ready_changed.emit(_host_ready, _client_ready)
+	room_updated.emit(room.duplicate(true))
+
+
+## 解绑当前大厅对端：拒绝/掉线后房间继续等下一个客户端。
+## 不解绑的话发送者过滤（_remote_peer_id）会把下一个客户端的 join_request 全丢掉。
+func _reset_lobby_peer() -> void:
+	_join_peer_id = -1
+	_remote_peer_id = -1
+
+
+## 未开局时对方离开：关房、提示、回入口（不做 host migration）。
+func _handle_lobby_peer_gone(_reason: String) -> void:
+	if _session == Session.IDLE:
+		return
+	var msg := "房主已离开，请重新选择模式" if not is_host() else "对方已离开"
+	_self_closing = true
+	if provider != null:
+		_disconnect_provider()
+		provider.close()
+		provider = null
+	_self_closing = false
+	_reset_lobby_peer()
+	room = {}
+	_reset_lobby_state()
+	_reset_rules_state()
+	_set_session(Session.IDLE)
+	status_text.emit(msg)
+	lobby_left.emit(msg)
 
 
 ## 终局后再来一局：任一方可发起，对方确认后开打。
@@ -584,7 +807,8 @@ func submit_resume_vote(yes: bool) -> void:
 
 
 ## 恢复：校验 SessionSnapshot（seq/checksum 闸门）→ restore rules → 开闸。
-func restore_from_snapshot(snap: Dictionary) -> void:
+## 返回 false = 快照 mode/mastery 与本地房间配置不一致（房主权威，拒绝恢复）。
+func restore_from_snapshot(snap: Dictionary) -> bool:
 	var rules_snap: Dictionary = snap
 	var is_session_snap := snap.has("schema_version") and snap.has("rules") and snap.has("checksum")
 	if is_session_snap:
@@ -592,11 +816,15 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 		var now := Time.get_ticks_msec()
 		if not fsm.restore_from_snapshot(snap, now):
 			# 校验失败 → Fail（宁可判负不静默 desync）
-			return
+			return false
 		var r: Variant = snap.get("rules", {})
 		if typeof(r) == TYPE_DICTIONARY:
 			rules_snap = r
-	state.restore(rules_snap)
+	if not state.restore(rules_snap):
+		battle_error.emit("snapshot_mismatch", "mode/mastery mismatch")
+		status_text.emit("对局配置不一致，已退出对局")
+		_set_session(Session.IDLE)
+		return false
 	_pending_actions = [int(state.pending[0]), int(state.pending[1])]
 	_locks = [_pending_actions[0] >= 0, _pending_actions[1] >= 0]
 	_revealing = false
@@ -629,6 +857,7 @@ func restore_from_snapshot(snap: Dictionary) -> void:
 	if is_session_snap:
 		# Resuming → Connected，打开输入闸门
 		fsm.confirm_restore(true, Time.get_ticks_msec())
+	return true
 
 
 ## 完整 SessionSnapshot（rules + session + consent + checksum）。热座/单机用 get_snapshot()。
@@ -697,8 +926,8 @@ func _on_provider_connected(peer_id: int) -> void:
 		_local_role = 0 if provider.is_host() else 1
 	_sync_fsm_identity()
 	if _mode == Mode.ENET and not is_host():
-		# 会话层 hello，让房主知道本端就绪
-		provider.send_reliable(1, _envelope("hello", 0, {"name": "client"}))
+		# 会话层 join_request：房主同意后才进等待页（不再自动开战）
+		provider.send_reliable(1, _envelope("join_request", 0, {"name": OS.get_model_name()}))
 
 
 func _sync_fsm_identity() -> void:
@@ -716,6 +945,18 @@ func _on_provider_disconnected(reason: String) -> void:
 	if _self_closing or ai_takeover:
 		return
 	status_text.emit("连接断开：%s" % reason)
+	# 未开局（大厅/等待页/倒计时）离开：提示 + 回入口，不进人机接管/封存
+	if _session == Session.LOBBY:
+		# 大厅里房主还在等：加入方没连上/被拒 → 房间继续（解绑对端后接待下一个）。
+		# 不解绑的话 _remote_peer_id 仍指向旧 id，下一个客户端的包会被发送者过滤丢掉。
+		if is_host():
+			_reset_lobby_peer()
+		else:
+			_handle_lobby_peer_gone(reason)
+		return
+	if _session == Session.READY_CHECK or _session == Session.COUNTDOWN:
+		_handle_lobby_peer_gone(reason)
+		return
 	if _session == Session.GAME_OVER:
 		peer_left.emit(0, reason)
 		if _rematch_want:
@@ -723,7 +964,7 @@ func _on_provider_disconnected(reason: String) -> void:
 			rematch_answered.emit(false)
 		status_text.emit("对方已离开")
 		return
-	if _session == Session.IN_BATTLE or _session == Session.READY_CHECK or _session == Session.SEALED:
+	if _session == Session.IN_BATTLE or _session == Session.SEALED:
 		peer_left.emit(0, reason)
 		if _mode == Mode.ENET and not state.is_over():
 			# 产品优先：对方掉线/离开 → 人机接管继续可玩。
@@ -734,14 +975,11 @@ func _on_provider_disconnected(reason: String) -> void:
 			return
 		if _mode == Mode.ENET:
 			# 硬断 → 立即封存（不直接 IDLE）；保留判负恢复路径
-			if _session == Session.IN_BATTLE or _session == Session.READY_CHECK:
+			if _session == Session.IN_BATTLE:
 				seal("peer_disconnected:%s" % reason)
 			fsm.on_peer_lost(Time.get_ticks_msec(), reason)
 		else:
 			_set_session(Session.IDLE)
-	elif _session == Session.LOBBY and _mode == Mode.ENET:
-		peer_left.emit(0, reason)
-		_set_session(Session.IDLE)
 
 
 func _on_provider_packet(from_id: int, data: Dictionary) -> void:
@@ -764,30 +1002,67 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		return
 
 	match type:
-		"hello":
-			# 对端就绪（房主收）→ 等房主点「接受」再开战
+		"join_request", "hello":
+			# 房主收：只提示，同意/拒绝由房主决定（join_answer）
+			if not is_host():
+				return
+			if _remote_peer_id <= 0:
+				_remote_peer_id = from_id
+			peer_joined.emit(from_id, payload)
+			if _session != Session.LOBBY and _session != Session.IDLE:
+				# 已有对端/已开局：明确拒绝，别让后来者一直等
+				_send_reliable_to(from_id, _envelope("join_answer", 0, {"yes": false, "reason": "room_full"}))
+				return
+			if _join_peer_id == from_id:
+				return
+			_join_peer_id = from_id
+			join_requested.emit(from_id, payload)
+			status_text.emit("有玩家申请加入，是否同意？")
+		"join_answer":
+			# 客户端收：同意 → 等待页；拒绝 → 回入口（对局内/已入房的迟到答复一律忽略）
 			if is_host():
-				if _remote_peer_id <= 0:
-					_remote_peer_id = from_id
-				peer_joined.emit(from_id, payload)
-				# 已在对局/已接受过则忽略重复 hello，避免把状态打回 READY_CHECK
-				if _session == Session.LOBBY or _session == Session.IDLE:
+				return
+			if bool(payload.get("yes", false)):
+				if _session == Session.LOBBY:
 					_set_session(Session.READY_CHECK)
-					join_requested.emit(from_id, payload)
-					status_text.emit("对方已连接，是否接受并开启对战？")
-				elif _session == Session.READY_CHECK:
-					join_requested.emit(from_id, payload)
+					join_answered.emit(true)
+			else:
+				if _session != Session.LOBBY:
+					return
+				status_text.emit("房主拒绝了加入")
+				battle_error.emit("join_rejected", "host declined")
+				join_answered.emit(false)
+				leave()
+		"room_state":
+			# 客户端收：房间 config + 双座位准备状态（房主权威）
+			if is_host():
+				return
+			# 对局中/封存/终局的迟到房态包不能把客户端拉回准备页
+			if _session == Session.IN_BATTLE or _session == Session.SEALED or _session == Session.GAME_OVER:
+				return
+			_apply_room(payload.get("room", {}))
+			_host_ready = bool(payload.get("host_ready", false))
+			_client_ready = bool(payload.get("client_ready", false))
+			_set_session(Session.READY_CHECK)
+			ready_changed.emit(_host_ready, _client_ready)
+			room_updated.emit(room.duplicate(true))
 		"ready":
+			# 房主收：客户端准备状态
+			if not is_host():
+				return
+			_client_ready = bool(payload.get("yes", true))
+			_broadcast_room_state()
+			_maybe_start_lobby_countdown()
+		"countdown_start":
+			# 客户端收：5s 倒计时（开局仍以 battle_start 为准）
 			if is_host():
-				peer_joined.emit(from_id, payload)
-				if _session == Session.LOBBY or _session == Session.IDLE:
-					_set_session(Session.READY_CHECK)
-					join_requested.emit(from_id, payload)
-					status_text.emit("对方已就绪，是否接受并开启对战？")
-		"join_rejected":
-			status_text.emit("房主拒绝了加入")
-			battle_error.emit("join_rejected", "host declined")
-			leave()
+				return
+			_begin_lobby_countdown(int(payload.get("remain_ms", LOBBY_COUNTDOWN_MS)))
+			status_text.emit("双方已准备，即将开局")
+		"leave_room":
+			# 只有未开局阶段才算「大厅离房」；对局内对方离开走 bye（封存 → 人机接管）
+			if _session == Session.LOBBY or _session == Session.READY_CHECK or _session == Session.COUNTDOWN:
+				_handle_lobby_peer_gone("leave_room")
 		"rematch_request":
 			if not _rematch_want:
 				rematch_offer.emit()
@@ -813,12 +1088,12 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					_local_role = int(seat["client"])
 				else:
 					_local_role = 1
-				# 新一局：清掉上一局残留
-				_reset_round_flags()
-				_reset_opening_flags()
+				# 房主权威：先按 config 重建 BattleState（禁止默认 lesson），再恢复快照
+				_apply_match_config(payload.get("config", {}))
 				_rematch_want = false
 				_peer_rematch_want = false
-				restore_from_snapshot(snap)
+				if not restore_from_snapshot(snap):
+					return
 				_set_session(Session.IN_BATTLE)
 				battle_started.emit(snap)
 				if not _opening_done and int(snap.get("round", 1)) == GameRules.OPENING_ROUND and int(snap.get("phase", 0)) == GameRules.Phase.OPENING:
@@ -832,8 +1107,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				var snap: Dictionary = payload.get("snapshot", {})
 				# 开窗前清残留，避免旧 pending 让按钮灰死
 				_reset_round_flags()
-				if not snap.is_empty():
-					restore_from_snapshot(snap)
+				if not snap.is_empty() and not restore_from_snapshot(snap):
+					return
 				_reset_round_flags()
 				_opening_done = true
 				_opening_applied = true
@@ -878,8 +1153,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				var res: Dictionary = payload.get("result", {})
 				var snap: Dictionary = payload.get("snapshot", {})
 				var acts: Array = payload.get("actions", [-1, -1])
-				if not snap.is_empty():
-					restore_from_snapshot(snap)
+				if not snap.is_empty() and not restore_from_snapshot(snap):
+					return
 				# 快照里 pending 已被 resolve 清空；保留本回合招式供 UI/测试
 				_pending_actions = [int(acts[0]), int(acts[1])] if acts.size() >= 2 else _pending_actions
 				_locks = [true, true]
@@ -956,7 +1231,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if sseq > 0 and sseq < fsm.seq:
 				return
 			if not ssnap.is_empty():
-				restore_from_snapshot(ssnap)
+				if not restore_from_snapshot(ssnap):
+					return
 			else:
 				fsm.confirm_restore(true, Time.get_ticks_msec())
 		"sys_game_over":

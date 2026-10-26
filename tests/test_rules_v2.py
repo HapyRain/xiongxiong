@@ -43,6 +43,30 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+# ── 双模式预设（镜像 game_rules.gd PRESETS；字段与 PLAN v1.1 R1 一致）──────────
+PRESETS = {
+    "classic": {                                   # docs/rules/game-rules-classic.md
+        "mode": "classic", "max_hp": 1, "max_qi": 5, "max_shield": 3,
+        "bao_max": 1, "actions": [ZAN, BAO1, FANG],
+        "skills_enabled": False, "quan_jiang_enabled": False,
+        "draw_backstop": False, "score_to_win": 1, "round_cap": 40,
+        "cap_rule": "hp_then_draw", "draw_replay_max": 3,
+    },
+    "lesson": {                                    # 现有 v2 行为
+        "mode": "lesson", "max_hp": MAX_HP, "max_qi": MAX_QI, "max_shield": MAX_SHIELD,
+        "bao_max": BAO_MAX, "actions": list(SKILLS),
+        "skills_enabled": True, "quan_jiang_enabled": True,
+        "draw_backstop": True, "score_to_win": WIN_SCORE, "round_cap": MAX_ROUND,
+        "cap_rule": "hp_then_draw", "draw_replay_max": 0,
+    },
+}
+
+
+def preset(mode):
+    """取预设副本（未知 mode 回退 lesson）。"""
+    return dict(PRESETS.get(mode, PRESETS["lesson"]))
+
+
 def bao_count(a):
     return BAO_N.get(a, 0)
 
@@ -79,15 +103,22 @@ def kind(a):
 
 
 class State:
-    """对局状态（镜像 battle_state.gd 的结算相关字段；cooldowns[who][action] = 上次使用回合）。"""
+    """对局状态（镜像 battle_state.gd 的结算相关字段；cooldowns[who][action] = 上次使用回合）。
+
+    mode/mastery 决定预设参数：classic = 经典模式（血1/气5/单包/3 动作/无劝降/无保底/一局定胜负），
+    lesson = 现有 v2 行为；mastery=True（精通）只旁路解锁分，CD/气/盾照旧。
+    """
 
     def __init__(self, hp=None, qi=None, shield=None, round=1,
                  score=None, cooldowns=None, sealed_round=None, pending=None,
-                 draw_count=0):
+                 draw_count=0, mode="lesson", mastery=False):
+        self.mode = mode if mode in PRESETS else "lesson"
+        self.mastery = bool(mastery)
+        self.p = preset(self.mode)
         self.round = round
-        self.hp = list(hp if hp is not None else [MAX_HP, MAX_HP])
+        self.hp = list(hp if hp is not None else [self.p["max_hp"], self.p["max_hp"]])
         self.qi = list(qi if qi is not None else [0, 0])
-        self.shield = list(shield if shield is not None else [MAX_SHIELD, MAX_SHIELD])
+        self.shield = list(shield if shield is not None else [self.p["max_shield"], self.p["max_shield"]])
         self.pending = list(pending if pending is not None else [-1, -1])
         self.winner = -1
         self.score = list(score if score is not None else [0, 0])
@@ -105,9 +136,10 @@ class State:
             return False
         if self.round == OPENING_ROUND:            # 1) 开局只准攒气
             return action == ZAN
-        if action not in SKILLS:                   # 2) 不在技能表（-1 / 劝降 / 越界）
+        if action not in SKILLS or action not in self.p["actions"]:  # 2) 不在技能表 / 不在本模式可用动作
             return False
-        if self.score[who] < UNLOCK.get(action, 0):  # 3) 未解锁（按自己分数）
+        # 3) 未解锁（精通旁路；classic 无解锁概念）
+        if self.p["skills_enabled"] and not self.mastery and self.score[who] < UNLOCK.get(action, 0):
             return False
         if self.qi[who] < QI_COST.get(action, 0):    # 4) 气不足
             return False
@@ -121,7 +153,7 @@ class State:
         return True
 
     def available_actions(self, who):
-        return [a for a in SKILLS if self.can_use_action(who, a)]
+        return [a for a in self.p["actions"] if self.can_use_action(who, a)]
 
     def is_over(self):
         return self.winner >= 0
@@ -140,7 +172,7 @@ class State:
             info["scored"] = True
         elif w == 2:
             self.draw_count += 1
-            if self.draw_count >= 3:
+            if self.p["draw_backstop"] and self.draw_count >= 3:
                 self.score[0] += 1
                 self.score[1] += 1
                 info["scored"] = True
@@ -150,7 +182,10 @@ class State:
         return info
 
     def is_match_over(self):
-        return max(self.score) >= WIN_SCORE
+        """任一方到本模式分制；classic 另外「平局重开次数用尽 → 整场判平」。"""
+        if max(self.score) >= self.p["score_to_win"]:
+            return True
+        return (not self.p["draw_backstop"]) and self.draw_count > self.p["draw_replay_max"]
 
     def match_winner(self):
         if not self.is_match_over():
@@ -161,19 +196,73 @@ class State:
             return 1
         return 2
 
+    # ── 快照（battle_state.gd snapshot / restore 镜像；带 mode + mastery 并校验）──
+    def snapshot(self):
+        return {"round": self.round, "hp": list(self.hp), "qi": list(self.qi),
+                "shield": list(self.shield), "pending": list(self.pending),
+                "winner": self.winner, "score": list(self.score),
+                "draw_count": self.draw_count,
+                "cooldowns": [dict(cd) for cd in self.cooldowns],
+                "sealed_round": list(self.sealed_round),
+                "mode": self.mode, "mastery": self.mastery}
+
+    def restore(self, snap):
+        """mode/mastery 必须与本地预设一致（房主权威）；不一致 → 拒绝并返回 False（状态不动）。"""
+        if "mode" in snap:
+            m = str(snap["mode"])
+            if m not in PRESETS or m != self.mode:
+                return False
+        if "mastery" in snap and bool(snap["mastery"]) != self.mastery:
+            return False
+        p = self.p
+        self.round = clamp(int(snap.get("round", 1)), 1, p["round_cap"])
+        self.hp = pair(snap.get("hp"), p["max_hp"], p["max_hp"], 0, p["max_hp"])
+        self.qi = pair(snap.get("qi"), 0, 0, 0, p["max_qi"])
+        self.shield = pair(snap.get("shield"), p["max_shield"], p["max_shield"], 0, p["max_shield"])
+        self.pending = pair(snap.get("pending"), -1, -1, -1, QUAN_JIANG)
+        self.winner = clamp(int(snap.get("winner", -1)), -1, 2)
+        self.score = pair(snap.get("score"), 0, 0, 0, p["score_to_win"])
+        self.draw_count = clamp(int(snap.get("draw_count", 0)), 0, p["round_cap"])
+        self.cooldowns = self._cooldowns(snap.get("cooldowns", [{}, {}]))
+        self.sealed_round = pair(snap.get("sealed_round"), -1, -1, -1, p["round_cap"])
+        return True
+
+    def _cooldowns(self, v):
+        """镜像 battle_state.gd _cooldowns：过滤非本模式动作 + 钳到当前回合。"""
+        out = [{}, {}]
+        if not isinstance(v, (list, tuple)):
+            return out
+        for i in (0, 1):
+            if i >= len(v) or not isinstance(v[i], dict):
+                continue
+            for k, used in v[i].items():
+                act = int(k)
+                if act not in self.p["actions"]:
+                    continue
+                out[i][act] = clamp(int(used), 0, self.round)
+        return out
+
     def reset_round_keep_score(self):
         keep_score = [self.score[0], self.score[1]]
         keep_draws = self.draw_count
+        p = self.p
         self.round = OPENING_ROUND
-        self.hp = [MAX_HP, MAX_HP]
+        self.hp = [p["max_hp"], p["max_hp"]]
         self.qi = [0, 0]
-        self.shield = [MAX_SHIELD, MAX_SHIELD]
+        self.shield = [p["max_shield"], p["max_shield"]]
         self.pending = [-1, -1]
         self.winner = -1
         self.score = keep_score
         self.draw_count = keep_draws
         self.cooldowns = [{}, {}]
         self.sealed_round = [-1, -1]
+
+
+def pair(v, d0, d1, lo, hi):
+    """镜像 battle_state.gd _pair：非 Array / 长度不足 → 默认值；越界钳制。"""
+    if not isinstance(v, (list, tuple)) or len(v) < 2:
+        return [d0, d1]
+    return [clamp(int(v[0]), lo, hi), clamp(int(v[1]), lo, hi)]
 
 
 class Result:
@@ -205,7 +294,7 @@ def resolve_opening(s):
 
 
 def check_winner(s):
-    """血量归零判负；双亡判平；40 回合比血（血同判平，不比盾）。"""
+    """血量归零判负；双亡判平；回合上限比血（血同判平，不比盾）。"""
     me, you = s.hp[0] <= 0, s.hp[1] <= 0
     if me and you:
         s.winner = 2
@@ -213,7 +302,7 @@ def check_winner(s):
         s.winner = 0
     elif me:
         s.winner = 1
-    elif s.round >= MAX_ROUND:
+    elif s.round >= s.p["round_cap"]:
         if s.hp[0] > s.hp[1]:
             s.winner = 0
         elif s.hp[1] > s.hp[0]:
@@ -227,14 +316,15 @@ def resolve_turn(s, a0, a1):
     acts = [int(a0), int(a1)]
     r = Result(acts)
 
-    # ① 劝降：满气满血 + 对方仅剩 1 血 → 直接判胜（不占动作 / 不扣资源 / 不进 CD）
-    for i in (0, 1):
-        if s.qi[i] == MAX_QI and s.hp[i] == MAX_HP and s.hp[1 - i] == 1:
-            s.winner = i
-            s.pending = [-1, -1]
-            r.quan_jiang = i
-            r.text = "劝降：%d 胜" % i
-            return r
+    # ① 劝降（classic 关闭）：满气满血 + 对方仅剩 1 血 → 直接判胜（不占动作 / 不扣资源 / 不进 CD）
+    if s.p["quan_jiang_enabled"]:
+        for i in (0, 1):
+            if s.qi[i] == s.p["max_qi"] and s.hp[i] == s.p["max_hp"] and s.hp[1 - i] == 1:
+                s.winner = i
+                s.pending = [-1, -1]
+                r.quan_jiang = i
+                r.text = "劝降：%d 胜" % i
+                return r
 
     # 盾 0 时出防御 = 非法出招 → 按「裸防」处理（game-rules-v2.md §2 注 D_bare）
     bare = [(acts[i] == FANG and s.shield[i] < 1) for i in (0, 1)]
@@ -280,11 +370,12 @@ def resolve_turn(s, a0, a1):
 
 
 def _apply(s, r):
-    """增量落地：气 / 盾 / 血 各自 clamp 到 [0, 上限]；清空 pending。"""
+    """增量落地：气 / 盾 / 血 各自 clamp 到 [0, 本模式上限]；清空 pending。"""
+    p = s.p
     for i in (0, 1):
-        s.qi[i] = clamp(s.qi[i] + r.qd[i], 0, MAX_QI)
-        s.shield[i] = clamp(s.shield[i] + r.sd[i], 0, MAX_SHIELD)
-        s.hp[i] = clamp(s.hp[i] + r.hp_delta[i], 0, MAX_HP)
+        s.qi[i] = clamp(s.qi[i] + r.qd[i], 0, p["max_qi"])
+        s.shield[i] = clamp(s.shield[i] + r.sd[i], 0, p["max_shield"])
+        s.hp[i] = clamp(s.hp[i] + r.hp_delta[i], 0, p["max_hp"])
     s.pending = [-1, -1]
 
 
@@ -296,10 +387,10 @@ def _gain(s, r, who, act):
     elif act == JI_QI:
         r.qd[who] += 3
     elif act == HUI_FU:
-        room = MAX_HP - clamp(s.hp[who] + r.hp_delta[who], 0, MAX_HP)
+        room = s.p["max_hp"] - clamp(s.hp[who] + r.hp_delta[who], 0, s.p["max_hp"])
         r.hp_delta[who] += max(0, min(1, room))
     elif act == BAO_QI:
-        r.sd[who] = MAX_SHIELD - s.shield[who]      # 先把盾补满 3，再结算攻击
+        r.sd[who] = s.p["max_shield"] - s.shield[who]     # 先把盾补满，再结算攻击
     # 其余动作无增益
 
 
@@ -310,7 +401,7 @@ def _hit(r, who, dmg):
 
 def _eff_shield(s, r, who):
     """结算中的有效盾 = 当前盾 + 本轮已累积盾增量（爆气「先补满再结算」依赖它）。"""
-    return clamp(s.shield[who] + r.sd[who], 0, MAX_SHIELD)
+    return clamp(s.shield[who] + r.sd[who], 0, s.p["max_shield"])
 
 
 def _bao_damage(s, r, victim, k):
@@ -365,7 +456,7 @@ def _dual(s, r, acts, ka, kb):
     """双方同为攻击类的对撞（包子/破防技/终极技）。"""
     a, b = acts
     if ka == K_BAO and kb == K_BAO:
-        m, n = bao_count(a), bao_count(b)
+        m, n = _bao_n(s, a), _bao_n(s, b)
         if m > n:
             _bao_damage(s, r, 1, m - n)       # 一对一抵消，剩余包打对方
         elif n > m:
@@ -389,10 +480,15 @@ def _dual(s, r, acts, ka, kb):
 
 
 # 单侧攻击（主侧 = me，另一侧 = op）的逐条裁决，键为 (主侧分类, 另一侧分类)
+def _bao_n(s, act):
+    """包子连数按本模式上限收口（classic bao_max=1：非法多连包只算 1 包）。"""
+    return min(bao_count(act), s.p["bao_max"])
+
+
 def _bao_fang(s, r, me, op, act, bare):
     if bare[op]:
         _hit(r, op, 1)                         # 盾 0 出防御 = 裸防
-    elif bao_count(act) >= BAO_MAX:
+    elif _bao_n(s, act) >= BAO_MAX:            # 破防阈值固定 3 连（不是 bao_max）
         _hit(r, op, 1)                         # 3 连破防：掉 1 血、盾不动
     else:
         r.blocked[op] = True                   # 1–2 连被挡（不再额外扣盾）
@@ -403,7 +499,7 @@ def _bao_strong(s, r, me, op, act, bare):
 
 
 def _bao_burst(s, r, me, op, act, bare):
-    k = bao_count(act) - 1                      # 爆气只挡 1 包
+    k = _bao_n(s, act) - 1                      # 爆气只挡 1 包
     if k > 0:
         _bao_damage(s, r, op, k)
     else:
@@ -411,7 +507,7 @@ def _bao_burst(s, r, me, op, act, bare):
 
 
 def _bao_sheep(s, r, me, op, act, bare):
-    n = bao_count(act)
+    n = _bao_n(s, act)
     if n == 1:
         _block_with_shield(s, r, me)            # 1 包 + 1 盾挡下；0 盾 → 掉 1 血
     elif n == 2:
@@ -421,7 +517,7 @@ def _bao_sheep(s, r, me, op, act, bare):
 
 
 def _bao_big(s, r, me, op, act, bare):
-    n = bao_count(act)
+    n = _bao_n(s, act)
     if n == 1:
         _hit(r, me, 1)                          # 1 包挡不住
     elif n == 2:
@@ -431,7 +527,7 @@ def _bao_big(s, r, me, op, act, bare):
 
 
 def _bao_zhong(s, r, me, op, act, bare):
-    if bao_count(act) >= BAO_MAX:
+    if _bao_n(s, act) >= BAO_MAX:
         r.blocked[me] = True                     # 3 连挡住：包子被吞、终极无效
     else:
         _hit(r, me, 2)                           # 1–2 连挡不住 → 掉 2 血
@@ -517,8 +613,10 @@ def expect(name, cond):
 
 
 def mk(hp=None, qi=None, shield=None, rnd=2, score=None,
-       cooldowns=None, sealed_round=None, pending=None, draw_count=0):
-    return State(hp, qi, shield, rnd, score, cooldowns, sealed_round, pending, draw_count)
+       cooldowns=None, sealed_round=None, pending=None, draw_count=0,
+       mode="lesson", mastery=False):
+    return State(hp, qi, shield, rnd, score, cooldowns, sealed_round, pending,
+                 draw_count, mode, mastery)
 
 
 def chk(s, hp, qi, sh):
@@ -1125,6 +1223,117 @@ def main():
                  s.score == [4, 5] and s.draw_count == 2 and s.round == OPENING_ROUND
                  and s.hp == [MAX_HP, MAX_HP] and s.qi == [0, 0] and s.winner == -1
                  and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
+
+    # ── ㉒ classic 模式预设（docs/rules/game-rules-classic.md）────────────
+    c = State(mode="classic")
+    ok &= expect("[经典] 预设：血1/气5/盾3/单包/3 动作/无劝降/无保底/一局定胜负",
+                 c.mode == "classic" and not c.mastery
+                 and c.p["max_hp"] == 1 and c.p["max_qi"] == 5 and c.p["max_shield"] == 3
+                 and c.p["bao_max"] == 1 and c.p["score_to_win"] == 1
+                 and not c.p["skills_enabled"] and not c.p["quan_jiang_enabled"]
+                 and not c.p["draw_backstop"] and c.p["draw_replay_max"] == 3
+                 and c.p["round_cap"] == 40 and c.hp == [1, 1] and c.shield == [3, 3])
+
+    s = mk(qi=[5, 5], rnd=9, score=[1, 1], mode="classic")
+    ok &= expect("[经典] 可用动作仅 攒/包子×1/防御（分数再高也不解锁技能）",
+                 sorted(s.available_actions(0)) == sorted([ZAN, BAO1, FANG]))
+
+    s = mk(qi=[5, 5], mode="classic")
+    resolve_turn(s, BAO1, ZAN)
+    ok &= expect("[经典] 包子打攒气 = 即死（1 血归零 → winner=0；气封顶 5）",
+                 s.winner == 0 and chk(s, [1, 0], [4, 5], [3, 3]))
+
+    s = mk(qi=[3, 3], mode="classic")
+    resolve_turn(s, FANG, ZAN)
+    ok &= expect("[经典] 防御 vs 攒气：无事发生（防御只耗 1 盾）",
+                 chk(s, [1, 1], [3, 4], [2, 3]))
+
+    s = mk(qi=[5, 5], mode="classic")
+    r = resolve_turn(s, BAO1, FANG)
+    ok &= expect("[经典] 包子 vs 防御：被挡、防御方盾 3→2、不掉血",
+                 chk(s, [1, 1], [4, 5], [3, 2]) and r.blocked[1])
+
+    s = mk(qi=[5, 5], mode="classic")
+    s.shield = [0, 3]
+    resolve_turn(s, FANG, BAO1)
+    ok &= expect("[经典] 盾 0 出防御 = 裸防：被打 1 血即负（winner=1）",
+                 s.winner == 1 and chk(s, [0, 1], [5, 4], [0, 3]))
+
+    s = mk(qi=[5, 5], mode="classic")
+    r = resolve_turn(s, BAO3, FANG)
+    ok &= expect("[经典] 非法 3 连包按上限收口为单包（不破防、被挡）",
+                 chk(s, [1, 1], [2, 5], [3, 2]) and r.blocked[1])
+
+    s = mk(qi=[5, 5], mode="classic")
+    resolve_turn(s, ZAN, ZAN)
+    ok &= expect("[经典] 气上限 5 / 盾上限 3（5 气再攒不溢出）",
+                 chk(s, [1, 1], [5, 5], [3, 3]))
+
+    s = mk(qi=[5, 0], mode="classic")
+    r = resolve_turn(s, ZAN, ZAN)
+    ok &= expect("[经典] 无劝降：满气满血 + 对手 1 血也不触发",
+                 s.winner == -1 and r.quan_jiang == -1)
+
+    s = mk(qi=[5, 5], rnd=MAX_ROUND, mode="classic")
+    resolve_turn(s, ZAN, ZAN)
+    ok &= expect("[经典] 40 回合血同 → 平局", s.winner == 2)
+
+    s = mk(qi=[0, 0], mode="classic")
+    s.winner = 2
+    info = s.settle_round_after_resolve()
+    ok &= expect("[经典] 第 1 次平局：不得分、不终场（重开本局）",
+                 info["round_end"] and not info["match_over"]
+                 and s.score == [0, 0] and s.draw_count == 1)
+    s.winner = 2
+    s.settle_round_after_resolve()
+    s.winner = 2
+    s.settle_round_after_resolve()
+    ok &= expect("[经典] 第 2/3 次平局仍不终场（draw_count=3）",
+                 not s.is_match_over() and s.score == [0, 0] and s.draw_count == 3)
+    s.winner = 2
+    info = s.settle_round_after_resolve()
+    ok &= expect("[经典] 第 4 次平局 → 整场判平（match_over + match_winner=2）",
+                 info["match_over"] and info["match_winner"] == 2 and s.score == [0, 0])
+
+    s = mk(qi=[5, 5], mode="classic")
+    resolve_turn(s, BAO1, ZAN)
+    info = s.settle_round_after_resolve()
+    ok &= expect("[经典] 一局定胜负：胜者 +1 分即整场结束（match_winner=0）",
+                 info["match_over"] and info["match_winner"] == 0 and s.score == [1, 0])
+
+    # ── ㉓ 精通（mastery）：只旁路解锁分支，CD / 气 / 盾照旧（v2 §1）────────
+    s = mk(qi=[10, 10], rnd=2, score=[0, 0], mastery=True)
+    ok &= expect("[精通] 第 2 回合解锁旁路：6 个可用（CD3+ 仍按 §1 计时，不是 13）",
+                 s.mastery and sorted(s.available_actions(0))
+                 == sorted([ZAN, BAO1, BAO2, BAO3, FANG, STRONG_FANG]))
+    s.round = 9
+    ok &= expect("[精通] 回合 9（CD 全过）：13 个动作全可用（0 分也解锁）",
+                 sorted(s.available_actions(0)) == sorted(SKILLS))
+    s.score = [1, 0]
+    ok &= expect("[精通] 解锁不累加：分数变化不改变动作集合（0 分即全解锁）",
+                 sorted(s.available_actions(0)) == sorted(SKILLS))
+
+    # ── ㉔ 快照：mode + mastery 随包，restore 校验一致 ──────────────────
+    c = State(mode="classic")
+    snap = c.snapshot()
+    ok &= expect("[快照] snapshot 带 mode + mastery",
+                 snap["mode"] == "classic" and snap["mastery"] is False)
+    c2 = State(mode="classic")
+    ok &= expect("[快照] restore 同模式：mode/mastery/血上限保留",
+                 c2.restore(snap) is True and c2.mode == "classic" and c2.hp == [1, 1])
+    lesson_s = State()
+    ok &= expect("[快照] restore 校验：mode 不一致 → 拒绝（状态不动）",
+                 lesson_s.restore(snap) is False and lesson_s.mode == "lesson"
+                 and lesson_s.hp == [4, 4])
+    lesson_s.hp = [3, 2]
+    ok &= expect("[快照] restore 校验失败时不改任何字段",
+                 lesson_s.restore(snap) is False and lesson_s.hp == [3, 2])
+
+    # ── ㉕ restore 的 cooldowns：过滤非本模式动作 + 钳到当前回合（对齐 battle_state._cooldowns）──
+    s = State(mode="classic")
+    ok &= expect("[快照] restore cooldowns 过滤本模式外动作、钳到当前回合",
+                 s.restore({"round": 5, "cooldowns": [{XIAO_YANG: 3, BAO1: 99}, {BAO2: 2}]})
+                 and s.cooldowns == [{BAO1: 5}, {}])
 
     print("=" * 52)
     print("ALL PASS" if ok else "HAS FAILURES")

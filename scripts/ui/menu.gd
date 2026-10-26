@@ -1,17 +1,25 @@
 ## menu.gd
-## 两页首页：主页（单人 / 联机）→ 联机页（建房 / 加入 / 搜索）。
-## 统一 UiTheme 字体与色板；联机页暂不展示房间名 / Token。
+## Splash overlay（占位加载）→ 主菜单（单人 / 联机 / 设置 / 退出）→ 联机入口（作为房主 / 搜索房间）。
+## 房间/等待页在 lobby_*.tscn；本文件只做入口与跳转。
 extends Control
 
-const GAME_PORT := 47001
-const ROOM_NAME := "xiongxiong-room"
+const MENU_SCENE := "res://scenes/menu.tscn"
+const SOLO_SCENE := "res://scenes/solo_select.tscn"
+const CREATE_SCENE := "res://scenes/lobby_create.tscn"
+const SEARCH_SCENE := "res://scenes/lobby_search.tscn"
+const SETTINGS_SCENE := "res://scenes/settings_panel.tscn"
+## 回入口：设置后 menu._ready 直接打开联机页（离开房间 → 回「作为房主/搜索」）。
+const NET_ENTRY_META := "xiongxiong_net_entry"
+## Splash 只在本次进程首次进菜单时显示；从对局/等待页回来不再弹。
+const SPLASH_SEEN_META := "xiongxiong_splash_seen"
 
 var _page_home: Control
 var _page_net: Control
+var _splash: Control
+var _splash_enter: Button
+var _splash_status: Label
 var _status: Label
 var _host_info: Label
-var _ip_edit: LineEdit
-var _dialog_layer: Control
 
 
 func _ready() -> void:
@@ -26,13 +34,10 @@ func _ready() -> void:
 	Net.status_text.connect(func(t: String):
 		if _status != null:
 			_status.text = t)
-	Net.peer_joined.connect(func(_id, _profile):
-		if _status != null:
-			_status.text = "对方已连接，等待确认…")
-	Net.join_requested.connect(func(_id, _profile): _show_accept_dialog())
-	Net.battle_started.connect(func(_snap: Dictionary): _goto_battle(), CONNECT_ONE_SHOT)
-	Net.room_found.connect(func(info: Dictionary): _show_join_room_dialog(info))
 	_refresh_status()
+	var entry := bool(Engine.get_meta(NET_ENTRY_META, false))
+	Engine.set_meta(NET_ENTRY_META, false)
+	_show_page(entry)
 
 
 func _build_ui() -> void:
@@ -46,6 +51,7 @@ func _build_ui() -> void:
 	add_child(_page_home)
 	add_child(_page_net)
 	_page_net.visible = false
+	_build_splash()
 
 
 # ---------- 通用 ----------
@@ -65,49 +71,6 @@ func _section(text: String) -> Label:
 	return UiTheme.ink_label(text, 16, UiTheme.INK_SOFT)
 
 
-func _field(label_text: String, edit: LineEdit) -> HBoxContainer:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
-	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var lab := UiTheme.ink_label(label_text, 13, UiTheme.INK_SOFT)
-	lab.custom_minimum_size.x = 56
-	row.add_child(lab)
-	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	edit.custom_minimum_size.y = 44
-	edit.add_theme_font_size_override("font_size", 15)
-	edit.add_theme_font_override("font", UiTheme.default_font())
-	row.add_child(edit)
-	return row
-
-
-# ---------- 主页 ----------
-
-func _build_home_page() -> Control:
-	var page := Control.new()
-	page.name = "PageHome"
-	page.set_anchors_preset(Control.PRESET_FULL_RECT)
-
-	page.add_child(_title("拍拍熊熊", 36, UiTheme.INK, 72))
-	page.add_child(_title("1v1 三分钟一局超爽超解压", 14, UiTheme.INK_SOFT, 124))
-
-	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	box.grow_vertical = Control.GROW_DIRECTION_BOTH
-	box.custom_minimum_size = Vector2(300, 0)
-	box.add_theme_constant_override("separation", 18)
-	page.add_child(box)
-
-	box.add_child(_mode_card("单人对战", UiTheme.ACCENT, _on_single))
-	box.add_child(_mode_card("联机对战", UiTheme.SHIELD, func(): _show_page(true)))
-
-	var quit := UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 15, 46)
-	quit.pressed.connect(_on_quit)
-	box.add_child(quit)
-
-	return page
-
-
 func _mode_card(title: String, accent: Color, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = title
@@ -125,7 +88,95 @@ func _mode_card(title: String, accent: Color, cb: Callable) -> Button:
 	return b
 
 
-# ---------- 联机页 ----------
+# ---------- Splash（占位加载） ----------
+
+func _build_splash() -> void:
+	if bool(Engine.get_meta(SPLASH_SEEN_META, false)):
+		return
+	Engine.set_meta(SPLASH_SEEN_META, true)
+	_splash = Control.new()
+	_splash.name = "SplashOverlay"
+	_splash.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_splash.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(_splash)
+
+	var bg := ColorRect.new()
+	bg.color = UiTheme.BG
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_splash.add_child(bg)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_splash.add_child(center)
+
+	var v := VBoxContainer.new()
+	v.custom_minimum_size = Vector2(300, 0)
+	v.add_theme_constant_override("separation", 16)
+	center.add_child(v)
+
+	var title := UiTheme.ink_label("拍拍熊熊", 34, UiTheme.INK)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(title)
+	v.add_child(UiPlaceholder.block("加载动画", Vector2(280, 220)))
+
+	_splash_status = UiTheme.ink_label("", 13, UiTheme.INK_SOFT)
+	_splash_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_splash_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(_splash_status)
+
+	_splash_enter = UiTheme.make_btn("进入游戏", UiTheme.ACCENT, Color.WHITE, 20, 56)
+	_splash_enter.pressed.connect(func():
+		if _splash != null:
+			_splash.visible = false)
+	BattleFx.bind_press(_splash_enter, "zan")
+	v.add_child(_splash_enter)
+
+	# 没有异步加载管线：资源同步就绪即显示入口；以后接真加载再换成 await。
+	# shortcut: 假设资源已同步就绪，接异步加载时改为进度回调再显示入口。
+	var ready := _resources_ready()
+	_splash_enter.visible = ready
+	_splash_status.text = "资源已就绪" if ready else "【占位】资源未就绪"
+
+
+func _resources_ready() -> bool:
+	return ResourceLoader.exists(MENU_SCENE) \
+		and ResourceLoader.exists("res://scenes/main.tscn") \
+		and ResourceLoader.exists("res://scenes/net_battle.tscn")
+
+
+# ---------- 主页 ----------
+
+func _build_home_page() -> Control:
+	var page := Control.new()
+	page.name = "PageHome"
+	page.set_anchors_preset(Control.PRESET_FULL_RECT)
+
+	page.add_child(_title("拍拍熊熊", 36, UiTheme.INK, 72))
+	page.add_child(_title("1v1 三分钟一局超爽超解压", 14, UiTheme.INK_SOFT, 124))
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.custom_minimum_size = Vector2(300, 0)
+	box.add_theme_constant_override("separation", 16)
+	page.add_child(box)
+
+	box.add_child(_mode_card("单人模式", UiTheme.ACCENT, _on_single))
+	box.add_child(_mode_card("联机对战", UiTheme.SHIELD, func(): _show_page(true)))
+
+	var settings := UiTheme.make_btn("设置", UiTheme.LINE, UiTheme.INK, 16, 48)
+	settings.pressed.connect(_on_settings)
+	box.add_child(settings)
+
+	var quit := UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 15, 46)
+	quit.pressed.connect(_on_quit)
+	box.add_child(quit)
+
+	return page
+
+
+# ---------- 联机入口 ----------
 
 func _build_net_page() -> Control:
 	var page := Control.new()
@@ -142,21 +193,10 @@ func _build_net_page() -> Control:
 	margin.add_theme_constant_override("margin_bottom", 16)
 	page.add_child(margin)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	margin.add_child(scroll)
-
 	var v := VBoxContainer.new()
-	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	v.add_theme_constant_override("separation", 14)
-	scroll.add_child(v)
+	margin.add_child(v)
 
-	var back := UiTheme.make_btn("返回", UiTheme.LINE, UiTheme.INK, 15, 42)
-	back.pressed.connect(func(): _show_page(false))
-	v.add_child(back)
-
-	# 网络引导（不展示手机 IP，冗余且易抄成蜂窝地址）
 	var info := PanelContainer.new()
 	info.add_theme_stylebox_override("panel", UiTheme.card_style())
 	v.add_child(info)
@@ -164,43 +204,26 @@ func _build_net_page() -> Control:
 	_host_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info.add_child(_host_info)
 
-	# 创建
 	v.add_child(_section("创建房间"))
-	var host_btn := UiTheme.make_btn("创建房间", UiTheme.ACCENT, Color.WHITE, 17, 52)
-	host_btn.pressed.connect(_on_host)
+	var host_btn := UiTheme.make_btn("作为房主", UiTheme.ACCENT, Color.WHITE, 18, 56)
+	host_btn.pressed.connect(_on_host_entry)
+	BattleFx.bind_press(host_btn, "zan")
 	v.add_child(host_btn)
 
-	# 加入
-	v.add_child(_section("加入对局"))
-	_ip_edit = LineEdit.new()
-	_ip_edit.placeholder_text = "对方 IP，例如 192.168.1.12"
-	v.add_child(_field("对方 IP", _ip_edit))
-
-	var join_btns := HBoxContainer.new()
-	join_btns.add_theme_constant_override("separation", 10)
-	join_btns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	v.add_child(join_btns)
-
-	var join := UiTheme.make_btn("加入", UiTheme.SHIELD, Color.WHITE, 16, 48)
-	join.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	join.pressed.connect(_on_join)
-	BattleFx.bind_press(join, "fang")
-	join_btns.add_child(join)
-
-	var disc := UiTheme.make_btn("搜索房间", UiTheme.WAVE, Color.WHITE, 16, 48)
-	disc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	disc.pressed.connect(_on_discover)
-	BattleFx.bind_press(disc, "bo")
-	join_btns.add_child(disc)
+	v.add_child(_section("加入房间"))
+	var search_btn := UiTheme.make_btn("搜索房间", UiTheme.WAVE, Color.WHITE, 18, 56)
+	search_btn.pressed.connect(_on_search_entry)
+	BattleFx.bind_press(search_btn, "bo")
+	v.add_child(search_btn)
 
 	_status = UiTheme.ink_label("请选择操作", 13, UiTheme.INK_SOFT)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status.custom_minimum_size.y = 40
 	v.add_child(_status)
 
-	var leave := UiTheme.make_btn("断开连接", UiTheme.LINE, UiTheme.INK_SOFT, 14, 42)
-	leave.pressed.connect(_on_leave)
-	v.add_child(leave)
+	var back := UiTheme.make_btn("返回", UiTheme.LINE, UiTheme.INK, 15, 42)
+	back.pressed.connect(func(): _show_page(false))
+	v.add_child(back)
 
 	return page
 
@@ -225,83 +248,42 @@ func _refresh_status() -> void:
 		_host_info.text = "未检测到 Wi-Fi 局域网\n请连接同一 Wi-Fi，或开热点后创建 / 搜索"
 	else:
 		_host_info.text = "已连接 Wi-Fi 局域网\n双方同一网络后即可创建 / 搜索"
-	if _ip_edit != null:
-		_ip_edit.placeholder_text = "对方 IP（连接后由搜索结果带出）"
 
+
+# ---------- 动作 ----------
 
 func _on_single() -> void:
-	if _status != null:
-		_status.text = "进入单人对战…"
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
-
-
-func _on_host() -> void:
-	_request_net_perms()
-	Net.set_backend(PeerManager.Mode.ENET)
-	var err := Net.host_game(_opts())
-	if err != OK:
-		var detail := ""
-		if Net.provider != null and Net.provider.has_method("get_last_host_err"):
-			detail = str(Net.provider.call("get_last_host_err"))
-			if detail.length() > 60:
-				detail = detail.substr(0, 60) + "…"
-		_status.text = "建房失败：%s%s" % [error_string(err), ("（" + detail + "）") if detail != "" else ""]
+	if not ResourceLoader.exists(SOLO_SCENE):
+		if _status != null:
+			_status.text = "单人模式页面未就绪"
 		return
-	var eps := PackedStringArray()
-	if Net.provider != null and Net.provider.has_method("get_wifi_ipv4s"):
-		eps = Net.provider.call("get_wifi_ipv4s")
-	var p := GAME_PORT
-	if Net.provider != null:
-		var room = Net.provider.get("_room_info")
-		if typeof(room) == TYPE_DICTIONARY and room.has("port"):
-			p = int(room["port"])
-	if eps.is_empty():
-		_status.text = "已建房（端口 %d）\n未检测到 Wi-Fi，请开热点或连同一 Wi-Fi\n等待对手加入…" % p
-	else:
-		_status.text = "已建房（端口 %d）\n对方在「搜索房间」里选本机即可加入\n等待对手…" % p
+	get_tree().change_scene_to_file(SOLO_SCENE)
 
 
-func _on_join(override_port: int = -1) -> void:
-	_request_net_perms()
-	Net.set_backend(PeerManager.Mode.ENET)
-	var opts := _opts()
-	if override_port > 0:
-		opts["port"] = override_port
-	opts["address"] = _ip_edit.text.strip_edges() if _ip_edit else ""
-	if str(opts["address"]) == "":
-		_status.text = "请先填写对方 IP"
+func _on_settings() -> void:
+	var tree := get_tree()
+	if tree == null or UiNav.is_settings_open(tree):
 		return
-	var err := Net.join_game(opts)
-	if err != OK:
-		_status.text = "加入失败：%s" % error_string(err)
+	var packed: PackedScene = load(SETTINGS_SCENE)
+	if packed == null:
 		return
-	_status.text = "正在连接 %s:%d…" % [opts["address"], opts["port"]]
+	var overlay := packed.instantiate()
+	overlay.name = "SettingsPanelOverlay"
+	tree.root.add_child(overlay)
 
 
-func _on_discover() -> void:
+func _on_host_entry() -> void:
 	_request_net_perms()
-	Net.set_backend(PeerManager.Mode.ENET)
-	_status.text = "搜索局域网房间 5s…"
-	Net.start_discover(5.0)
+	get_tree().change_scene_to_file(CREATE_SCENE)
 
 
-func _on_leave() -> void:
-	Net.leave()
-	_status.text = "已断开"
+func _on_search_entry() -> void:
+	_request_net_perms()
+	get_tree().change_scene_to_file(SEARCH_SCENE)
 
 
 func _on_quit() -> void:
 	UiNav.quit_game(get_tree())
-
-
-func _opts() -> Dictionary:
-	return {
-		"mode": PeerManager.Mode.ENET,
-		"port": GAME_PORT,
-		"token": "",
-		"room_name": ROOM_NAME,
-		"use_discover": true,
-	}
 
 
 func _request_net_perms() -> void:
@@ -315,93 +297,3 @@ func _request_net_perms() -> void:
 		if OS.get_granted_permissions().has(p):
 			continue
 		OS.request_permission(p)
-
-
-func _goto_battle() -> void:
-	get_tree().change_scene_to_file("res://scenes/net_battle.tscn")
-
-
-# ---------- 确认框：点选加入 / 房主接受 ----------
-
-func _ask(title: String, body: String, yes_text: String, no_text: String, cb: Callable) -> void:
-	if _dialog_layer != null and is_instance_valid(_dialog_layer):
-		_dialog_layer.queue_free()
-	_dialog_layer = Control.new()
-	_dialog_layer.name = "AskDialog"
-	_dialog_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_dialog_layer.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(_dialog_layer)
-
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.45)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_dialog_layer.add_child(dim)
-
-	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_dialog_layer.add_child(center)
-
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(300, 0)
-	panel.add_theme_stylebox_override("panel", UiTheme.card_style())
-	center.add_child(panel)
-
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
-	panel.add_child(v)
-
-	v.add_child(UiTheme.ink_label(title, 18, UiTheme.INK))
-	var lab := UiTheme.ink_label(body, 13, UiTheme.INK_SOFT)
-	lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	lab.custom_minimum_size = Vector2(260, 36)
-	v.add_child(lab)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_child(row)
-
-	var yes := UiTheme.make_btn(yes_text, UiTheme.ACCENT, Color.WHITE, 15, 42)
-	yes.custom_minimum_size.x = 110
-	yes.pressed.connect(func():
-		_close_ask()
-		cb.call(true))
-	row.add_child(yes)
-
-	var no := UiTheme.make_btn(no_text, UiTheme.LINE, UiTheme.INK, 15, 42)
-	no.custom_minimum_size.x = 110
-	no.pressed.connect(func():
-		_close_ask()
-		cb.call(false))
-	row.add_child(no)
-
-
-func _close_ask() -> void:
-	if _dialog_layer != null and is_instance_valid(_dialog_layer):
-		_dialog_layer.queue_free()
-	_dialog_layer = null
-
-
-func _show_join_room_dialog(info: Dictionary) -> void:
-	var addr := str(info.get("address", "?"))
-	var pname := str(info.get("room_name", "?"))
-	var port := int(info.get("port", GAME_PORT))
-	# 0.5s 重发会重复 announce，同房只弹一次
-	if _dialog_layer != null and is_instance_valid(_dialog_layer):
-		return
-	if _status != null:
-		_status.text = "发现房间：%s" % pname
-	_ask("加入房间？", "是否加入「%s」？\n地址 %s" % [pname, addr], "加入", "取消", func(ok: bool):
-		if not ok:
-			return
-		if _ip_edit != null:
-			_ip_edit.text = addr
-		_on_join(port))
-
-
-func _show_accept_dialog() -> void:
-	_ask("接受对战？", "对方已申请加入，是否接受并开启对战？", "接受开战", "拒绝", func(ok: bool):
-		if ok:
-			Net.accept_join()
-		else:
-			Net.reject_join())
