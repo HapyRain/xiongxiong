@@ -9,20 +9,20 @@
 
 | 用途 | 路径 |
 |---|---|
-| Godot 工程 | `E:\github\xiongxiong` |
-| Godot 控制台 | `C:\Users\Hollis\Desktop\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe`（换机改这里） |
+| Godot 工程 | **仓库根目录**（命令一律 `--path .`，不写绝对路径） |
+| Godot 控制台 | `$env:GODOT` 或 `.\tools\run_checks.ps1` 自动探测（本机路径见 `docs/ENVIRONMENT.md`） |
 | 导出脚本 | `pwsh -File build\export_android.ps1`（环境自检 + 自动探测 JDK/SDK） |
 | 环境一键配置 | `pwsh -File build\setup_android_env.ps1`（把 JDK/SDK 路径写进 Godot 编辑器设置；先关编辑器） |
 | APK | `build\xiongxiong-debug.apk`（约 70MB，含 CJK 字体） |
-| 远端 | `https://github.com/HapyRain/xiongxiong`（**必须走本机代理 `127.0.0.1:7897`**） |
-| 文档镜像 | 旧机 `C:\Users\pc\XiaomiMiProjects\xiongxiong\`——**过程文件，未迁移，本机没有，不再依赖** |
+| 远端 | `https://github.com/HapyRain/xiongxiong`（**必须走本机代理 `127.0.0.1:7897` + `-c http.sslBackend=openssl`**） |
+| 文档镜像 | 旧机过程文件未随仓库迁移、不再依赖；规则权威 = `docs/rules/game-rules-v2.md` |
 
 **回归（改完必跑，8 个；统一走 `.\tools\run_checks.ps1`）：**
 ```
 run_rules_check / run_quality_check / run_network_check / run_seal_check /
 run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 ```
-命令：`.\tools\run_checks.ps1`（只跑部分：`-Only ui,nav`）
+命令：`.\tools\run_checks.ps1`（一条跑完 8 自检 + Python 镜像；只跑部分：`-Only ui,nav`；手动单跑用 `& $env:GODOT --headless --path . --script res://tests/run_XXX_check.gd`）
 
 **注意：** headless 测不出布局/聚光灯/真机字体类问题，必须 F5 真窗口 + 双机验证。
 
@@ -30,9 +30,7 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 
 ## 2. 冻结规则（勿改 `scripts/rules/*` 结算）
 
-- 气 0–5，血 5，盾 0–3；40 回合比血
-- 回合 1 开局亮相：气+1、盾=3（`resolve_opening`）
-- 攒：气+1盾+1；波：耗 1 气；防：成功格挡才扣 1 盾
+- **规则唯一权威 = `docs/rules/game-rules-v2.md`（已定稿）**：血 4 / 盾 3 / 气 10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线、平局保底（第 3 次起各 +1）。本文件不再复述数值，防止两处漂移。
 - 2 拍节奏：输入窗 ≈**3.0s**（`battle_tempo.gd`：基础 2.85s，每 5 回合 -0.12s，40 回合时 ≈2.16s）；开局窗同 3.0s。旧文档写的「窗口 5s / 开局窗 6s」已过期（`OPENING_SELECT_WINDOW=6.0` 只进广播 payload，实际节奏走 BattleTempo）
 - 角色文案只用「我 / 对手」，形象是熊
 
@@ -105,10 +103,10 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 ## 7. 新会话开场（可直接贴）
 
 ```text
-读取 E:\github\xiongxiong\SESSION-HANDOFF.md，按「已知风险/下一步」继续。
+读取仓库根目录 SESSION-HANDOFF.md，按「已知风险/下一步」继续。
 
 当前最优先：
-1) **MVP 基线已达成**（8 自检全绿 / 提交 `c106e21`）；下一阶段按需求加功能、模块、前端页面
+1) **MVP 基线已达成**（8 自检全绿 / 784 断言 / 头部 `2190e2f` + 未提交 review 修复批次）；下一阶段按需求加功能、模块、前端页面
 2) 真机回归：搜索/建房/接受/对局/再来一局/断线（用户已试玩体感 OK，现阶段只需确认没退化）
 3) 需要视觉或复杂联机问题时拆 subagent 分工（模型路由以当前会话注册为准）
 

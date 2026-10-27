@@ -29,9 +29,70 @@ func _initialize() -> void:
 	print("SEALCHECK_START")
 	_check_auto_seal_snapshot()
 	_check_snapshot_carry_score()
+	_check_consent_identity()
+	_check_hb_seal_from_battle_start()
 	_run_fsm_suite()
 	_phase = "pm"
 	_setup_pm()
+
+
+# ================= I5：consent/ack 身份必须归一到 FSM 身份空间 =================
+# ENet 给真实客户端分配的对端 id 从 2 递增（可能是 7、13…），而 FSM 的同意集固定是
+# [1=房主, 2=客户端]。票按传输 id 记就永远凑不齐，30s 后反而把客户端判负；
+# sys_resume_ack 若信 payload.peer，攻击者还能替别人打卡。
+func _check_consent_identity() -> void:
+	var hp := LocalProvider.new()
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	hp.open_as_host({})
+	host._sync_fsm_identity()
+	host._set_session(PeerManager.Session.IN_BATTLE)
+	# 模拟真实 ENet：对端的传输 id 是 7（不是 2）
+	host._remote_peer_id = 7
+	host.seal("i5_identity")
+	_exp("i5: sealed for consent", host.fsm.state == NetworkSessionFSM.State.SEALED)
+	host.fsm.on_link_ok(Time.get_ticks_msec())
+	_exp("i5: consent needs fsm seats [1,2]", host.fsm.get_consent_need() == [1, 2])
+	host._on_provider_packet(7, {"v": 1, "type": "sys_consent", "round": host.state.round,
+		"payload": {"peer": 999, "yes": true}})
+	_exp("i5: vote from remote id 7 counts as fsm client seat", host.fsm.get_consent_need() == [1])
+	host.submit_resume_vote(true)
+	_exp("i5: consent completes → countdown", host.fsm.state == NetworkSessionFSM.State.COUNTDOWN)
+	# sys_resume_ack 身份从 from_id 推导，不信 payload.peer
+	host._on_provider_packet(7, {"v": 1, "type": "sys_resume_ack", "round": host.state.round,
+		"payload": {"peer": 12345}})
+	_exp("i5: resume_ack identity from sender",
+		bool(host.fsm._resume_acks.get(2, false)) and not bool(host.fsm._resume_acks.get(12345, false)))
+	host.leave()
+
+
+# ================= I7：开局即静默的对端必须按心跳日程被封存 =================
+# 旧 bug：hb_miss_due 在 _last_hb_rx_ms<=0 时永远 false，而它只被 hb/hb_echo 置位——
+# 对端若在倒计时阶段就死了，一包心跳都收不到 → 永不封存，房主对尸体开局。
+# 用 debug_clock_ms 注入时钟逐拍推进（阈值不许动：2.5s 窗口 1 丢=2 降级、5 丢=封存）。
+func _check_hb_seal_from_battle_start() -> void:
+	var lp := LocalProvider.new()
+	var pm := PeerManager.new()
+	root.add_child(pm)
+	pm.install_provider(lp, PeerManager.Mode.ENET)
+	lp.open_as_host({})
+	pm.debug_clock_ms = 500000
+	pm._sync_fsm_identity()
+	pm._set_session(PeerManager.Session.IN_BATTLE)
+	pm.start_battle()
+	_exp("i7: battle started", pm.get_session() == PeerManager.Session.IN_BATTLE)
+	# 对端全程静默：时钟每拍 +1s，心跳每拍一颗，但永远没有回包
+	for i in 2:
+		pm.debug_clock_ms += 1000
+		pm._pump_session(1.0)
+	_exp("i7: not sealed inside 2.5s window", pm.fsm.state == NetworkSessionFSM.State.CONNECTED)
+	for i in 6:
+		pm.debug_clock_ms += 1000
+		pm._pump_session(1.0)
+	_exp("i7: silent peer sealed on schedule", pm.fsm.state == NetworkSessionFSM.State.SEALED)
+	_exp("i7: session sealed too", pm.get_session() == PeerManager.Session.SEALED)
+	pm.leave()
 
 
 # ================= T6：断线快照必须带 score / draw_count / cooldowns / sealed_round =================

@@ -76,6 +76,60 @@ func _window_seconds() -> float:
 	return BattleTempo.total_window(s.round)
 
 
+## ── UI 只读访问器：表现层只许走这些，不许读 _select_left/_window_open 等私有字段 ──
+
+## 当前选招窗总时长（秒）。
+func window_seconds() -> float:
+	return _window_seconds()
+
+
+## 当前选招窗剩余（秒）。
+func select_left() -> float:
+	return _select_left
+
+
+## 招窗是否开着。
+func window_open() -> bool:
+	return _window_open
+
+
+## 本地预选副本（只读；-1=未选）。
+func local_preselect() -> Array:
+	return _local_preselect.duplicate()
+
+
+func resolving() -> bool:
+	return _resolving
+
+
+func did_settle() -> bool:
+	return _did_settle
+
+
+func did_lock_fill() -> bool:
+	return _did_lock_fill
+
+
+## 开局亮相是否已完成（含对端 PeerManager 的标记）。
+func opening_done() -> bool:
+	return peer != null and peer._opening_done
+
+
+## 本局难度（MatchConfig）：接管人机必须按房间配置难度出招，不许写死 normal。
+func _ai_difficulty() -> String:
+	if peer == null:
+		return "normal"
+	var cfg: Dictionary = peer.last_battle_config
+	if cfg.is_empty():
+		cfg = peer.get_match_config()
+	return str(cfg.get("difficulty", "normal"))
+
+
+## 接管人机统一出招口（难度经 _ai_difficulty 传入；勿绕过直接调 AiOpponent.choose）。
+func _ai_pick(s: BattleState, seat: int) -> int:
+	return AiOpponent.choose(s, seat, _ai_difficulty())
+
+
 func begin() -> void:
 	if peer == null:
 		push_error("NetworkedBattleController: peer not attached")
@@ -140,7 +194,7 @@ func _on_ai_takeover(_reason: String) -> void:
 	if peer != null:
 		_ai_seat = 1 - peer.get_local_role()
 	_ai_timer = randf_range(0.8, 2.2)
-	status_text.emit("对方已离开，由人机接管")
+	status_text.emit("对手已离开，由人机接管")
 
 
 ## 唯一输入闸：UI 禁用与 try_select 共用，避免“能点但无效 / 亮着却点不动”
@@ -180,7 +234,7 @@ func try_select(who: int, action: int) -> bool:
 	return true
 
 
-## 人机座位预选（对方接管后由 _process 调用）。
+## 人机座位预选（对手接管后由 _process 调用）。
 func _ai_try_select(action: int) -> bool:
 	if peer == null or not _running or not _ai_active:
 		return false
@@ -215,7 +269,7 @@ func lock_in() -> void:
 				act = int(s.pending[i])
 			if act < 0:
 				if _ai_active and i == _ai_seat:
-					act = AiOpponent.choose(s, i)
+					act = _ai_pick(s, i)
 				else:
 					act = s.default_action(i)
 			_local_preselect[i] = act
@@ -269,11 +323,11 @@ func _process(delta: float) -> void:
 		if peer != null and (peer.get_mode() == PeerManager.Mode.HOTSEAT or peer.is_host() or _ai_active):
 			peer.auto_fill_missing()
 
-	# 人机接管：窗口内为对方座位自动预选
+	# 人机接管：窗口内为对手座位自动预选
 	if _ai_active and not _did_lock_fill and s2.pending[_ai_seat] < 0:
 		_ai_timer -= delta
 		if _ai_timer <= 0.0:
-			_ai_try_select(AiOpponent.choose(s2, _ai_seat))
+			_ai_try_select(_ai_pick(s2, _ai_seat))
 			_ai_timer = randf_range(0.4, 1.0)
 
 	# 统一结算

@@ -673,7 +673,8 @@ func _init() -> void:
 	ok = _exp(ok, "[小局重开] score/draw_count 保留，其余复位",
 		s.score == [4, 5] and s.draw_count == 2 and s.round == GameRules.OPENING_ROUND
 		and s.hp == [GameRules.MAX_HP, GameRules.MAX_HP] and s.qi == [0, 0] and s.winner == -1
-		and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
+		and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1]
+		and s.phase == GameRules.Phase.SELECTING)
 
 	# ── ㉒ classic 模式预设（docs/rules/game-rules-classic.md）──────────────
 	var c: BattleState = BattleState.new("classic")
@@ -683,6 +684,15 @@ func _init() -> void:
 		and c.score_to_win() == 1 and not c.skills_enabled() and not c.quan_jiang_enabled()
 		and not c.draw_backstop() and c.draw_replay_max() == 3 and c.round_cap() == 40
 		and c.hp == [1, 1] and c.shield == [3, 3])
+
+	ok = _exp(ok, "[经典] 预设剔除死配置 cap_rule（文档 §5 同步删除）",
+		not GameRules.preset("classic").has("cap_rule")
+		and not GameRules.preset("lesson").has("cap_rule"))
+
+	var c_open: BattleState = BattleState.new("classic")
+	r = GameResolve.resolve_opening(c_open)
+	ok = _exp(ok, "[经典] 开局亮相：气 +1、盾已满 3 不叠加、血不动",
+		r.opening and _chk(c_open, [1, 1], [1, 1], [3, 3]))
 
 	s = _mk_mode("classic", [5, 5], 9)
 	s.score = [1, 1]
@@ -779,9 +789,19 @@ func _init() -> void:
 	var snap_c: Dictionary = s.snapshot()
 	ok = _exp(ok, "[快照] snapshot 带 mode + mastery",
 		str(snap_c.get("mode", "")) == "classic" and not bool(snap_c.get("mastery", true)))
-	var c2: BattleState = BattleState.new("classic")
-	ok = _exp(ok, "[快照] restore 同模式：mode/mastery/血上限保留",
-		c2.restore(snap_c) and c2.mode == "classic" and c2.hp == [1, 1])
+	var src: BattleState = BattleState.new()
+	src.hp = [3, 2]
+	src.qi = [7, 1]
+	src.shield = [1, 2]
+	src.round = 9
+	src.score = [3, 5]
+	src.draw_count = 2
+	var snap2: Dictionary = src.snapshot()
+	var c2: BattleState = BattleState.new()
+	ok = _exp(ok, "[快照] restore 同模式：非默认 hp/qi/比分/回合/平局数原样落地",
+		c2.restore(snap2) and c2.hp == [3, 2] and c2.qi == [7, 1]
+		and c2.score == [3, 5] and c2.round == 9 and c2.draw_count == 2
+		and c2.mode == "lesson" and not c2.mastery)
 	var lesson_s: BattleState = BattleState.new()
 	ok = _exp(ok, "[快照] restore 校验：mode 不一致 → 拒绝（状态不动）",
 		not lesson_s.restore(snap_c) and lesson_s.mode == "lesson"
@@ -789,6 +809,84 @@ func _init() -> void:
 	lesson_s.hp = [3, 2]
 	ok = _exp(ok, "[快照] restore 校验失败时不改任何字段",
 		not lesson_s.restore(snap_c) and lesson_s.hp == [3, 2])
+
+	# ── ㉕ restore 防篡改 / 防伪造（联机外部数据防御，2026-10-27）────────────
+	var t1: BattleState = BattleState.new("classic")
+	t1.qi = [2, 3]
+	ok = _exp(ok, "[快照] restore 防篡改：缺 mode 键 → 拒绝（状态不动）",
+		not t1.restore({"mastery": false, "round": 7, "hp": [0, 0]})
+		and t1.round == 1 and t1.qi == [2, 3] and t1.hp == [1, 1])
+	var t2: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 防篡改：缺 mastery 键 → 拒绝（状态不动）",
+		not t2.restore({"mode": "classic", "round": 7}) and t2.round == 1)
+	var t3: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 防伪造：classic draw_count 超出重开上限 → 拒绝（状态不动）",
+		not t3.restore({"mode": "classic", "mastery": false, "draw_count": 40})
+		and not t3.restore({"mode": "classic", "mastery": false, "draw_count": 5, "winner": 2})
+		and t3.draw_count == 0)
+	var t4: BattleState = BattleState.new()
+	ok = _exp(ok, "[快照] restore 防伪造：lesson draw_count 超界 → 钳到保底阈值 3（结算等价）",
+		t4.restore({"mode": "lesson", "mastery": false, "draw_count": 40})
+		and t4.draw_count == 3)
+	var t5: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 防伪造：classic 伪造终场比分（[1,1] 双到线 / 未结算 [1,0]）→ 拒绝（状态不动）",
+		not t5.restore({"mode": "classic", "mastery": false, "score": [1, 1]})
+		and not t5.restore({"mode": "classic", "mastery": false, "score": [1, 1], "winner": 2})
+		and not t5.restore({"mode": "classic", "mastery": false, "score": [1, 0]})
+		and t5.score == [0, 0] and int(t5.winner) == -1)
+	var t6: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 终场快照例外：已结算（winner≥0）的合法终场可恢复",
+		t6.restore({"mode": "classic", "mastery": false, "score": [1, 0], "winner": 0})
+		and t6.score == [1, 0] and t6.is_match_over()
+		and t6.restore({"mode": "classic", "mastery": false, "score": [0, 0], "draw_count": 4, "winner": 2})
+		and t6.draw_count == 4 and t6.is_match_over() and t6.match_winner() == 2)
+
+	# ── ㉖ restore 的 cooldowns：过滤非本模式动作 + 钳到当前回合（对齐 battle_state._cooldowns）──
+	var c3: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore cooldowns 过滤本模式外动作、钳到当前回合",
+		c3.restore({"mode": "classic", "mastery": false, "round": 5,
+			"cooldowns": [{XIAO_YANG: 3, BAO1: 99}, {BAO2: 2}]})
+		and c3.cooldowns == [{BAO1: 5}, {}])
+
+	# ── ㉗ restore 脏输入防御：非数值强转 0（GDScript int() 语义），冷却表短列表缺位补空 ──
+	var t7: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] restore 脏输入防御：非数值强转 0、cooldowns 短列表缺位补空",
+		t7.restore({"mode": "classic", "mastery": false, "round": "abc",
+			"draw_count": "xyz", "cooldowns": [{BAO1: 2}]})
+		and t7.round == 1 and t7.draw_count == 0 and t7.cooldowns == [{BAO1: 1}, {}])
+
+	# ── ㉘ phase 字段随快照传输并钳制（Python 镜像双向对齐）──────────────────
+	var t8: BattleState = BattleState.new("classic")
+	ok = _exp(ok, "[快照] phase 随包传输、越界钳制到 [OPENING, GAME_OVER]",
+		t8.restore({"mode": "classic", "mastery": false, "phase": 99})
+		and int(t8.phase) == GameRules.Phase.GAME_OVER
+		and t8.restore({"mode": "classic", "mastery": false, "phase": -5})
+		and int(t8.phase) == GameRules.Phase.OPENING
+		and int((t8.snapshot()).get("phase", -1)) == GameRules.Phase.OPENING)
+
+	# ── ㉙ 出招消毒：本模式禁用动作 / 技能表外值 → 兜底攒气（resolve.sanitize_action）──
+	s = _mk_mode("classic", [0, 0])
+	r = GameResolve.resolve_turn(s, ZHONG_JI, ZAN)
+	ok = _exp(ok, "[消毒] classic 强出终极技 → 兜底攒气（ZAN vs ZAN，1 血不死、各 +1 气）",
+		r.actions == [ZAN, ZAN] and s.winner == -1
+		and _chk(s, [1, 1], [1, 1], [3, 3]))
+
+	s = _mk([4, 4], [0, 0], [3, 3])
+	r = GameResolve.resolve_turn(s, 99, ZAN)
+	ok = _exp(ok, "[消毒] lesson 未知动作 id → 兜底攒气（ZAN vs ZAN）",
+		r.actions == [ZAN, ZAN] and s.winner == -1
+		and _chk(s, [4, 4], [1, 1], [3, 3]))
+
+	# ── ㉚ set_preset 中途换模式：不缩资源（行为保持），reset 后按新预设归位 ──────
+	var t9: BattleState = BattleState.new()
+	t9.set_preset("classic")
+	var kept: bool = (
+		t9.mode == "classic" and t9.max_hp() == 1
+		and t9.hp == [GameRules.MAX_HP, GameRules.MAX_HP]
+	)
+	t9.reset_round_keep_score()
+	ok = _exp(ok, "[预设] set_preset 不缩资源（行为保持），reset_round_keep_score 按新预设归位",
+		kept and t9.hp == [1, 1] and t9.qi == [0, 0])
 
 	print("=".repeat(52))
 	if not ok:

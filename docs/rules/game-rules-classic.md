@@ -41,6 +41,7 @@
 
 - **盾 0 出防御 = 裸防**：`can_use_action` 判非法（超时兜底自动改攒气）；若仍被强行出招，按**裸防**结算——不挡任何攻击，被包子 / 破防技 / 终极技打中即掉血（经典 1 血，直接判负）。对攒气仍无事。
 - **平局重开上限**：40 回合双方存活且血同 → 平局并**重开本局**（不清比分），最多重开 3 次；**第 4 次平局整场判平**（`draw_replay_max = 3`，由 `is_match_over()` 收口）。
+- **越界出招兜底**（规则层自防御，2026-10-27）：联机外部数据强出本模式禁用动作（技能 / 劝降 / 越界值）→ 结算层按「超时兜底自动改攒气」兜底为**攒气**，保证"没有技能、没有 CD、没有封盾"不被绕过；包子族非法多连仍按上限收口（只算 1 包）。
 
 ## 3. 与课间模式（v2）的差异
 
@@ -70,15 +71,19 @@ classic = {
   max_hp: 1, max_qi: 5, max_shield: 3,
   bao_max: 1,                    # 单发包子
   actions: [ZAN, BAO1, FANG],    # 其余动作禁用
-  opening: { forced: ZAN, qi: +1 },
   skills_enabled: false,
   score_to_win: 1,               # 一局定胜负
-  round_cap: 40, cap_rule: "hp_then_draw",
+  round_cap: 40,
   draw_replay_max: 3,            # 平局重开本局最多 3 次，第 4 次整场判平
 }
 ```
 
+> `opening`（回合 1 强制攒气、气 +1、盾已满 3 不叠加）是**双模式共用的全局行为**，
+> 由 `resolve.gd resolve_opening` 硬编码（与课间一致），**不是 PRESETS 字段**。
+> 原映射里的 `cap_rule: "hp_then_draw"` 是死配置（从未被读取），已从 PRESETS 删除（2026-10-27 勘误）。
+
 课间预设（现有 v2）保持：`max_hp 4 / max_qi 10 / bao_max 3 / 11 技能按分解锁 / score_to_win 12 / 平局保底`。
+（会话选项：精通(mastery)——仅绕过按分解锁门槛，CD/气/盾/封盾照旧，默认关闭，随快照传输并校验；2026-10-27 勘误，见 game-rules-v2.md §10。）
 
 > 实现时 `resolve.gd` 不复制：只让 `BattleState` 按预设读参数、`available_actions` 按模式的可用动作过滤。
 > 这是规则层变更 → 需变更记录 + 同步 `tests/test_rules_v2.py` + 断言。

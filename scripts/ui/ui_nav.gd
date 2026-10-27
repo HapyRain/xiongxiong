@@ -85,13 +85,13 @@ static func is_in_battle_scene(tree: SceneTree) -> bool:
 ## 本地主动离开对局时的确认文案。
 static func leave_confirm_text() -> String:
 	if is_net_battle():
-		return "返回菜单后，对方将由人机接管（或本局结束）。\n确定返回菜单？"
+		return "返回菜单后，对手将由人机接管（或本局结束）。\n确定返回菜单？"
 	return "返回菜单将结束当前对局。\n确定返回菜单？"
 
 
-## 对方离开时的提示文案。
+## 对手离开时的提示文案。
 static func peer_left_text() -> String:
-	return "对方已离开，由人机接管"
+	return "对手已离开，由人机接管"
 
 
 ## 运行时拿 autoload Net（PeerManager）。

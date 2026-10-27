@@ -118,6 +118,7 @@ func _initialize() -> void:
 	_check_forfeit_ends_match()
 	_check_ai_v2()
 	_check_solo_modes()
+	_check_accessors_and_contract()
 
 	# ---------- rematch：强制终局后再来一局 ----------
 	_host_pm.state.winner = 0
@@ -475,7 +476,7 @@ func _check_solo_modes() -> void:
 	h.free()
 
 	# AI hard：权重表直测（不靠随机采样，断言可失败）。
-	# 对方 qi=3（≈上回合攒过）→ hard 包子权重必须整体高于 normal；normal 不扩包子 2/3 连。
+	# 对手 qi=3（≈上回合攒过）→ hard 包子权重必须整体高于 normal；normal 不扩包子 2/3 连。
 	var s := BattleState.new()
 	s.round = 5
 	s.qi = [3, 3]
@@ -484,7 +485,7 @@ func _check_solo_modes() -> void:
 		return int(w.get(GameRules.Action.BAO1, 0)) + int(w.get(GameRules.Action.BAO2, 0)) + int(w.get(GameRules.Action.BAO3, 0))
 	var w_normal := AiOpponent.weights(s, 1)
 	var w_hard := AiOpponent.weights(s, 1, "hard")
-	_exp("AI hard：对方气高时包子权重高于 normal",
+	_exp("AI hard：对手气高时包子权重高于 normal",
 		bao_weight.call(w_hard) > bao_weight.call(w_normal))
 	_exp("AI hard：候选含包子 2/3 连（lesson）",
 		w_hard.has(GameRules.Action.BAO2) and w_hard.has(GameRules.Action.BAO3))
@@ -502,6 +503,66 @@ func _check_solo_modes() -> void:
 	_exp("AI hard：自己盾少时收着防御（normal 有，hard 权重 0）",
 		int(AiOpponent.weights(low_shield, 1, "hard").get(GameRules.Action.FANG, 0)) == 0
 		and int(AiOpponent.weights(low_shield, 1).get(GameRules.Action.FANG, 0)) > 0)
+	_exp("AI 权重 0 不进表（hard 盾 1 干脆不写 FANG 键）",
+		not AiOpponent.weights(low_shield, 1, "hard").has(GameRules.Action.FANG)
+		and AiOpponent.weights(low_shield, 1).has(GameRules.Action.FANG))
+
+
+## U6/U7 回归：只读访问器、start_match 契约、接管 AI 透传对局难度。
+func _check_accessors_and_contract() -> void:
+	# U7：BattleController._ready 绝不自动开局 —— 入口必须显式 start_match
+	var bare := BattleController.new()
+	root.add_child(bare)
+	_exp("单机 _ready 不自动开局（window_seconds()==0）", bare.window_seconds() == 0.0)
+	_exp("单机 _ready 不自动开局（phase 保持默认 OPENING）",
+		bare.state.phase == GameRules.Phase.OPENING)
+	bare.start_match({"mode": "classic", "mastery": false, "difficulty": "normal"})
+	_exp("start_match 后选招窗真的开了",
+		bare.window_seconds() > 0.0 and bare.select_left() > 0.0)
+	root.remove_child(bare)
+	bare.free()
+
+	# U6：UI 只读访问器必须与私有字段同值（net_battle_ui 只许走访问器）
+	_exp("accessor window_open 一致", _host_ctrl.window_open() == _host_ctrl._window_open)
+	_exp("accessor window_seconds 一致",
+		absf(_host_ctrl.window_seconds() - _host_ctrl._window_seconds()) < 0.001)
+	_exp("accessor select_left 一致",
+		absf(_host_ctrl.select_left() - _host_ctrl._select_left) < 0.001)
+	_exp("accessor local_preselect 一致",
+		_host_ctrl.local_preselect() == _host_ctrl._local_preselect)
+	_exp("accessor opening_done 一致",
+		_host_ctrl.opening_done() == (_host_pm != null and _host_pm._opening_done))
+	_exp("accessor resolving/did_settle/did_lock_fill 一致",
+		_host_ctrl.resolving() == _host_ctrl._resolving
+		and _host_ctrl.did_settle() == _host_ctrl._did_settle
+		and _host_ctrl.did_lock_fill() == _host_ctrl._did_lock_fill)
+
+	# U7：接管 AI 必须吃 MatchConfig 的 difficulty（hard 才会出包子 2/3 连）
+	var pm := PeerManager.new()
+	root.add_child(pm)
+	pm.last_battle_config = {"mode": "lesson", "mastery": false, "difficulty": "hard"}
+	var ctrl := NetworkedBattleController.new()
+	root.add_child(ctrl)
+	ctrl.attach(pm)
+	var s := BattleState.new()
+	s.round = 5
+	s.qi = [3, 3]
+	s.shield = [3, 3]
+	seed(20261023)
+	var hard_seen := {}
+	for i in 40:
+		hard_seen[ctrl._ai_pick(s, 1)] = true
+	_exp("接管 AI 用对局难度：hard 会出包子 2/3 连",
+		hard_seen.has(GameRules.Action.BAO2) or hard_seen.has(GameRules.Action.BAO3))
+	pm.last_battle_config = {"mode": "lesson", "mastery": false, "difficulty": "normal"}
+	seed(20261024)
+	var normal_seen := {}
+	for i in 40:
+		normal_seen[ctrl._ai_pick(s, 1)] = true
+	_exp("接管 AI 用对局难度：normal 不出包子 2/3 连",
+		not normal_seen.has(GameRules.Action.BAO2) and not normal_seen.has(GameRules.Action.BAO3))
+	ctrl.free()
+	pm.free()
 
 
 ## 网络判负（forfeit / 拒绝继续 / 同意超时）是**整场**结束，不能当小局处理：

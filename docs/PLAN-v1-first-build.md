@@ -45,7 +45,7 @@
 - 单机：模式/难度选择 → 开局（classic 一局定胜负；lesson 12 分制；精通开关）
 - `scripts/session/battle_controller.gd`：接收 match config（mode/difficulty/mastery）
 - AI 难度：`ai_opponent.gd` 加 `normal` / `hard` 两档（normal=现权重；hard=惩罚"对方连续攒气"、更爱用包子压裸攒）
-- 验收：`run_roundloop_check` + `run_nav_check` 全绿；补 2 条断言（classic 一局结束整场结束；mastery 开局 13 动作全可用）
+- 验收：`run_roundloop_check` + `run_nav_check` 全绿；补 2 条断言（classic 一局结束整场结束；mastery 解锁旁路）（勘误 10-27：原写"mastery 开局 13 动作全可用"——CD 仍按开局计时，实为第 2 回合 6 动作 / 第 9 回合 13 动作）
 
 ### W3 · 联机房主/搜索/准备/倒计时（owner C，依赖 W1，可与 W2 并行）
 
@@ -76,7 +76,7 @@
   12. 断线/封存 overlay：占位提示
 - 占位规范：统一 `ColorRect + Label("【占位】xxx")`；颜色用主题色；尺寸用锚点；**每屏单屏不滚动、390×820**
 - 后端接线：所有按钮真实可用（跳转/选择/开始/准备/离开），只有视觉是占位
-- 验收：`run_nav_check` 全绿（含竖版契约、overlay 清理）；新增 UI 冒烟测试：依次加载 12 屏各 60 帧，**0 ERROR**（第 8 个自检）
+- 验收：`run_nav_check` 全绿（含竖版契约、overlay 清理）；新增 UI 冒烟测试：依次加载各宿主屏若干帧，**0 ERROR**（第 8 个自检）（勘误 10-27：原计划 12 屏，实现为 8 个宿主场景——Splash/小局结算/终场/断线 overlay 为宿主内嵌覆盖层，随宿主验证）
 - 禁改：`scripts/rules/*`、`scripts/session/*` 的结算逻辑；UI 只读 state + 发意图
 
 ### W5 · 集成验收（Lead）
@@ -118,7 +118,7 @@ W1 ──> W2 ──> W4 ──> W5
 | 规则层加参数会碰"冻结流程" | 只加参数预设，不改矩阵语义；同步 Python 镜像 + 断言 + 变异测试 |
 | W2/W3 同时改 `peer_manager.gd` → 冲突 | W3 独占 `peer_manager.gd`；W2 只改 `battle_controller.gd` / `ai_opponent.gd` |
 | W4 依赖接口未定 | 先定 MatchConfig 结构（W1 输出），W4 按结构写占位 |
-| 8 个自检 + 新 UI 冒烟可能长 | 冒烟只加载 12 屏 ×60 帧；跑全量约 3–5 分钟，可接受 |
+| 8 个自检 + 新 UI 冒烟可能长 | 冒烟只加载 8 个宿主屏 ×60 帧（勘误 10-27，原 12 屏）；跑全量约 3–5 分钟，可接受 |
 | APK 构建会顶掉编辑器 MCP | 放在最后，构建后提醒用户重启编辑器 |
 | 提交时 `.git` 被沙箱拒 | danger-full-access 提权，或用户外部提交 |
 | 占位块被误当成品 | 所有占位带 `【占位】` 文案 + TODO 注释 + 本文件说明 |
@@ -230,7 +230,7 @@ draw_replay_max: int             # classic 专用：平局后重开本局，最�
 - **0 ERROR 判定**：`run_checks.ps1` 必须 `2>&1` 捕获输出并 grep `SCRIPT ERROR|^ERROR`，不能只看 exit code（否则假绿）
 - `tools/run_checks.ps1` 的 `$all` 增加 `ui`；AGENTS / SESSION-HANDOFF 的"7 个自检"改 8 个（W4 统一改）
 - 倒计时必须可注入时钟：`debug_tick_countdown(ms)`；5s 倒计时断言放 `run_netwindow_check`，不依赖真实时钟
-- mastery 断言写"**第 2 回合** 13 动作全可用"（第 1 回合只放行攒气）
+- mastery 断言：第 2 回合 6 动作可用、第 9 回合 13 动作全可用（第 1 回合只放行攒气）（勘误 10-27：原写"第 2 回合 13 动作全可用"与 CD 开局计时矛盾，实现按 CD 规则正确）
 - 变异测试至少两处：classic.max_hp→4 必红；mastery 旁路删掉必红
 
 ## R5. 提交白名单（W4）

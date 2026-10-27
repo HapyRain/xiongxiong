@@ -11,7 +11,8 @@ const DEFAULT_CFG := {"mode": "lesson", "mastery": false, "difficulty": "normal"
 @onready var controller: BattleController = $BattleController
 @onready var info_label: Label = %InfoLabel
 @onready var result_label: Label = %ResultLabel
-@onready var you_slot: VBoxContainer = %YouSlot
+## 对手资源槽（命名与内容一致；勿叫 YouSlot —— 这里放的是「对手资源」占位）
+@onready var opp_slot: VBoxContainer = %OppSlot
 @onready var reveal_slot: VBoxContainer = %RevealSlot
 @onready var bottom_slot: VBoxContainer = %BottomSlot
 @onready var overlay: Control = %Overlay
@@ -34,14 +35,16 @@ func _ready() -> void:
 	BattleController.pending_cfg = {}
 	if _cfg.is_empty():
 		_cfg = DEFAULT_CFG.duplicate()
-	UiNav.register_back_target(SCENE, SOLO_SCENE)
+	UiNav.register_back_target(SCENE, UiNav.MENU_SCENE)
+	# 系统返回与「菜单」按钮必须走同一条离开路（单人对局 = 即时离开回菜单，无二次确认）（U7）
+	UiNav.register_back_guard(SCENE, _on_back_requested)
 	add_child(UiBackRouter.new())
-	menu_btn.pressed.connect(func(): UiNav.return_to_menu(get_tree()))
+	menu_btn.pressed.connect(_leave_to_menu)
 	_setup_audio()
 
-	var you_ph := UiPlaceholder.block("对手资源", Vector2(0, 96))
-	you_ph.size_flags_vertical = Control.SIZE_FILL
-	you_slot.add_child(you_ph)
+	var opp_ph := UiPlaceholder.block("对手资源", Vector2(0, 96))
+	opp_ph.size_flags_vertical = Control.SIZE_FILL
+	opp_slot.add_child(opp_ph)
 	# 我方资源与对手同构，插在底部出招区之前
 	var me_slot := VBoxContainer.new()
 	me_slot.name = "MeSlot"
@@ -56,13 +59,15 @@ func _ready() -> void:
 	reveal_slot.add_child(reveal_ph)
 	reveal_slot.move_child(reveal_ph, 0)
 
-	controller.start_match(_cfg)
-	_build_actions()
-	overlay.visible = false
+	# U5：先连接再 start_match —— start_match 同步发出首个 phase_changed（battle_controller._start_opening），
+	# 后连会把开局那一拍丢掉。这里保持既有处理顺序：首发进 _on_phase 只做 _refresh，行为不变。
 	controller.phase_changed.connect(_on_phase)
 	controller.beat.connect(_on_beat)
 	controller.round_resolved.connect(_on_resolved)
 	controller.game_over.connect(_on_game_over)
+	controller.start_match(_cfg)
+	_build_actions()
+	overlay.visible = false
 	_refresh()
 
 
@@ -226,8 +231,19 @@ func _show_overlay(text: String, with_buttons: bool) -> void:
 		again.pressed.connect(_on_again)
 		v.add_child(again)
 		var back := UiTheme.make_btn("返回菜单", UiTheme.LINE, UiTheme.INK, 17, 48)
-		back.pressed.connect(func(): UiNav.return_to_menu(get_tree()))
+		back.pressed.connect(_leave_to_menu)
 		v.add_child(back)
+
+
+## 单人对局的唯一离开路：菜单按钮 / 系统返回 / 终场「返回菜单」都走它（即时离开，无二次确认）。
+func _leave_to_menu() -> void:
+	UiNav.return_to_menu(get_tree())
+
+
+## 系统返回键守卫：与「菜单」按钮同一离开路，已接管返回 true（U7）。
+func _on_back_requested() -> bool:
+	_leave_to_menu()
+	return true
 
 
 func _on_again() -> void:

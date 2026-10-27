@@ -62,7 +62,6 @@ const PRESETS := {
 		"draw_backstop": false,
 		"score_to_win": 1,
 		"round_cap": 40,
-		"cap_rule": "hp_then_draw",
 		"draw_replay_max": 3,
 	},
 	"lesson": {
@@ -77,7 +76,6 @@ const PRESETS := {
 		"draw_backstop": true,
 		"score_to_win": WIN_SCORE,
 		"round_cap": MAX_ROUND,
-		"cap_rule": "hp_then_draw",
 		"draw_replay_max": 0,
 	},
 }

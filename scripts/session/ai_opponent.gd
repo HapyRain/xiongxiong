@@ -9,20 +9,20 @@
 ##   · 低气优先攒气（攒气还是唯一「无耗气 + 加盾」的基本招）；简单加权随机，够用即可。
 ## 难度（PLAN v1.1 R3）：normal = 现权重（攒气/包子×1/防御）；
 ## hard = 候选追加包子 2/3 连（lesson 才有，classic 会被 can_use_action 挡掉），
-##        且「对方在攒气」时加重包子；自己盾少时收着防御。
+##        且「对手在攒气」时加重包子；自己盾少时收着防御。
 class_name AiOpponent
 extends RefCounted
 
 ## 候选权重表（choose 的唯一来源；测试直接比对权重，不依赖随机采样）。
-## 只含 can_use_action 放行的招，权重 0 = 不进池。
+## 只含 can_use_action 放行的招；权重 0 = 不进池（不写入本表，choose 拿不到）。
 static func weights(state: BattleState, who: int = 1, difficulty: String = "normal") -> Dictionary:
 	if state == null:
 		return {}
 	var seat: int = clampi(who, 0, 1)
 	var hard: bool = difficulty == "hard"
 	var foe: int = 1 - seat
-	# hard 的「对方气量较上回合增长」：state 没有上一回合气量字段，用 qi[foe] >= 2 近似
-	# （对方只有出攒气才会涨气，等价于「上回合攒过」的短记）。
+	# hard 的「对手气量较上回合增长」：state 没有上一回合气量字段，用 qi[foe] >= 2 近似
+	# （对手只有出攒气才会涨气，等价于「上回合攒过」的短记）。
 	# shortcut: 久攒不用的气也会被当成刚增长；要精确需在 BattleState 记上一回合 qi（rules 层，走冻结流程）。
 	var foe_building: bool = hard and int(state.qi[foe]) >= 2
 	# 候选集：攒气 / 包子 1-3 连 / 防御（hard 才放 2/3 连，normal 维持原三招）
@@ -49,7 +49,9 @@ static func weights(state: BattleState, who: int = 1, difficulty: String = "norm
 				# hard：自己盾少时省着用（盾 0 本来就非法，这里覆盖盾 1）
 				if hard and int(state.shield[seat]) <= 1:
 					w = 0
-		out[a] = maxi(0, w)
+		# 权重 0 = 不进池：不写入表，choose 的采样池里就不会出现
+		if w > 0:
+			out[a] = w
 	return out
 
 

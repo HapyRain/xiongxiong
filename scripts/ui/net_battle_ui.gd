@@ -1,6 +1,6 @@
 ## net_battle_ui.gd
 ## 竖版联机对局 UI：对手在上 / 状态中段 / 我方在下。
-## 热座入口已移除（底层 HOTSEAT 仅测试）；对方离开 → 人机接管提示并继续。
+## 热座入口已移除（底层 HOTSEAT 仅测试）；对手离开 → 人机接管提示并继续。
 extends Control
 
 const SCENE := "res://scenes/net_battle.tscn"
@@ -63,9 +63,8 @@ func _ready() -> void:
 	controller.phase_changed.connect(_on_phase)
 	controller.round_resolved.connect(_on_resolved)
 	controller.game_over.connect(_on_game_over)
-	controller.status_text.connect(func(t: String):
-		if _status_label != null:
-			_status_label.text = t)
+	controller.status_text.connect(_on_controller_status)
+	# U1：Net 是 autoload，比场景命长；lambda 连接在场景释放后仍会触发（报错刷屏）→ 具名连接
 	Net.actions_revealed.connect(_on_reveal_actions)
 	Net.peer_left.connect(_on_peer_left)
 	Net.ai_takeover_started.connect(_on_ai_takeover)
@@ -74,10 +73,19 @@ func _ready() -> void:
 	Net.countdown_tick.connect(_on_countdown_tick)
 	Net.session_failed.connect(_on_session_failed)
 	Net.session_restored.connect(_on_session_restored)
-	Net.battle_started.connect(func(_s): _on_battle_started_ui())
+	Net.battle_started.connect(_on_net_battle_started)
 	controller.begin()
 	_on_phase(controller.state.phase, controller.state.round)
 	_refresh_all()
+
+
+func _on_controller_status(t: String) -> void:
+	if _status_label != null:
+		_status_label.text = t
+
+
+func _on_net_battle_started(_snap: Dictionary) -> void:
+	_on_battle_started_ui()
 
 
 func _build_ui() -> void:
@@ -133,7 +141,7 @@ func _build_ui() -> void:
 	var you_title := UiTheme.ink_label("对手", 16, UiTheme.INK)
 	you_v.add_child(you_title)
 	you_v.add_child(_make_stat_row("you", _you_boxes))
-	var you_wait := UiTheme.ink_label("（等待对方选招…）", 12, UiTheme.INK_FAINT)
+	var you_wait := UiTheme.ink_label("（等待对手选招…）", 12, UiTheme.INK_FAINT)
 	you_wait.name = "YouWait"
 	you_v.add_child(you_wait)
 
@@ -229,8 +237,8 @@ func _process(_delta: float) -> void:
 	var s: BattleState = controller.state
 	if s == null:
 		return
-	var win := controller._window_seconds()
-	var left: float = controller._select_left
+	var win := controller.window_seconds()
+	var left: float = controller.select_left()
 	var elapsed: float = win - left
 	var t: float = clampf(elapsed / maxf(win, 0.01), 0.0, 1.0)
 	var w: float = _tempo_root.size.x if _tempo_root.size.x > 0 else 300.0
@@ -247,7 +255,7 @@ func _process(_delta: float) -> void:
 		var clap := BattleTempo.clap2_at(s.round)
 		_tempo_ticks[0].position = Vector2(1, 0)
 		_tempo_ticks[1].position = Vector2(clampf(clap / win, 0.0, 1.0) * w - 1.0, 0)
-	_tempo_root.visible = controller._window_open and not s.is_over()
+	_tempo_root.visible = controller.window_open() and not s.is_over()
 	# 每帧同步按钮禁用 ↔ is_pick_open，杜绝“亮着点不动 / 结算还能点”
 	_refresh_all()
 
@@ -303,6 +311,7 @@ func _make_skill_grid(who: int, btns: Dictionary) -> GridContainer:
 			col = UiTheme.SHIELD
 		var fg := UiTheme.INK if col == UiTheme.ACCENT else Color.WHITE
 		var b := Button.new()
+		b.name = "Action%d" % act
 		b.text = GameRules.action_name(act)
 		b.custom_minimum_size = Vector2(0, 44)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -420,7 +429,7 @@ func _build_overlay() -> void:
 	_btn_continue.custom_minimum_size = Vector2(200, 48)
 	_btn_continue.pressed.connect(func():
 		Net.submit_resume_vote(true)
-		_show_overlay("countdown", "已同意", "等待对方确认…", false, false, false))
+		_show_overlay("countdown", "已同意", "等待对手确认…", false, false, false))
 	BattleFx.bind_press(_btn_continue, "menu")
 	btn_col.add_child(_btn_continue)
 
@@ -487,16 +496,20 @@ func _on_peer_left(_id: int, reason: String) -> void:
 func _on_ai_takeover(reason: String) -> void:
 	_takeover_banner.text = UiNav.peer_left_text()
 	_takeover_banner.visible = true
-	_log("对方已离开（%s），由人机接管" % reason)
+	_log("对手已离开（%s），由人机接管" % reason)
 	if _overlay_mode in ["sealed", "countdown", "resuming", "consent"]:
 		_hide_overlay()
 	# 短暂遮罩提示后自动继续
-	_show_overlay("takeover", "对方已离开", "由人机接管，对局继续…", false, false, false)
+	_show_overlay("takeover", "对手已离开", "由人机接管，对局继续…", false, false, false)
 	var t := get_tree()
 	if t != null:
-		t.create_timer(1.6).timeout.connect(func():
-			if _overlay_mode == "takeover":
-				_hide_overlay())
+		# U1：定时器比场景命长 → 具名方法连接，场景释放时自动断开，不会打到已释放对象
+		t.create_timer(1.6).timeout.connect(_hide_takeover_overlay)
+
+
+func _hide_takeover_overlay() -> void:
+	if _overlay_mode == "takeover":
+		_hide_overlay()
 
 
 func _on_net_state(state_name: String, reason: String) -> void:
@@ -539,7 +552,7 @@ func _on_session_failed(loser_role: int, reason: String) -> void:
 	elif loser_role == mine:
 		body = "未恢复方判负：你（%s）\n可返回菜单。" % reason
 	else:
-		body = "对方未恢复，你获胜（%s）\n可返回菜单。" % reason
+		body = "对手未恢复，你获胜（%s）\n可返回菜单。" % reason
 	_show_overlay("fail", "对局结束", body, false, false, true)
 
 
@@ -563,7 +576,7 @@ func _on_beat(n: int) -> void:
 		if p.stream == _sfx_clap and p.playing:
 			# 降 pitch 拉长「滴滴」音
 			p.pitch_scale = clap_pitch
-	if _status_label != null and controller != null and controller._window_open:
+	if _status_label != null and controller != null and controller.window_open():
 		_status_label.text = "出招中"
 
 
@@ -617,7 +630,7 @@ func _on_preselect(who: int, action: int) -> void:
 	if who == mine:
 		_log("我方已选 %s" % GameRules.action_name(action))
 	else:
-		_log("对方已选")  # 不泄露具体招式
+		_log("对手已选")  # 不泄露具体招式
 	_refresh_all()
 
 
@@ -629,7 +642,7 @@ func _on_battle_started_ui() -> void:
 func _on_phase(phase: int, round_no: int) -> void:
 	_round_label.text = "回合 %d / %d" % [round_no, controller.state.round_cap()]
 	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null \
-		and controller.peer != null and not controller.peer._opening_done
+		and not controller.opening_done()
 	match phase:
 		GameRules.Phase.SELECTING:
 			if is_opening:
@@ -743,10 +756,14 @@ func _play_reveal_cards(result: Dictionary) -> void:
 	tw.tween_property(you_card, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	var t := get_tree()
 	if t != null:
-		t.create_timer(BattleTempo.result_hold()).timeout.connect(func():
-			if _reveal_layer != null and is_instance_valid(_reveal_layer):
-				_reveal_layer.queue_free()
-				_reveal_layer = null)
+		# U1：定时器比场景命长 → 具名方法连接（场景释放自动断开，不再打已释放对象）
+		t.create_timer(BattleTempo.result_hold()).timeout.connect(_free_reveal_layer)
+
+
+func _free_reveal_layer() -> void:
+	if _reveal_layer != null and is_instance_valid(_reveal_layer):
+		_reveal_layer.queue_free()
+		_reveal_layer = null
 
 
 func _make_action_card(title: String, action: String, accent: Color, is_timeout: bool = false) -> PanelContainer:
@@ -805,7 +822,7 @@ func _on_reveal_actions(actions: Array, _results: Dictionary) -> void:
 	if actions.size() >= 2:
 		var mine: int = Net.get_local_role()
 		var other: int = 1 - mine
-		_log("亮招：我 %s ｜ 对方 %s" % [
+		_log("亮招：我 %s ｜ 对手 %s" % [
 			GameRules.action_name(int(actions[mine])),
 			GameRules.action_name(int(actions[other])),
 		])
@@ -822,8 +839,8 @@ func _on_game_over(winner: int) -> void:
 		_status_label.text = "平局"
 		body = "平局。终局 HP %s" % str(s.hp)
 	else:
-		_status_label.text = "对方胜利"
-		body = "对方获胜。终局 HP %s" % str(s.hp)
+		_status_label.text = "对手胜利"
+		body = "对手获胜。终局 HP %s" % str(s.hp)
 	for b in _me_btns.values():
 		b.disabled = true
 	# 胜负庆祝（0=左/房主，1=右/客户端；映射到本地观感）
@@ -840,14 +857,17 @@ func _on_game_over(winner: int) -> void:
 			_btn_rematch.pressed.disconnect(_on_rematch_yes)
 		if not _btn_rematch.pressed.is_connected(_on_rematch_click):
 			_btn_rematch.pressed.connect(_on_rematch_click)
-	Net.rematch_offer.connect(_on_rematch_offer, CONNECT_ONE_SHOT)
-	Net.rematch_answered.connect(_on_rematch_answered, CONNECT_ONE_SHOT)
+	# U7：one-shot 会累加 —— 连续多次终局后同一 emit 会把 handler 双击。已连就不再连。
+	if not Net.rematch_offer.is_connected(_on_rematch_offer):
+		Net.rematch_offer.connect(_on_rematch_offer, CONNECT_ONE_SHOT)
+	if not Net.rematch_answered.is_connected(_on_rematch_answered):
+		Net.rematch_answered.connect(_on_rematch_answered, CONNECT_ONE_SHOT)
 
 
 func _on_rematch_click() -> void:
 	if _btn_rematch != null:
 		_btn_rematch.disabled = true
-		_btn_rematch.text = "等待对方…"
+		_btn_rematch.text = "等待对手…"
 	Net.request_rematch()
 
 
@@ -855,7 +875,7 @@ func _on_rematch_offer() -> void:
 	_overlay_mode = "rematch"
 	_overlay.visible = true
 	_overlay_title.text = "再来一局？"
-	_overlay_body.text = "对方想再来一局，是否开始？"
+	_overlay_body.text = "对手想再来一局，是否开始？"
 	_btn_continue.visible = false
 	_btn_decline.visible = false
 	_btn_menu.visible = true
@@ -864,10 +884,11 @@ func _on_rematch_offer() -> void:
 	_btn_rematch.disabled = false
 	_btn_rematch.text = "开始新局"
 	_set_input_buttons_enabled(false)
-	# 绑一次性：确认/取消
+	# 绑一次性：确认/取消（U7：必须有 is_connected 守卫，否则叠连一次点击 answer_rematch(true) 两次）
 	if _btn_rematch.pressed.is_connected(_on_rematch_click):
 		_btn_rematch.pressed.disconnect(_on_rematch_click)
-	_btn_rematch.pressed.connect(_on_rematch_yes, CONNECT_ONE_SHOT)
+	if not _btn_rematch.pressed.is_connected(_on_rematch_yes):
+		_btn_rematch.pressed.connect(_on_rematch_yes, CONNECT_ONE_SHOT)
 
 
 func _on_rematch_yes() -> void:
@@ -880,6 +901,10 @@ func _on_rematch_yes() -> void:
 # ---------- 返回菜单：二次确认 ----------
 
 func _on_back_requested() -> bool:
+	# U7：离开确认框开着时，系统返回 = 点「取消」关掉弹窗，不能被吞掉、也不能再叠一个弹窗
+	if _leave_dialog != null and is_instance_valid(_leave_dialog):
+		_close_leave_dialog()
+		return true
 	_request_leave()
 	return true
 
@@ -961,11 +986,17 @@ func _on_rematch_answered(yes: bool) -> void:
 		_refresh_all()
 		_log("新对局开始")
 	else:
-		_show_overlay("game_over", "已结束", "对方不想再来一局，返回菜单。", false, false, true)
+		_show_overlay("game_over", "已结束", "对手不想再来一局，返回菜单。", false, false, true)
 		var t := get_tree()
 		if t != null:
-			t.create_timer(1.2).timeout.connect(func():
-				UiNav.return_to_menu(t))
+			# U1：定时器比场景命长 → 具名方法连接（场景释放自动断开）
+			t.create_timer(1.2).timeout.connect(_leave_menu_after_decline)
+
+
+func _leave_menu_after_decline() -> void:
+	var t := get_tree()
+	if t != null:
+		UiNav.return_to_menu(t)
 
 
 func _log(t: String) -> void:
@@ -987,16 +1018,17 @@ func _refresh_all() -> void:
 		_score_label.text = "比分 我 %d : %d · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), s.score_to_win()]
 	var input_ok: bool = controller.is_pick_open()
 	var can_lock: bool = input_ok and _overlay.visible == false
-	var picked: int = int(controller._local_preselect[mine]) if controller._local_preselect.size() > mine else -1
+	var preselect: Array = controller.local_preselect()
+	var picked: int = int(preselect[mine]) if preselect.size() > mine else -1
 	for a in _me_btns.keys():
 		var b: Button = _me_btns[a]
 		var act := int(a)
 		b.disabled = (not can_lock) or (not s.can_use_action(mine, act))
 		b.text = _skill_label(s, mine, act)
 	if not can_lock and _overlay != null and not _overlay.visible and not s.is_over():
-		if _status_label != null and controller != null and (controller._resolving or controller._did_settle):
+		if _status_label != null and controller != null and (controller.resolving() or controller.did_settle()):
 			_status_label.text = "结算中"
-		elif _status_label != null and controller != null and controller._did_lock_fill:
+		elif _status_label != null and controller != null and controller.did_lock_fill():
 			_status_label.text = "已封盘"
 	elif picked >= 0 and can_lock:
 		_status_label.text = "已选：%s（可改）" % GameRules.action_name(picked)

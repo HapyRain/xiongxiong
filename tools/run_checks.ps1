@@ -1,5 +1,7 @@
 # Run all headless checks + python mirror. Engine auto-detected; override with $env:GODOT.
 # Usage: .\tools\run_checks.ps1 [-Only rules,quality,...] [-Import]
+# Entry point is pwsh (PowerShell 7). Under Windows PowerShell 5.1, $ErrorActionPreference="Stop"
+# plus native `2>&1` can abort on the first stderr line (NativeCommandError) — not supported.
 param(
     # string[]：`-Only rules,py` 不写引号时 PowerShell 绑成数组，这里统一再按逗号拆
     [string[]]$Only = @(),
@@ -16,20 +18,25 @@ function Find-Engine {
         $p = (Get-Content $local -Raw).Trim()
         if ($p -and (Test-Path $p)) { return $p }
     }
-    $roots = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE")
+    $roots = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE", "C:\Godot", "D:\Godot")
+    $hits = @()
     foreach ($r in $roots) {
         if (-not (Test-Path $r)) { continue }
-        $hit = Get-ChildItem -Path $r -Filter "Godot_v*_console.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending | Select-Object -First 1
-        if ($hit) { return $hit.FullName }
+        $hits += Get-ChildItem -Path $r -Filter "Godot_v*_console.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue
     }
-    foreach ($r in @("C:\Godot", "D:\Godot", "E:\github\tools")) {
-        if (-not (Test-Path $r)) { continue }
-        $hit = Get-ChildItem -Path $r -Filter "Godot_v*_console.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($hit) { return $hit.FullName }
+    $hits = @($hits | Sort-Object FullName -Unique)
+    if ($hits.Count -eq 0) { return $null }
+    # 项目基线是 4.7.2：同机多引擎时优先精确匹配，版本不符仅告警不拦截
+    $preferred = @($hits | Where-Object { $_.Name -like "Godot_v4.7.2*" })
+    $pick = if ($preferred.Count -gt 0) {
+        $preferred[0]
+    } else {
+        $hits | Sort-Object Name -Descending | Select-Object -First 1
     }
-    return $null
+    if ($pick.Name -notlike "Godot_v4.7.2*") {
+        Write-Host "warning: $($pick.Name) is not 4.7.2; class cache / import may mismatch" -ForegroundColor Yellow
+    }
+    return $pick.FullName
 }
 
 $engine = Find-Engine
@@ -51,6 +58,11 @@ $list = if ($Only.Count -gt 0) {
 } else {
     $all
 }
+# 空 -Only（如 -Only ""）过滤后 $list 为空，不加守卫会跳过循环假报全绿
+if (@($list).Count -eq 0) {
+    Write-Host "no checks selected (empty -Only)" -ForegroundColor Red
+    exit 2
+}
 
 $failed = 0
 foreach ($n in $list) {
@@ -64,12 +76,19 @@ foreach ($n in $list) {
     }
     $code = $LASTEXITCODE
     # 只看 exit code 会假绿：push_error 不改退出码，必须扫输出。
+    # 行首锚定（PLAN R4）：只认 SCRIPT ERROR / USER ERROR / ERROR 开头的行，
+    # 避免断言文案里出现 "error" 字样时误报；大小写敏感以收紧匹配。
     # 排除退出时 "resources still in use at exit" 这类已知噪音。
     $errs = @($lines | Where-Object {
-        ($_ -match "(USER )?(SCRIPT )?ERROR") -and
+        ($_ -cmatch "^(USER |SCRIPT )?ERROR") -and
         $_ -notmatch "resources still in use at exit"
     })
-    if ($code -ne 0 -or $errs.Count -gt 0) { $failed++ }
+    if ($code -ne 0 -or $errs.Count -gt 0) {
+        $failed++
+        Write-Host "----- $gname output -----" -ForegroundColor Red
+        $lines | ForEach-Object { Write-Host $_ }
+        Write-Host "----- end $gname -----" -ForegroundColor Red
+    }
     Write-Host "$gname exit=$code"
     if ($errs.Count -gt 0) {
         Write-Host "  $($errs.Count) error line(s), first: $($errs[0])" -ForegroundColor Red

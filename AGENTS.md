@@ -37,9 +37,9 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 `run_rules_check` · `run_network_check` · `run_seal_check` · `run_quality_check` · `run_netwindow_check` · `run_roundloop_check` · `run_nav_check` · `run_ui_check`
 
-另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，110 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
+另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，155 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：8/8 全绿，断言合计 614 条**（2026-10-27，新增 `run_ui_check` + 经典模式边界）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 110 条、每小局判分/12 分终场/平局保底。
+**当前基线：8/8 全绿，断言合计 784 条**（2026-10-27，全量 review 修复批次后：网络身份/重放闸/双镜像对称/UI 信号卫生 + 初版全功能）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 155 条、每小局判分/12 分终场/平局保底/快照防篡改。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -118,10 +118,11 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 ## 当前状态（2026-10-27）
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（110 条）；**8 个自检 614 条断言全绿**。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（155 条）；**8 个自检 784 条断言全绿**。
 - **UI 已有 v2 §8 技能条**：13 技能格 + CD/解锁角标 + 顶部分数条（单机/联机都有）；视觉仍是一次性实现，随前端重做再换。
 - 本轮**初版全功能**：经典/课间双模式（规则预设）、单人难度、技能精通、联机房间/搜索/准备/5s 倒计时/离开回落、12 屏占位 UI、返回路由与二次确认、第 8 个 UI 冒烟自检。桌面/真机视觉仍是占位（`【占位】`），下一阶段做前端重做。
-- 工作区仍有**未提交的环境修复批次**：`.gitignore`、`build/{dl_font,fix_spot,export_android}.ps1`、新增 `build/setup_android_env.ps1`（未跟踪）、重新导出的 APK。是否提交、APK 是否停跟踪由用户决定。
+- `main` 头部 **`2190e2f`**：初版全功能（`6f4edd9`）+ MCP 使用顺序文档。**未提交：2026-10-27 全量 review 修复批次**（多角度审查后修 3 Critical + 全部 Important/Minor：ENet 身份劫持/陌生对端 DoS、重放闸补全、双镜像 ㉖ 对称、restore 防篡改、模式外动作消毒、lobby 守卫三件套、UI 信号卫生/返回键清理等，29 文件）——本机复跑 8 自检（784 断言）+ Python 镜像（155 条）全绿。
+- 工作区未提交项：review 修复批次（见上）、`build/xiongxiong-debug.apk`（73MB 跟踪文件，重新导出后常驻改动）与 `build/gh_proxy.py`、`build/git_push_via_proxy.py`、`build/start_gh_proxy.bat`（未跟踪的代理辅助脚本）。是否提交、APK 是否停跟踪由用户决定。
 - 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。
 - 换机器后：按 `WORKSPACE.md` 补引擎/模板/JDK/SDK，再跑 `build\setup_android_env.ps1`；脚本里所有路径都已不再写死旧机。

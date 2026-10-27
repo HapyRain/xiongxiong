@@ -19,6 +19,7 @@ var _splash: Control
 var _splash_enter: Button
 var _splash_status: Label
 var _status: Label
+var _home_status: Label
 var _host_info: Label
 
 
@@ -29,15 +30,28 @@ func _ready() -> void:
 	if Net != null and Net.get_session() != PeerManager.Session.IDLE:
 		Net.leave()
 	_build_ui()
-	Net.mode_changed.connect(func(_m): _refresh_status())
-	Net.session_changed.connect(func(_s): _refresh_status())
-	Net.status_text.connect(func(t: String):
-		if _status != null:
-			_status.text = t)
+	# U1：Net 是 autoload，比场景命长；连 lambda 会在本场景释放后继续触发（报错刷屏）。
+	# 一律用具名方法连接：对象释放时 Godot 自动断开。
+	Net.mode_changed.connect(_on_mode_changed)
+	Net.session_changed.connect(_on_session_changed)
+	Net.status_text.connect(_on_net_status_text)
 	_refresh_status()
 	var entry := bool(Engine.get_meta(NET_ENTRY_META, false))
 	Engine.set_meta(NET_ENTRY_META, false)
 	_show_page(entry)
+
+
+func _on_mode_changed(_m: int) -> void:
+	_refresh_status()
+
+
+func _on_session_changed(_s: int) -> void:
+	_refresh_status()
+
+
+func _on_net_status_text(t: String) -> void:
+	if _status != null:
+		_status.text = t
 
 
 func _build_ui() -> void:
@@ -125,17 +139,32 @@ func _build_splash() -> void:
 	v.add_child(_splash_status)
 
 	_splash_enter = UiTheme.make_btn("进入游戏", UiTheme.ACCENT, Color.WHITE, 20, 56)
-	_splash_enter.pressed.connect(func():
-		if _splash != null:
-			_splash.visible = false)
+	_splash_enter.pressed.connect(_on_splash_button)
 	BattleFx.bind_press(_splash_enter, "zan")
 	v.add_child(_splash_enter)
 
 	# 没有异步加载管线：资源同步就绪即显示入口；以后接真加载再换成 await。
 	# shortcut: 假设资源已同步就绪，接异步加载时改为进度回调再显示入口。
-	var ready := _resources_ready()
-	_splash_enter.visible = ready
-	_splash_status.text = "资源已就绪" if ready else "【占位】资源未就绪"
+	_set_splash_state(_resources_ready())
+
+
+## Splash 入口按钮永远可点（就绪=进入游戏 / 未就绪=重试），
+## 不能出现「资源未就绪就只剩一块吞输入的 Splash、没有任何出口」的死局（U7）。
+func _set_splash_state(ready: bool) -> void:
+	if _splash_enter == null:
+		return
+	_splash_enter.visible = true
+	_splash_enter.text = "进入游戏" if ready else "重试"
+	if _splash_status != null:
+		_splash_status.text = "资源已就绪" if ready else "【占位】资源未就绪，点「重试」"
+
+
+func _on_splash_button() -> void:
+	if _resources_ready():
+		if _splash != null:
+			_splash.visible = false
+	else:
+		_set_splash_state(false)
 
 
 func _resources_ready() -> bool:
@@ -172,6 +201,13 @@ func _build_home_page() -> Control:
 	var quit := UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 15, 46)
 	quit.pressed.connect(_on_quit)
 	box.add_child(quit)
+
+	# 主页可见错误行：入口失败必须在「用户正看着的页」上说出来（U7）
+	_home_status = UiTheme.ink_label("", 13, UiTheme.DANGER)
+	_home_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_home_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_home_status.custom_minimum_size.y = 36
+	box.add_child(_home_status)
 
 	return page
 
@@ -254,10 +290,17 @@ func _refresh_status() -> void:
 
 func _on_single() -> void:
 	if not ResourceLoader.exists(SOLO_SCENE):
-		if _status != null:
-			_status.text = "单人模式页面未就绪"
+		_report_error("单人模式页面未就绪")
 		return
 	get_tree().change_scene_to_file(SOLO_SCENE)
+
+
+## 把失败写到当前可见页（主页状态行 + 联机页状态行），别只写隐藏页（U7）。
+func _report_error(msg: String) -> void:
+	if _home_status != null:
+		_home_status.text = msg
+	if _status != null:
+		_status.text = msg
 
 
 func _on_settings() -> void:

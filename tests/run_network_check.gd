@@ -32,6 +32,33 @@ var _enet_t: float = 0.0
 var _finished: bool = false
 
 
+## 鸭子类型假 peer（ENetPacketPeer 是抽象类不能实例化/子类化；
+## enet_provider 的事件处理函数接受未标注类型的 peer，注入走这里）。
+class FakePeer extends RefCounted:
+	var sent: Array = []
+	var disconnect_called: bool = false
+	var rx: PackedByteArray = PackedByteArray()
+
+	func put_packet(p: PackedByteArray) -> Error:
+		sent.append(p)
+		return OK
+
+	func peer_disconnect(_data: int = 0) -> void:
+		disconnect_called = true
+
+	func get_packet() -> PackedByteArray:
+		return rx
+
+
+## RTT 探针 provider：记录 get_rtt_ms 被问的是哪个对端 id。
+class RttProbe extends NetworkProvider:
+	var last_to: int = -1
+
+	func get_rtt_ms(to_id: int) -> int:
+		last_to = to_id
+		return 42
+
+
 func _initialize() -> void:
 	print("NETCHECK_START")
 	_check_room_names()
@@ -254,6 +281,322 @@ func _pump_pair(a: PeerManager, b: PeerManager, dt: float = 0.0) -> void:
 		b._pump_session(dt)
 
 
+## 造一对已走完「入房→准备→倒计时→开局」的 host/client（battle_start 已同步）。
+func _make_battle_pair() -> Array:
+	var pair := _make_pair()
+	var host: PeerManager = pair[0]
+	var client: PeerManager = pair[1]
+	host.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	client.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host, client)
+	host.accept_join()
+	_pump_pair(host, client)
+	host.set_ready(true)
+	client.set_ready(true)
+	_pump_pair(host, client)
+	host.debug_tick_countdown(5000)
+	_pump_pair(host, client)
+	return pair
+
+
+# ================= 回归：C1 入站劫持 / C2 陌生人 / I6 token 校验 =================
+
+func _check_provider_hardening() -> void:
+	# ---- C2：房主侧陌生人 connect+disconnect 不得惊动会话层、不算人数、不进映射 ----
+	var hp := EnetProvider.new()
+	var host_events: Array = []
+	var host_pkts: Array = []
+	hp.disconnected.connect(func(r: String): host_events.append(r))
+	hp.packet_received.connect(func(f: int, d: Dictionary): host_pkts.append([f, d]))
+	var herr := hp.open_as_host({"token": "secret", "use_discover": false,
+		"port": 47911, "bind_address": "127.0.0.1"})
+	_exp("harden host open", herr == OK)
+
+	var stranger := FakePeer.new()
+	hp._on_connect(stranger)
+	_exp("stranger connect stays unbound", hp.get_peer_ids().is_empty())
+	stranger.rx = var_to_bytes({"v": 1, "type": "join_request", "round": 0, "payload": {}})
+	hp._on_receive(stranger)
+	_exp("stranger packet ignored while unbound", host_pkts.is_empty())
+	hp._on_disconnect(stranger)
+	_exp("stranger disconnect is silent", host_events.is_empty())
+
+	# ---- I6：空 token 不再跳过校验，且被拒连接必须真的断开 ----
+	var bad := FakePeer.new()
+	hp._on_connect(bad)
+	var sent_before: int = bad.sent.size()
+	bad.rx = var_to_bytes({"v": 1, "type": "_hello", "payload": {"token": ""}})
+	hp._on_receive(bad)
+	_exp("empty-token hello rejected + disconnected", bad.disconnect_called)
+	_exp("reject notice sent to empty-token peer", bad.sent.size() > sent_before)
+	_exp("empty-token peer not bound", hp.get_peer_ids().is_empty() and host_events.is_empty())
+
+	var bad2 := FakePeer.new()
+	hp._on_connect(bad2)
+	bad2.rx = var_to_bytes({"v": 1, "type": "_hello", "payload": {"token": "WRONG"}})
+	hp._on_receive(bad2)
+	_exp("wrong-token hello rejected + disconnected",
+		bad2.disconnect_called and hp.get_peer_ids().is_empty())
+
+	# ---- 正常客户端：hello 认证通过才绑定，之后其包映射为自己的 id ----
+	var good := FakePeer.new()
+	hp._on_connect(good)
+	good.rx = var_to_bytes({"v": 1, "type": "_hello", "payload": {"token": "secret"}})
+	hp._on_receive(good)
+	_exp("valid hello binds session peer", hp.get_peer_ids().size() == 1)
+	var bound_id := int(hp.get_peer_ids()[0])
+	good.rx = var_to_bytes({"v": 1, "type": "submit_action", "round": 2,
+		"payload": {"from_role": 1, "action": 0}})
+	hp._on_receive(good)
+	_exp("bound peer packets delivered with its own id",
+		host_pkts.size() == 1 and int(host_pkts[0][0]) == bound_id and bound_id >= 2)
+	hp._on_disconnect(good)
+	_exp("bound peer disconnect is reported", host_events.size() == 1)
+	hp.close()
+
+	# ---- C1：客户端只认自己 connect_to_host 的对端，陌生人连进来立刻踢 ----
+	var cp := EnetProvider.new()
+	var client_events: Array = []
+	var client_pkts: Array = []
+	cp.disconnected.connect(func(r: String): client_events.append(r))
+	cp.packet_received.connect(func(f: int, d: Dictionary): client_pkts.append([f, d]))
+	var cerr := cp.open_as_client({"address": "127.0.0.1", "port": 47912, "token": "secret"})
+	_exp("harden client open", cerr == OK)
+	var tracked = cp._server_peer
+	_exp("client tracks its connect_to_host peer", tracked != null)
+
+	var hijack := FakePeer.new()
+	cp._on_connect(hijack)
+	_exp("client kicks inbound stranger connect",
+		hijack.disconnect_called and hijack.sent.is_empty() and cp._server_peer == tracked)
+	# 陌生人冒充房主发 _welcome / 业务包：一律不得冒头（尤其不能映射成 from_id=1）
+	hijack.rx = var_to_bytes({"v": 1, "type": "_welcome", "payload": {"your_id": 1, "host_id": 1, "token": ""}})
+	cp._on_receive(hijack)
+	hijack.rx = var_to_bytes({"v": 1, "type": "round_result", "round": 2, "payload": {}})
+	cp._on_receive(hijack)
+	_exp("stranger packets ignored (no from_id=1 confusion)",
+		client_pkts.is_empty() and cp.get_unique_id() == 0)
+	cp._on_disconnect(hijack)
+	_exp("stranger disconnect silent on client", client_events.is_empty())
+
+	# 绑定对端（房主）的 _welcome / 业务包正常放行，业务包映射为 from_id=1
+	var server := FakePeer.new()
+	cp._server_peer = server
+	var got_id := [0]
+	cp.connected.connect(func(pid: int): got_id[0] = pid)
+	server.rx = var_to_bytes({"v": 1, "type": "_welcome", "payload": {"your_id": 3, "host_id": 1, "token": "secret"}})
+	cp._on_receive(server)
+	_exp("tracked _welcome accepted", got_id[0] == 3 and cp.get_unique_id() == 3)
+	server.rx = var_to_bytes({"v": 1, "type": "round_result", "round": 2, "payload": {}})
+	cp._on_receive(server)
+	_exp("tracked peer packets map to host id 1",
+		client_pkts.size() == 1 and int(client_pkts[0][0]) == 1)
+	# I6 客户端方向：房主声明空 token ≠ 校验通过
+	server.rx = var_to_bytes({"v": 1, "type": "_welcome", "payload": {"your_id": 3, "host_id": 1, "token": ""}})
+	cp._on_receive(server)
+	_exp("empty-token _welcome rejected", client_events.has("token mismatch") and not cp._open)
+	cp.close()
+
+	# ---- C2 会话层：陌生人 connect+disconnect 不得触发封存/清大厅（无 disconnected 事件到达）----
+	var pm := PeerManager.new()
+	root.add_child(pm)
+	var prov := EnetProvider.new()
+	pm.install_provider(prov, PeerManager.Mode.ENET)
+	var pm_err := pm.host_game({"mode": PeerManager.Mode.ENET, "token": "secret",
+		"use_discover": false, "port": 47913, "bind_address": "127.0.0.1"})
+	_exp("stranger churn host_game", pm_err == OK and pm.get_session() == PeerManager.Session.LOBBY)
+	var took_over := [false]
+	var sealed_flag := [false]
+	pm.ai_takeover_started.connect(func(_r: String): took_over[0] = true)
+	pm.sealed.connect(func(_r: String): sealed_flag[0] = true)
+	var s2 := FakePeer.new()
+	prov._on_connect(s2)
+	prov._on_disconnect(s2)
+	_exp("stranger churn keeps lobby intact",
+		pm.get_session() == PeerManager.Session.LOBBY and not took_over[0]
+		and pm._remote_peer_id == -1 and not sealed_flag[0])
+	pm._set_session(PeerManager.Session.IN_BATTLE)
+	var s3 := FakePeer.new()
+	prov._on_connect(s3)
+	prov._on_disconnect(s3)
+	_exp("stranger churn no seal/takeover mid-battle",
+		pm.get_session() == PeerManager.Session.IN_BATTLE and not took_over[0] and not sealed_flag[0])
+	pm.leave()
+
+
+# ================= 回归：C3 跨回合重放 / commit_id 去重 =================
+
+func _check_replay_guard() -> void:
+	var pair := _make_battle_pair()
+	var host: PeerManager = pair[0]
+	var client: PeerManager = pair[1]
+	_exp("replay: pair in battle",
+		host.get_session() == PeerManager.Session.IN_BATTLE
+		and client.get_session() == PeerManager.Session.IN_BATTLE)
+	host.state.round = 3
+	client.state.round = 3
+
+	# C3-a：对局中重放 battle_start 必须被丢（否则旧快照把整局倒带回回合 1）
+	var old_snap: Dictionary = client.state.snapshot()
+	old_snap["round"] = 1
+	old_snap["hp"] = [1, 1]
+	client._on_provider_packet(1, {"v": 1, "type": "battle_start", "round": 1, "payload": {
+		"snapshot": old_snap, "seat": {"host": 0, "client": 1}, "config": {}}})
+	_exp("replayed battle_start dropped mid-match",
+		client.state.round == 3 and int(client.state.hp[0]) == GameRules.MAX_HP)
+
+	# C3-b：重放旧 select_window 不得把回合数倒回去
+	var begun := [0]
+	client.round_begun.connect(func(_r: int): begun[0] += 1)
+	client._on_provider_packet(1, {"v": 1, "type": "select_window", "round": 2, "payload": {"round": 2}})
+	_exp("replayed select_window does not rewind round",
+		client.state.round == 3 and begun[0] == 0)
+
+	# C3-c：同一 commit_id 的重复提交 / 倒退 commit_id 一律丢
+	var commits := [0]
+	host.action_committed.connect(func(_w: int, _a: int): commits[0] += 1)
+	host._revealing = false
+	host._locks = [false, false]
+	host._pending_actions = [-1, -1]
+	host.state.pending = [-1, -1]
+	host._on_provider_packet(2, {"v": 1, "type": "submit_action", "round": 3,
+		"payload": {"from_role": 1, "action": GameRules.Action.FANG, "commit_id": "3-1-100"}})
+	host._on_provider_packet(2, {"v": 1, "type": "submit_action", "round": 3,
+		"payload": {"from_role": 1, "action": GameRules.Action.FANG, "commit_id": "3-1-100"}})
+	_exp("duplicate commit_id dropped", commits[0] == 1 and bool(host._locks[1]))
+	host._on_provider_packet(2, {"v": 1, "type": "submit_action", "round": 3,
+		"payload": {"from_role": 1, "action": GameRules.Action.ZAN, "commit_id": "1-1-50"}})
+	_exp("stale commit_id dropped", commits[0] == 1)
+
+	# I1：对局中迟到的 countdown_start 必须被忽略（不得把客户端拽回 COUNTDOWN）
+	client._on_provider_packet(1, {"v": 1, "type": "countdown_start", "round": 0, "payload": {"remain_ms": 5000}})
+	_exp("countdown_start ignored in battle", client.get_session() == PeerManager.Session.IN_BATTLE)
+	host.leave()
+	client.leave()
+
+
+# ================= 回归：I1/I2/I3 大厅消息闸 =================
+
+func _check_lobby_message_guards() -> void:
+	var pair := _make_pair()
+	var host: PeerManager = pair[0]
+	var client: PeerManager = pair[1]
+	host.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	client.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host, client)
+	_exp("lobby guard: join pending", host.get_session() == PeerManager.Session.LOBBY)
+
+	# I3：未 accept_join 前的 ready 必须被忽略（不能跳过入房流程把客户端抬进 READY_CHECK）
+	host._on_provider_packet(2, {"v": 1, "type": "ready", "round": 0, "payload": {"yes": true}})
+	_pump_pair(host, client)
+	_exp("ready before accept_join ignored",
+		not bool(host.get_ready_flags()[1]) and client.get_session() == PeerManager.Session.LOBBY)
+
+	host.accept_join()
+	_pump_pair(host, client)
+	_exp("lobby guard: both ready_check",
+		host.get_session() == PeerManager.Session.READY_CHECK
+		and client.get_session() == PeerManager.Session.READY_CHECK)
+
+	# 信封版本闸：显式声明错误版本的包要被丢
+	host._on_provider_packet(2, {"v": 2, "type": "ready", "round": 0, "payload": {"yes": true}})
+	_exp("mismatched envelope version dropped", not bool(host.get_ready_flags()[1]))
+
+	host.set_ready(true)
+	client.set_ready(true)
+	_pump_pair(host, client)
+	_exp("lobby guard: both countdown",
+		host.get_session() == PeerManager.Session.COUNTDOWN
+		and client.get_session() == PeerManager.Session.COUNTDOWN)
+
+	# I2：倒计时中迟到的 ready/取消准备不得翻座位状态
+	host._on_provider_packet(2, {"v": 1, "type": "ready", "round": 0, "payload": {"yes": false}})
+	_exp("ready during countdown ignored",
+		bool(host.get_ready_flags()[1]) and host.get_session() == PeerManager.Session.COUNTDOWN)
+
+	# I2：room_state 不得把客户端从 COUNTDOWN 踢回 READY_CHECK
+	client._on_provider_packet(1, {"v": 1, "type": "room_state", "round": 0,
+		"payload": {"room": {"mode": "lesson", "mastery": false},
+			"host_ready": false, "client_ready": false}})
+	_exp("room_state cannot regress from countdown",
+		client.get_session() == PeerManager.Session.COUNTDOWN)
+	host.leave()
+	client.leave()
+
+	# I3：join_answer{yes:false} 从 READY_CHECK 也要当终局（否则客户端永远挂死）
+	var pair2 := _make_pair()
+	var host2: PeerManager = pair2[0]
+	var client2: PeerManager = pair2[1]
+	host2.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	client2.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host2, client2)
+	host2.accept_join()
+	_pump_pair(host2, client2)
+	_exp("reject case: client ready_check", client2.get_session() == PeerManager.Session.READY_CHECK)
+	var answered := [99]
+	client2.join_answered.connect(func(y: bool): answered[0] = 1 if y else 0)
+	host2.reject_join()
+	_pump_pair(host2, client2)
+	_exp("join_answer no from READY_CHECK terminates",
+		answered[0] == 0 and client2.get_session() == PeerManager.Session.IDLE)
+	host2.leave()
+	client2.leave()
+
+	# I1：countdown_start 的 remain_ms 钳制到 [1000, LOBBY_COUNTDOWN_MS]
+	var pair3 := _make_pair()
+	var host3: PeerManager = pair3[0]
+	var client3: PeerManager = pair3[1]
+	host3.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	client3.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host3, client3)
+	host3.accept_join()
+	_pump_pair(host3, client3)
+	client3._on_provider_packet(1, {"v": 1, "type": "countdown_start", "round": 0, "payload": {"remain_ms": 10}})
+	_exp("countdown remain_ms clamped up to 1000",
+		client3.get_lobby_countdown_ms() == 1000 and client3.get_session() == PeerManager.Session.COUNTDOWN)
+	client3._set_session(PeerManager.Session.READY_CHECK)
+	client3._on_provider_packet(1, {"v": 1, "type": "countdown_start", "round": 0, "payload": {"remain_ms": 999999}})
+	_exp("countdown remain_ms clamped down to 5000",
+		client3.get_lobby_countdown_ms() == PeerManager.LOBBY_COUNTDOWN_MS
+		and client3.get_session() == PeerManager.Session.COUNTDOWN)
+	host3.leave()
+	client3.leave()
+
+
+# ================= 回归：I4 对端 fill_only 不得锁房主座位 =================
+
+func _check_fill_only_seat() -> void:
+	var pair := _make_battle_pair()
+	var host: PeerManager = pair[0]
+	var client: PeerManager = pair[1]
+	host._revealing = false
+	host._locks = [false, false]
+	host._pending_actions = [-1, -1]
+	host.state.pending = [-1, -1]
+	host._on_provider_packet(2, {"v": 1, "type": "timeout_request", "round": host.state.round,
+		"payload": {"fill_only": true}})
+	_exp("remote fill_only never fills host seat",
+		int(host._pending_actions[0]) < 0 and not bool(host._locks[0]) and not bool(host._timeout_flags[0]))
+	_exp("remote fill_only fills remote seat only",
+		bool(host._locks[1]) and int(host._pending_actions[1]) >= 0)
+	host.leave()
+	client.leave()
+
+
+# ================= 回归：get_rtt_ms 查真实绑定对端 =================
+
+func _check_rtt_queries_bound_peer() -> void:
+	var probe := RttProbe.new()
+	var pm := PeerManager.new()
+	root.add_child(pm)
+	pm.install_provider(probe, PeerManager.Mode.ENET)
+	pm._remote_peer_id = 7
+	_exp("rtt queries bound remote id", pm.get_rtt_ms() == 42 and probe.last_to == 7)
+	pm._remote_peer_id = -1
+	_exp("rtt falls back to host id 1", pm.get_rtt_ms() == 42 and probe.last_to == 1)
+	pm.leave()
+
+
 # ================= LocalProvider 双端协议 =================
 
 func _setup_local() -> void:
@@ -370,6 +713,13 @@ func _setup_local() -> void:
 	_exp("second client can join after reject",
 		gate_joins == [2, 3] and gate.get_session() == PeerManager.Session.LOBBY)
 	gate.leave()
+
+	# ===== 回归（评审 C1/C2/C3/I1-I6）：劫持 / 陌生人 / 重放 / 大厅消息闸 =====
+	_check_provider_hardening()
+	_check_replay_guard()
+	_check_lobby_message_guards()
+	_check_fill_only_seat()
+	_check_rtt_queries_bound_peer()
 
 	_phase = "enet"
 	_setup_enet()

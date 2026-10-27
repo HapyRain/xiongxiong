@@ -12,6 +12,8 @@ enum Session { IDLE, LOBBY, READY_CHECK, IN_BATTLE, SEALED, GAME_OVER, COUNTDOWN
 const ENVELOPE_VERSION := 1
 ## 双方准备后的开局倒计时（可注入时钟：debug_tick_countdown）。
 const LOBBY_COUNTDOWN_MS := 5000
+## 客户端倒计时到 0 后等 battle_start 的兜底时限（I7：防房主静默挂死卡死等待页）。
+const BATTLE_START_WAIT_MS := 8000
 ## 锁招宽限：双方 UI 开窗可能有时间差，给足 3.5s 避免超时默认吞掉对方已选招
 const LOCK_GRACE_SEC := 3.5
 const OPENING_DELAY := 0.8
@@ -99,12 +101,14 @@ var _opening_applied: bool = false
 var _round_restart_pending: bool = false
 ## 本回合是否因超时自动出招（UI 角标「超时」）
 var _timeout_flags: Array = [false, false]
-var _last_commit_id: String = ""
+## commit_id 单调闸（C3）：座位 -> 最近一次已接受的 commit_id；重放/倒退的提交直接丢。
+var _last_commit_id: Dictionary = {}
+## commit_id 序号（防同毫秒碰撞：小局重开复用回合号时，round-role-ms 会撞出重复 id）
+var _commit_seq: int = 0
 
 ## 心跳（应用层，ENet 默认 timeout 5–30s 太慢）
 var _hb_timer: float = 0.0
 var _hb_seq: int = 0
-var _hb_inflight: Dictionary = {}
 var _last_hb_rx_ms: int = 0
 var _fsm_ready: bool = false
 var _countdown_sent: bool = false
@@ -115,6 +119,22 @@ var _peer_rematch_want: bool = false
 
 ## 最近一份 SessionSnapshot（含 checksum / seq）
 var last_session_snap: Dictionary = {}
+
+## 对局是否已真正开打（battle_start/start_battle 置位）：用于丢弃对局中重放的 battle_start（C3）。
+var _battle_live: bool = false
+## 房主是否已同意该客户端入房（accept_join 置位）：未同意前不接受 ready（I3）。
+var _join_accepted: bool = false
+## 客户端兜底：倒计时到 0 后等 battle_start 的剩余毫秒，超时提示回入口（I7 可选项）。
+var _battle_wait_left_ms: int = 0
+## 局数代号：新局/复位 +1，0.8s 延迟协程靠它识别「陈旧定时器」不得给新局提前开回合。
+var _match_gen: int = 0
+## 测试钩子：>=0 时替代 Time.get_ticks_msec()（心跳/封存时间线可注入驱动）。
+var debug_clock_ms: int = -1
+
+
+## 单调时钟（测试可注入）。
+func _now_ms() -> int:
+	return debug_clock_ms if debug_clock_ms >= 0 else Time.get_ticks_msec()
 
 
 func _ready() -> void:
@@ -149,6 +169,13 @@ func _process(delta: float) -> void:
 		provider.poll(delta)
 	if _session == Session.COUNTDOWN and _lobby_cd_left_ms > 0:
 		_tick_lobby_countdown(int(delta * 1000.0))
+	# I7 兜底：倒计时到 0 后 battle_start 迟迟不来 → 提示并回入口，别永远卡 COUNTDOWN
+	if _battle_wait_left_ms > 0:
+		_battle_wait_left_ms -= int(delta * 1000.0)
+		if _battle_wait_left_ms <= 0:
+			_battle_wait_left_ms = 0
+			if _session == Session.COUNTDOWN:
+				_handle_lobby_peer_gone("battle_start_timeout")
 	_pump_grace(delta)
 	_pump_session(delta)
 
@@ -334,6 +361,8 @@ func leave() -> void:
 ## 清空血/气/盾/回合/胜负，避免下一局继承上一局（0 血满气开局等）。
 ## 整场（再来一局）复位：score 也归零。规则模式/精通来自房间配置（未建房时默认 lesson）。
 func _reset_rules_state() -> void:
+	# 换代：上一局残留的 0.8s 定时器不得给这一局提前开回合
+	_match_gen += 1
 	var gm := str(room.get("mode", "lesson"))
 	var mastery := bool(room.get("mastery", false))
 	state = BattleState.new(gm, mastery)
@@ -347,6 +376,8 @@ func _reset_lobby_state() -> void:
 	_client_ready = false
 	_lobby_cd_left_ms = 0
 	_join_peer_id = -1
+	_join_accepted = false
+	_battle_wait_left_ms = 0
 
 
 ## 回合选招窗复位表：点选/锁定/揭示/超时角标（新窗必清，漏清会把上回合招式当「已选」）。
@@ -421,6 +452,9 @@ func start_battle() -> Error:
 	_set_session(Session.IN_BATTLE)
 	# 新一局必须重置规则状态，否则快照会带上一局的血/气（按房间 config 构造）
 	_reset_rules_state()
+	# I7：心跳丢失计时从开局时刻起算（不能等第一颗心跳回来才武装）
+	_last_hb_rx_ms = _now_ms()
+	_battle_live = true
 	last_battle_config = get_match_config()
 	var snap := state.snapshot()
 	_broadcast(_envelope("battle_start", 1, {
@@ -467,6 +501,7 @@ func accept_join() -> Error:
 	if _session != Session.LOBBY and _session != Session.READY_CHECK:
 		return ERR_ALREADY_IN_USE
 	_reset_lobby_state()
+	_join_accepted = true
 	room["players"] = 2
 	_set_session(Session.READY_CHECK)
 	_broadcast(_envelope("join_answer", 0, {"yes": true}))
@@ -559,8 +594,12 @@ func _tick_lobby_countdown(ms: int) -> void:
 		return
 	_lobby_cd_left_ms = maxi(0, _lobby_cd_left_ms - ms)
 	lobby_countdown_tick.emit(_lobby_cd_left_ms)
-	if _lobby_cd_left_ms <= 0 and is_host():
-		start_battle()
+	if _lobby_cd_left_ms <= 0:
+		if is_host():
+			start_battle()
+		else:
+			# I7 兜底：到点后等房主 battle_start，超时不再干等
+			_battle_wait_left_ms = BATTLE_START_WAIT_MS
 
 
 ## 房主汇总座位状态：本地 emit + 广播（房主权威）。
@@ -582,9 +621,21 @@ func _reset_lobby_peer() -> void:
 	_remote_peer_id = -1
 
 
-## 未开局时对方离开：关房、提示、回入口（不做 host migration）。
+## 未开局时对方离开。
+## 统一行为（与 LOBBY 阶段一致）：房主保留房间、解绑对端，回大厅等下一个客户端；
+## 客户端关连接、提示、回入口（不做 host migration）。
 func _handle_lobby_peer_gone(_reason: String) -> void:
 	if _session == Session.IDLE:
+		return
+	if is_host() and (_session == Session.LOBBY or _session == Session.READY_CHECK or _session == Session.COUNTDOWN):
+		# 原来只有 LOBBY 保留房间、READY_CHECK/COUNTDOWN 直接关房，两套行为合一
+		_reset_lobby_peer()
+		_reset_lobby_state()
+		if not room.is_empty():
+			room["players"] = 1
+		_set_session(Session.LOBBY)
+		status_text.emit("对方已离开，继续等待…")
+		room_updated.emit(room.duplicate(true))
 		return
 	var msg := "房主已离开，请重新选择模式" if not is_host() else "对方已离开"
 	_self_closing = true
@@ -694,9 +745,11 @@ func submit_action(action: int, who: int = -1) -> Error:
 		"round": state.round,
 		"action": action,
 		"from_role": role,
-		"commit_id": "%d-%d-%d" % [state.round, role, Time.get_ticks_msec()],
+		# 尾部序号保证唯一：小局重开回到回合 1 时，round-role-ms 可能与开局那次完全相同
+		"commit_id": "%d-%d-%d-%d" % [state.round, role, Time.get_ticks_msec(), _commit_seq],
 	}
-	_last_commit_id = str(commit["commit_id"])
+	_commit_seq += 1
+	_last_commit_id[role] = str(commit["commit_id"])
 	if is_host():
 		_on_submit_received(role, commit)
 	else:
@@ -723,7 +776,8 @@ func reveal_phase() -> void:
 
 
 ## 封盘：缺输入按规则补默认并打「超时」角标，但不结算。
-func auto_fill_missing() -> void:
+## only_seat >= 0 时只补该座位（对端的 fill 请求只许补对端座位，I4）。
+func auto_fill_missing(only_seat: int = -1) -> void:
 	if _session != Session.IN_BATTLE or state.is_over():
 		return
 	if not is_input_open():
@@ -732,6 +786,8 @@ func auto_fill_missing() -> void:
 		_send_to_host(_envelope("timeout_request", state.round, {"fill_only": true}))
 		return
 	for i in 2:
+		if only_seat >= 0 and i != only_seat:
+			continue
 		if not _locks[i] or _pending_actions[i] < 0:
 			var a: int = int(state.pending[i])
 			if a < 0:
@@ -912,7 +968,9 @@ func get_provider_endpoints() -> PackedStringArray:
 func get_rtt_ms() -> int:
 	if provider == null:
 		return -1
-	return provider.get_rtt_ms(1 if is_host() else 1)
+	# 房主的对端 id 永远不是 1（ENet 从 2 起分配）：查真实绑定的对端 id。
+	var rid := _remote_peer_id if _remote_peer_id > 0 else 1
+	return provider.get_rtt_ms(rid)
 
 
 # ---------- 传输回调 ----------
@@ -935,7 +993,8 @@ func _sync_fsm_identity() -> void:
 	fsm.host_peer_id = 1
 	fsm.local_peer_id = 1 if is_host() else 2
 	fsm.state = NetworkSessionFSM.State.CONNECTED
-	_last_hb_rx_ms = 0
+	# I7：心跳丢失计时即刻武装（原来清 0 → hb_miss_due 永远不判，静默挂死不封存）
+	_last_hb_rx_ms = _now_ms()
 	_hb_timer = 0.0
 	_countdown_sent = false
 	_resume_sent = false
@@ -945,16 +1004,10 @@ func _on_provider_disconnected(reason: String) -> void:
 	if _self_closing or ai_takeover:
 		return
 	status_text.emit("连接断开：%s" % reason)
-	# 未开局（大厅/等待页/倒计时）离开：提示 + 回入口，不进人机接管/封存
-	if _session == Session.LOBBY:
-		# 大厅里房主还在等：加入方没连上/被拒 → 房间继续（解绑对端后接待下一个）。
-		# 不解绑的话 _remote_peer_id 仍指向旧 id，下一个客户端的包会被发送者过滤丢掉。
-		if is_host():
-			_reset_lobby_peer()
-		else:
-			_handle_lobby_peer_gone(reason)
-		return
-	if _session == Session.READY_CHECK or _session == Session.COUNTDOWN:
+	# 未开局（大厅/等待页/倒计时）离开统一处理（C2：只有已绑定对端的断开才会走到这里，
+	# 陌生人/未握手连接的进出在传输层就被静默掉了）：
+	# 房主保留房间等下一个客户端（与 LOBBY 阶段行为一致）；客户端提示 + 回入口。
+	if _session == Session.LOBBY or _session == Session.READY_CHECK or _session == Session.COUNTDOWN:
 		_handle_lobby_peer_gone(reason)
 		return
 	if _session == Session.GAME_OVER:
@@ -989,16 +1042,31 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		payload = {}
 	var round_no := int(data.get("round", 0))
 
+	# 信封版本闸：显式声明且版本不符 → 警告并丢弃（防新旧协议静默错解）。
+	# 缺 v 的包按旧格式放行（直连测试注入不带 v）。
+	if data.has("v") and int(data.get("v", 0)) != ENVELOPE_VERSION:
+		push_warning("Net: drop %s with envelope v=%s (expect %d)" % [type, str(data.get("v")), ENVELOPE_VERSION])
+		return
+
 	# 发送者校验：只接受「唯一对端」的包（1v1 房间）。
 	# 房主侧对端 id 由 hello 学习；_remote_peer_id<=0 表示热座/直连测试，不拦截。
 	if _remote_peer_id > 0 and from_id != _remote_peer_id:
 		push_warning("Net: drop %s from peer %d (bound remote=%d)" % [type, from_id, _remote_peer_id])
 		return
 
-	# 跨回合重放/旧包直接丢
+	# 跨回合重放/旧包直接丢（C3）：所有「带回合状态」的对局消息都过这道闸。
+	# 大厅/心跳/会话控制类（join/ready/room_state/countdown/hb/sys_* 等）不在闸内：
+	# 它们的信封 round 可以合法落后于本端（例如客户端 rules.round 要到 sys_resume
+	# 才与房主对齐，封存同意流的 sys_consent 就带着旧 round 到达）。
 	if round_no > 0 and state.round > 0 and round_no < state.round and type in [
-		"submit_action", "actions_revealed", "round_result", "reveal_request", "timeout_request"
+		"submit_action", "actions_revealed", "round_result", "reveal_request", "timeout_request",
+		"opening_result", "select_window",
 	]:
+		return
+
+	# C3：带 commit_id 的包按座位做单调/去重闸（重放旧提交、重复提交直接丢）
+	var commit_id := str(payload.get("commit_id", ""))
+	if commit_id != "" and _is_stale_or_dup_commit(int(payload.get("from_role", -1)), commit_id):
 		return
 
 	match type:
@@ -1019,7 +1087,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			join_requested.emit(from_id, payload)
 			status_text.emit("有玩家申请加入，是否同意？")
 		"join_answer":
-			# 客户端收：同意 → 等待页；拒绝 → 回入口（对局内/已入房的迟到答复一律忽略）
+			# 客户端收：同意 → 等待页；拒绝 → 回入口（对局内/已入房的迟到答复一律忽略）。
+			# I3：拒绝从 READY_CHECK 也要当终局处理——否则 ready 抢跑把客户端抬进
+			# READY_CHECK 后，拒绝答复会被忽略，客户端永远挂死。
 			if is_host():
 				return
 			if bool(payload.get("yes", false)):
@@ -1027,7 +1097,7 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					_set_session(Session.READY_CHECK)
 					join_answered.emit(true)
 			else:
-				if _session != Session.LOBBY:
+				if _session != Session.LOBBY and _session != Session.READY_CHECK:
 					return
 				status_text.emit("房主拒绝了加入")
 				battle_error.emit("join_rejected", "host declined")
@@ -1037,8 +1107,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			# 客户端收：房间 config + 双座位准备状态（房主权威）
 			if is_host():
 				return
-			# 对局中/封存/终局的迟到房态包不能把客户端拉回准备页
-			if _session == Session.IN_BATTLE or _session == Session.SEALED or _session == Session.GAME_OVER:
+			# 对局中/封存/终局/倒计时的迟到房态包不能把客户端拉回准备页（I2：
+			# 否则房主在 COUNTDOWN 里的 ready 翻转会广播 room_state 把客户端踢回 READY_CHECK）
+			if _session == Session.IN_BATTLE or _session == Session.SEALED \
+					or _session == Session.GAME_OVER or _session == Session.COUNTDOWN:
 				return
 			_apply_room(payload.get("room", {}))
 			_host_ready = bool(payload.get("host_ready", false))
@@ -1047,17 +1119,24 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			ready_changed.emit(_host_ready, _client_ready)
 			room_updated.emit(room.duplicate(true))
 		"ready":
-			# 房主收：客户端准备状态
+			# 房主收：客户端准备状态。只在「已同意入房 + 等待页」收（I2/I3）：
+			# 迟到的 ready/取消准备不得在倒计时/对局中翻座位状态；
+			# 未 accept_join 前不收，防止抢跑 ready 跳过入房流程。
 			if not is_host():
+				return
+			if _session != Session.READY_CHECK or not _join_accepted:
 				return
 			_client_ready = bool(payload.get("yes", true))
 			_broadcast_room_state()
 			_maybe_start_lobby_countdown()
 		"countdown_start":
-			# 客户端收：5s 倒计时（开局仍以 battle_start 为准）
-			if is_host():
+			# 客户端收：5s 倒计时（开局仍以 battle_start 为准）。
+			# 只在等待页收（I1）：对局中/其它阶段的迟到包不得把客户端拽回 COUNTDOWN。
+			if is_host() or _session != Session.READY_CHECK:
 				return
-			_begin_lobby_countdown(int(payload.get("remain_ms", LOBBY_COUNTDOWN_MS)))
+			# remain_ms 钳制到合法窗口（伪造超长/超短倒计时不得生效）
+			var remain := clampi(int(payload.get("remain_ms", LOBBY_COUNTDOWN_MS)), 1000, LOBBY_COUNTDOWN_MS)
+			_begin_lobby_countdown(remain)
 			status_text.emit("双方已准备，即将开局")
 		"leave_room":
 			# 只有未开局阶段才算「大厅离房」；对局内对方离开走 bye（封存 → 人机接管）
@@ -1081,6 +1160,11 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					status_text.emit("对方不想再来一局")
 		"battle_start":
 			if not is_host():
+				# C3：对局中重放 battle_start 会把旧快照砸回当前对局（整局倒带），直接丢。
+				# 再来一局从 GAME_OVER 放行（那才是合法的新 battle_start）。
+				if _battle_live and (_session == Session.IN_BATTLE or _session == Session.SEALED):
+					push_warning("Net: drop replayed battle_start mid-match")
+					return
 				var snap: Dictionary = payload.get("snapshot", state.snapshot())
 				var seat: Dictionary = payload.get("seat", {})
 				# 以房主下发的座位为准，避免本地 role 猜错导致 UI 对调
@@ -1094,6 +1178,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				_peer_rematch_want = false
 				if not restore_from_snapshot(snap):
 					return
+				_battle_live = true
+				# I7：客户端的心跳计时也从开局时刻武装
+				_last_hb_rx_ms = _now_ms()
 				_set_session(Session.IN_BATTLE)
 				battle_started.emit(snap)
 				if not _opening_done and int(snap.get("round", 1)) == GameRules.OPENING_ROUND and int(snap.get("phase", 0)) == GameRules.Phase.OPENING:
@@ -1103,6 +1190,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 					round_begun.emit(state.round)
 		"opening_result":
 			if not is_host():
+				# C3：重复/重放的亮相结算会把旧快照砸回来（已亮相过就是重放）
+				if _opening_done:
+					return
 				var res: Dictionary = payload.get("result", {})
 				var snap: Dictionary = payload.get("snapshot", {})
 				# 开窗前清残留，避免旧 pending 让按钮灰死
@@ -1130,7 +1220,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"timeout_request":
 			if is_host():
 				if bool(payload.get("fill_only", false)):
-					auto_fill_missing()
+					# I4：对端发起的补招只补对端座位（1）；房主座位只归房主自己的
+					# 窗口/宽限管，不能被对端的 fill 请求锁掉。
+					auto_fill_missing(1)
 				else:
 					# 不立即填默认：交给拍2/封盘闸
 					_try_host_reveal()
@@ -1145,6 +1237,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 		"select_window":
 			if not is_host():
 				var rno := int(payload.get("round", state.round + 1))
+				# C3：重放旧窗不得把回合数倒回去（乱序/重放的旧 select_window 直接丢）
+				if rno <= 0 or rno < state.round:
+					return
 				_begin_remote_round(rno)
 				state.round = rno
 				round_begun.emit(rno)
@@ -1197,8 +1292,10 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if fsm.state == NetworkSessionFSM.State.SEALED:
 				fsm.on_link_ok(Time.get_ticks_msec())
 		"sys_consent":
-			# 票只能代表发送者自己：忽略 payload.peer，防止客户端替房主投票
-			var cpeer := from_id
+			# 票只能代表发送者自己：忽略 payload.peer，防止客户端替房主投票。
+			# I5：传输层 id 与 FSM 身份空间不一致（ENet 对端 id 从 2 递增，真实客户端
+			# 未必是 2）——任何「已绑定对端」统一归一到 FSM 客户端位，否则票永远凑不齐。
+			var cpeer := _fsm_id_for_sender(from_id)
 			var cyes := bool(payload.get("yes", true))
 			# 对端可能比本端先进入同意流程：先补齐 AWAITING_CONSENT，再记票
 			if fsm.state == NetworkSessionFSM.State.SEALED:
@@ -1220,7 +1317,8 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				_send_to_host(_envelope("sys_resume_ack", state.round, {"peer": fsm.local_peer_id, "seq": fsm.seq}))
 		"sys_resume_ack":
 			if is_host():
-				fsm.on_resume_ack(int(payload.get("peer", from_id)))
+				# I5：ACK 身份从 from_id 推导，不信 payload.peer（攻击者可控）
+				fsm.on_resume_ack(_fsm_id_for_sender(from_id))
 		"sys_resume":
 			# 恢复快照只能由房主下发（否则任何一端都能把对端局面改成任意值）
 			if is_host():
@@ -1247,7 +1345,7 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			# 收到对端心跳 → 回 echo，并记存活
 			var hseq := int(payload.get("seq", 0))
 			var t_send := int(payload.get("t_send", 0))
-			_last_hb_rx_ms = Time.get_ticks_msec()
+			_last_hb_rx_ms = _now_ms()
 			if _mode != Mode.HOTSEAT:
 				var echo := _envelope("hb_echo", 0, {"seq": hseq, "t_send": t_send, "t_echo": Time.get_ticks_msec(), "host_now": Time.get_ticks_msec()})
 				if is_host():
@@ -1255,9 +1353,9 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 				else:
 					_send_to_host(echo)
 		"hb_echo":
-			_last_hb_rx_ms = Time.get_ticks_msec()
+			_last_hb_rx_ms = _now_ms()
 			var t_send2 := int(payload.get("t_send", 0))
-			var now2 := Time.get_ticks_msec()
+			var now2 := _now_ms()
 			if t_send2 > 0:
 				var rtt := now2 - t_send2
 				fsm.on_heartbeat_sample(now2, rtt)
@@ -1424,10 +1522,14 @@ func _schedule_next_round() -> void:
 	# 无 SceneTree（headless 单测）时不自动推进，由 debug_advance_round 手动驱动
 	if not is_inside_tree() or get_tree() == null:
 		return
+	var gen := _match_gen
 	# 结算画面独立停留 0.8s，退下后再进下一回合
 	# 结算画面独立停留（勿在 await 里调 BattleTempo）
 	await get_tree().create_timer(0.8).timeout
 	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	# 陈旧定时器（上一局残留）不得给新一局提前开回合
+	if gen != _match_gen:
 		return
 	if _session == Session.IN_BATTLE and not state.is_over():
 		_begin_next_round()
@@ -1438,8 +1540,11 @@ func _schedule_next_round() -> void:
 func _schedule_round_restart() -> void:
 	if not is_inside_tree() or get_tree() == null:
 		return
+	var gen := _match_gen
 	await get_tree().create_timer(0.8).timeout
 	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	if gen != _match_gen:
 		return
 	if _session == Session.IN_BATTLE and _round_restart_pending:
 		_do_opening()
@@ -1518,8 +1623,11 @@ func _finish_opening() -> void:
 func _schedule_opening_to_select() -> void:
 	if not is_inside_tree() or get_tree() == null:
 		return
+	var gen := _match_gen
 	await get_tree().create_timer(0.8).timeout
 	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	if gen != _match_gen:
 		return
 	if _session == Session.IN_BATTLE and not state.is_over():
 		# 开局后进入回合 2 选招；round 仍为 1 时 next 会 +1 → 2
@@ -1550,7 +1658,7 @@ func _pump_session(delta: float) -> void:
 		return
 	if _session != Session.IN_BATTLE and _session != Session.SEALED:
 		return
-	var now := Time.get_ticks_msec()
+	var now := _now_ms()
 	# 应用层心跳 1000ms（ENet 默认 timeout 5–30s 太慢）
 	_hb_timer += delta
 	if _hb_timer * 1000.0 >= float(NetworkSessionFSM.HB_INTERVAL_MS):
@@ -1672,6 +1780,31 @@ func _broadcast_sealed(snap: Dictionary, reason: String) -> void:
 ## 该包的 from_id 是否来自「网络对端」（热座/直连测试下为 false，不做角色约束）。
 func is_remote_sender(from_id: int) -> bool:
 	return _remote_peer_id > 0 and from_id == _remote_peer_id
+
+
+## 传输层 from_id → FSM 身份空间（1=房主, 2=客户端）（I5）。
+## ENet 的对端 id 从 2 递增，真实客户端未必是 2；任何「已绑定对端」都归一到 FSM
+## 客户端位，否则 sys_consent 的票永远凑不齐 _consent_all=[1,2]。
+## 未绑定（热座/直连测试）沿用原 id，保持既有测试语义。
+func _fsm_id_for_sender(from_id: int) -> int:
+	if not is_remote_sender(from_id):
+		return from_id
+	return fsm.host_peer_id if not is_host() else 2
+
+
+## commit_id 单调闸（C3）：同一座位的 commit_id 必须前进；重复/倒退 → true=丢弃。
+## commit_id 形如 "<round>-<role>-<ms>"，round 前缀落后于当前回合也算陈旧。
+func _is_stale_or_dup_commit(seat: int, commit_id: String) -> bool:
+	if commit_id.is_empty():
+		return false
+	var prev := str(_last_commit_id.get(seat, ""))
+	if not prev.is_empty() and commit_id == prev:
+		return true
+	var cround := int(commit_id.get_slice("-", 0))
+	if cround > 0 and state.round > 0 and cround < state.round:
+		return true
+	_last_commit_id[seat] = commit_id
+	return false
 
 
 func _on_fsm_failed(loser_peer: int, reason: String) -> void:

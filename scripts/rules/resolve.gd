@@ -25,12 +25,27 @@ static func resolve_opening(state: BattleState) -> GameRules.RoundResult:
 	return r
 
 
+## 出招消毒（2026-10-27 联机外部数据防御）：不在本模式动作表的出招（本模式禁用技能 /
+## 劝降强出 / 技能表外的越界值）一律兜底为攒气；包子族（BAO1/2/3）例外 —— 非法多连由
+## bao_max 收口（§3.2 矩阵常量），既有语义不变（classic「非法 3 连包按上限收口为单包」）。
+static func sanitize_action(state: BattleState, a: int) -> int:
+	if state.mode_actions().has(a):
+		return a
+	if GameRules.is_bao(a):
+		return a
+	return GameRules.Action.ZAN
+
+
 ## 常规回合：双方已锁定指令，同步结算。
 ## acts[i] 为座位 i 的出招（0 = 我，1 = 对手）。
 static func resolve_turn(state: BattleState, act_me: int, act_you: int) -> GameRules.RoundResult:
 	var r: GameRules.RoundResult = GameRules.RoundResult.new()
-	var acts: Array = [act_me, act_you]
-	r.actions = [act_me, act_you]
+	# ── Step 0 出招消毒（2026-10-27 联机外部数据防御）────────────────────────
+	# 本模式禁用动作 / 技能表外值（劝降强出、越界整数）→ 兜底攒气（「超时兜底自动改攒气」精神）；
+	# classic 承诺「没有技能、没有 CD、没有封盾」由这里自防御，不依赖会话层闸门。
+	# 包子族例外：非法多连按 bao_max 收口是既有语义（classic「非法 3 连包收口为单包」），保留不动。
+	var acts: Array = [sanitize_action(state, act_me), sanitize_action(state, act_you)]
+	r.actions = [int(acts[0]), int(acts[1])]
 
 	# ── Step A 劝降（结算前自动触发，不占动作、不扣资源、不进 CD；classic 关闭）────
 	if state.quan_jiang_enabled():

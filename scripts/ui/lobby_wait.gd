@@ -21,17 +21,32 @@ func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
 	UiNav.cleanup_overlays(get_tree())
 	UiNav.register_back_target(WAIT_PATH, UiNav.MENU_SCENE, true)
+	# 系统返回必须走和「离开房间」按钮同一条清理路（leave_room），否则倒计时中直接漏回菜单（U2）
+	UiNav.register_back_guard(WAIT_PATH, _on_back_requested)
 	add_child(UiBackRouter.new())
 	_net = UiNav.net() as PeerManager
 	_build_ui()
 	if _net != null:
-		_net.room_updated.connect(func(_r: Dictionary): _refresh())
-		_net.ready_changed.connect(func(_h: bool, _c: bool): _refresh())
+		# U1：Net 是 autoload，比场景命长；lambda 连接在场景释放后仍会触发（报错刷屏）→ 全部具名连接
+		_net.room_updated.connect(_on_room_updated)
+		_net.ready_changed.connect(_on_ready_changed)
 		_net.lobby_countdown_tick.connect(_on_countdown)
 		_net.lobby_left.connect(_on_lobby_left)
-		_net.join_requested.connect(func(_id: int, _p): _show_join_dialog())
+		_net.join_requested.connect(_on_join_requested)
 		_net.battle_started.connect(_on_battle_started)
-		_net.session_changed.connect(func(_s: int): _refresh())
+		_net.session_changed.connect(_on_session_changed)
+	_refresh()
+
+
+func _on_room_updated(_r: Dictionary) -> void:
+	_refresh()
+
+
+func _on_ready_changed(_h: bool, _c: bool) -> void:
+	_refresh()
+
+
+func _on_session_changed(_s: int) -> void:
 	_refresh()
 
 
@@ -49,6 +64,7 @@ func _build_ui() -> void:
 	add_child(title)
 
 	var margin := MarginContainer.new()
+	margin.name = "Margin"
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
 	margin.add_theme_constant_override("margin_left", 16)
 	margin.add_theme_constant_override("margin_right", 16)
@@ -57,6 +73,7 @@ func _build_ui() -> void:
 	add_child(margin)
 
 	var v := VBoxContainer.new()
+	v.name = "Content"
 	v.add_theme_constant_override("separation", 12)
 	margin.add_child(v)
 
@@ -115,17 +132,22 @@ func _refresh() -> void:
 	var flags := _net.get_ready_flags()
 	var host_ready := bool(flags[0])
 	var client_ready := bool(flags[1])
-	var host_name := str(r.get("host_name", "房主"))
+	var host_name := str(r.get("host_name", ""))
 	var mode := str(r.get("mode", "lesson"))
 	var tag := "经典" if mode == "classic" else "课间"
 	if bool(r.get("mastery", false)):
 		tag += " · 精通"
+	# 机型/房间名只放副文案（房间名行），不许当座位名（文案规则：只用「我」/「对手」）（U4）
 	_room_name.text = "%s\n%s" % [str(r.get("name", "房间")), tag]
+	if host_name != "":
+		_room_name.text += " · " + host_name
 
-	_seat_names[0].text = host_name
+	# 座位名按各自视角标「我」/「对手」，别拿 host_name（=机型）当名字（U4）
+	var me_seat := 0 if _net.is_host() else 1
+	_seat_names[me_seat].text = "我"
+	_seat_names[1 - me_seat].text = "对手"
 	_seat_states[0].text = "已入座" + (" · 已准备" if host_ready else "")
 	var client_sitting := not _net.is_host() or _net.get_session() != PeerManager.Session.LOBBY
-	_seat_names[1].text = "我" if not _net.is_host() else "对手"
 	if client_sitting:
 		_seat_states[1].text = "已入座" + (" · 已准备" if client_ready else "")
 	else:
@@ -136,7 +158,10 @@ func _refresh() -> void:
 		_countdown.text = "双方准备后 5 秒开局" if not (host_ready and client_ready) else "即将开局"
 	if _ready_btn != null:
 		_ready_btn.text = "取消准备" if _local_ready() else "准备"
-		_ready_btn.disabled = counting or _net.get_session() == PeerManager.Session.IN_BATTLE
+		# set_ready 只在 LOBBY/READY_CHECK 生效；其余状态按钮必须禁用，别让人点一个 no-op（U7）
+		var sess := _net.get_session()
+		_ready_btn.disabled = sess != PeerManager.Session.LOBBY \
+			and sess != PeerManager.Session.READY_CHECK
 	_ready_btn.add_theme_stylebox_override("normal",
 		UiTheme.button_style(UiTheme.BG_CARD if _local_ready() else UiTheme.SHIELD))
 	_ready_btn.add_theme_color_override("font_color",
@@ -178,7 +203,24 @@ func _on_leave() -> void:
 	_back_to_entry()
 
 
+## 系统返回键守卫：与「离开房间」按钮同一条清理路（leave_room，倒计时中也发离房通知），
+## 已接管返回 true（U2）。
+func _on_back_requested() -> bool:
+	_on_leave()
+	return true
+
+
 # ---------- 加入请求（房主，单弹窗） ----------
+
+## 第二个 join_requested 到达时不能静默丢掉（新来者会一直干等）：
+## 显式拒绝新来者，已有的确认弹窗维持原状（U7）。
+func _on_join_requested(_id: int, _profile: Dictionary) -> void:
+	if _dialog != null and is_instance_valid(_dialog):
+		if _net != null:
+			_net.reject_join()
+		return
+	_show_join_dialog()
+
 
 func _show_join_dialog() -> void:
 	if _dialog != null and is_instance_valid(_dialog):
@@ -200,7 +242,7 @@ func _close_dialog() -> void:
 	_dialog = null
 
 
-# ---------- 对方/房主离开：提示 + 回入口 ----------
+# ---------- 对手/房主离开：提示 + 回入口 ----------
 
 func _on_lobby_left(reason: String) -> void:
 	if _notice != null and is_instance_valid(_notice):

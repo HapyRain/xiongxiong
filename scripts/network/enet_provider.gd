@@ -18,11 +18,17 @@ var _open: bool = false
 var _token: String = ""
 var _room_info: Dictionary = {}
 
-## 我们自己的会话 id -> ENetPacketPeer
+## 我们自己的会话 id -> ENetPacketPeer（只放「已认证绑定」的对端：
+## 房主侧要收到带正确 token 的 _hello 才进表，未握手的连接不配出现在任何统计/广播里）
 var _id_to_peer: Dictionary = {}
 ## ENetPacketPeer 的 instance id -> 我们的会话 id
 var _peer_key_to_id: Dictionary = {}
-var _server_peer: ENetPacketPeer = null
+## 房主侧：已连接但还没过 _hello 认证的连接（instance id -> {peer, id}）。
+## 陌生人 connect+disconnect 只在这里进进出出，不触发 disconnected、不算 players。
+var _pending_peers: Dictionary = {}
+## 客户端唯一对端 = 自己 connect_to_host 返回的那个 peer（C1：绝不接受别人顶替）。
+## 不标注类型：测试要能注入鸭子类型的假 peer（ENetPacketPeer 是抽象类，无法子类化）。
+var _server_peer = null
 var _next_remote_id: int = 2
 
 var _discover: PacketPeerUDP = null
@@ -145,6 +151,7 @@ func close() -> void:
 	_server_peer = null
 	_id_to_peer.clear()
 	_peer_key_to_id.clear()
+	_pending_peers.clear()
 	var was_open := _open
 	_open = false
 	_unique_id = 0
@@ -317,12 +324,12 @@ func send_reliable(to_id: int, data: Dictionary) -> Error:
 	if _is_host:
 		if to_id == 0:
 			for id in _id_to_peer.keys():
-				var p: ENetPacketPeer = _id_to_peer[id]
+				var p = _id_to_peer[id]
 				if p != null:
 					if p.put_packet(bytes) != OK:
 						err = FAILED
 		elif _id_to_peer.has(to_id):
-			var p: ENetPacketPeer = _id_to_peer[to_id]
+			var p = _id_to_peer[to_id]
 			if p == null:
 				return ERR_DOES_NOT_EXIST
 			err = p.put_packet(bytes)
@@ -341,7 +348,7 @@ func send_reliable(to_id: int, data: Dictionary) -> Error:
 
 
 func get_rtt_ms(to_id: int) -> int:
-	var p: ENetPacketPeer = null
+	var p = null
 	if _is_host:
 		if _id_to_peer.has(to_id):
 			p = _id_to_peer[to_id]
@@ -436,15 +443,17 @@ func _pump_service() -> void:
 				pass
 
 
-func _on_connect(peer: ENetPacketPeer) -> void:
+## 入站连接（peer 不标注类型：测试注入的假 peer 走鸭子类型）。
+func _on_connect(peer) -> void:
 	if peer == null:
 		return
 	if _is_host:
 		var assigned := _next_remote_id
 		_next_remote_id += 1
-		_id_to_peer[assigned] = peer
-		_peer_key_to_id[peer.get_instance_id()] = assigned
-		# 给客户端分配座位 id，并校验 token（客户端 token 空则跳过）
+		# C2：连接 ≠ 已认证。先挂 pending，收到带正确 token 的 _hello 才绑定进
+		# _id_to_peer；未认证连接不进映射（get_peer_ids / 发现广播的 players 都不算它）。
+		_pending_peers[peer.get_instance_id()] = {"peer": peer, "id": assigned}
+		# 给客户端分配座位 id，并校验 token（客户端必须回 _hello 才算入座）
 		var hello := {
 			"v": 1,
 			"type": "_welcome",
@@ -453,7 +462,11 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 		peer.put_packet(var_to_bytes(hello))
 		_conn.flush()
 	else:
-		_server_peer = peer
+		# C1：只认自己 connect_to_host 得到的那个 peer；任何其它入站连接立刻断开，
+		# 防止陌生人接管 _server_peer 后被 _on_receive 映射成 from_id=1（房主身份）。
+		if _server_peer == null or peer.get_instance_id() != _server_peer.get_instance_id():
+			peer.peer_disconnect()
+			return
 		# 客户端连上后立刻发 hello（带 token）
 		var hello := {
 			"v": 1,
@@ -464,21 +477,30 @@ func _on_connect(peer: ENetPacketPeer) -> void:
 		_conn.flush()
 
 
-func _on_disconnect(peer: ENetPacketPeer) -> void:
-	var key: int = peer.get_instance_id() if peer != null else 0
+func _on_disconnect(peer) -> void:
+	if peer == null:
+		return
+	var key: int = peer.get_instance_id()
 	var from_id: int = int(_peer_key_to_id.get(key, -1))
-	if peer != null:
-		_peer_key_to_id.erase(peer.get_instance_id())
+	_peer_key_to_id.erase(key)
+	_pending_peers.erase(key)
 	if from_id >= 0:
 		_id_to_peer.erase(from_id)
-	if _is_host:
-		disconnected.emit("peer %d left" % from_id)
-	else:
+	if not _is_host:
+		# 客户端：只有自己 connect_to_host 的对端断开才算断线（C1/C2），
+		# 陌生人/未跟踪 peer 的进出一律静默。
+		if _server_peer == null or key != _server_peer.get_instance_id():
+			return
+		_server_peer = null
 		_open = false
 		disconnected.emit("server disconnected")
+		return
+	# 房主：只上报「已绑定」对端的离开（C2：陌生人的 connect+disconnect 不得惊动会话层）
+	if from_id >= 0:
+		disconnected.emit("peer %d left" % from_id)
 
 
-func _on_receive(peer: ENetPacketPeer) -> void:
+func _on_receive(peer) -> void:
 	if peer == null:
 		return
 	var raw: PackedByteArray = peer.get_packet()
@@ -492,30 +514,51 @@ func _on_receive(peer: ENetPacketPeer) -> void:
 	# 传输层握手：_hello / _welcome 不进入上层信封，但要更新身份
 	var type := str(data.get("type", ""))
 	if type == "_welcome" and not _is_host:
+		# C1：_welcome 只能来自自己 connect_to_host 的对端，陌生人冒充一律忽略
+		if _server_peer == null or peer.get_instance_id() != _server_peer.get_instance_id():
+			return
 		var payload: Dictionary = data.get("payload", {})
 		_unique_id = int(payload.get("your_id", 2))
-		# 校验 token（房主声明的 token 若与本地不一致则拒绝）
+		# 校验 token（I6：房主声明的 token 为空也算不匹配，空串不再跳过校验）
 		var expect := str(payload.get("token", ""))
-		if _token != "" and expect != "" and expect != _token:
+		if _token != "" and expect != _token:
 			close()
 			disconnected.emit("token mismatch")
 			return
 		connected.emit(_unique_id)
 		return
 	if type == "_hello" and _is_host:
+		var key: int = peer.get_instance_id()
+		var ent: Dictionary = _pending_peers.get(key, {})
+		if ent.is_empty():
+			# 未握手连接发的业务包/重复 hello 一律忽略（绑定只能发生一次）
+			return
 		var payload: Dictionary = data.get("payload", {})
 		var tok := str(payload.get("token", ""))
-		if _token != "" and tok != "" and tok != _token:
-			var rid: int = int(_peer_key_to_id.get(peer.get_instance_id(), -1))
-			if rid >= 0:
-				send_reliable(rid, {"v": 1, "type": "_reject", "payload": {"reason": "token"}})
-				_id_to_peer.erase(rid)
-				_peer_key_to_id.erase(peer.get_instance_id())
+		# I6：空 token 不再跳过校验；拒绝时要真的断开连接（只删映射会让其包继续渗入）
+		if _token != "" and tok != _token:
+			var rej := {"v": 1, "type": "_reject", "payload": {"reason": "token"}}
+			peer.put_packet(var_to_bytes(rej))
+			_pending_peers.erase(key)
+			peer.peer_disconnect()
+			_conn.flush()
 			return
+		# 认证通过：此刻才绑定为会话对端
+		var rid := int(ent.get("id", 0))
+		_pending_peers.erase(key)
+		_id_to_peer[rid] = peer
+		_peer_key_to_id[key] = rid
 		return
 
-	var from_id: int = int(_peer_key_to_id.get(peer.get_instance_id(), 0))
-	if not _is_host and _server_peer != null and peer.get_instance_id() == _server_peer.get_instance_id():
+	var from_id: int = int(_peer_key_to_id.get(peer.get_instance_id(), -1))
+	if _is_host:
+		# C2：未认证连接的业务包直接丢（from_id 不得落到 0 之类的假身份上）
+		if from_id < 0:
+			return
+	else:
+		# C1：只放行绑定对端（= 房主）的包，其它来源不得映射成 from_id=1
+		if _server_peer == null or peer.get_instance_id() != _server_peer.get_instance_id():
+			return
 		from_id = 1
 	packet_received.emit(from_id, data)
 
@@ -657,6 +700,8 @@ func _pump_discover() -> void:
 		var magic := str(msg.get("magic", ""))
 		if magic == DISCOVER_MAGIC and _is_host and _discover_listening:
 			# 回房卡（room_announce：房间名 + 模式/精通 + 人数）
+			# 注意：announce 里带 token 是刻意的——房间发现 + 入房凭证走同一个包，
+			# 局域网内的房卡就是加入凭据（产品口径），不要「顺手」隐藏它。
 			var announce := {
 				"v": 1,
 				"magic": ANNOUNCE_MAGIC,
@@ -667,6 +712,7 @@ func _pump_discover() -> void:
 				"mastery": bool(_room_info.get("mastery", false)),
 				"port": int(_room_info.get("port", DEFAULT_GAME_PORT)),
 				"token": _token,
+				# 只数「已认证绑定」的会话对端：未握手连接（_pending_peers）不算人数
 				"players": _id_to_peer.size() + 1,
 				"max_players": int(_room_info.get("max_players", 2)),
 				"version": 1,

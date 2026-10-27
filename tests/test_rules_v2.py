@@ -16,6 +16,8 @@ from __future__ import annotations
 # ── §1 常量 ────────────────────────────────────────────────────────────
 MAX_HP, MAX_SHIELD, MAX_QI, MAX_ROUND = 4, 3, 10, 40
 OPENING_ROUND, BAO_MAX, WIN_SCORE = 1, 3, 12
+# Phase 枚举镜像（GameRules.Phase）：OPENING=0, SELECTING=1, …, GAME_OVER=7
+PHASE_OPENING, PHASE_SELECTING, PHASE_GAME_OVER = 0, 1, 7
 
 # ── 动作枚举整数镜像（与 GameRules.Action 数值一一对应）───────────────
 (ZAN, BAO1, BAO2, BAO3, FANG, STRONG_FANG, XIAO_YANG, JI_QI,
@@ -43,6 +45,14 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def _to_int(v):
+    """GDScript int() 强转镜像（R7）：非数值 → 0，不抛异常。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 # ── 双模式预设（镜像 game_rules.gd PRESETS；字段与 PLAN v1.1 R1 一致）──────────
 PRESETS = {
     "classic": {                                   # docs/rules/game-rules-classic.md
@@ -50,14 +60,14 @@ PRESETS = {
         "bao_max": 1, "actions": [ZAN, BAO1, FANG],
         "skills_enabled": False, "quan_jiang_enabled": False,
         "draw_backstop": False, "score_to_win": 1, "round_cap": 40,
-        "cap_rule": "hp_then_draw", "draw_replay_max": 3,
+        "draw_replay_max": 3,
     },
     "lesson": {                                    # 现有 v2 行为
         "mode": "lesson", "max_hp": MAX_HP, "max_qi": MAX_QI, "max_shield": MAX_SHIELD,
         "bao_max": BAO_MAX, "actions": list(SKILLS),
         "skills_enabled": True, "quan_jiang_enabled": True,
         "draw_backstop": True, "score_to_win": WIN_SCORE, "round_cap": MAX_ROUND,
-        "cap_rule": "hp_then_draw", "draw_replay_max": 0,
+        "draw_replay_max": 0,
     },
 }
 
@@ -120,12 +130,30 @@ class State:
         self.qi = list(qi if qi is not None else [0, 0])
         self.shield = list(shield if shield is not None else [self.p["max_shield"], self.p["max_shield"]])
         self.pending = list(pending if pending is not None else [-1, -1])
+        self.phase = PHASE_OPENING
         self.winner = -1
         self.score = list(score if score is not None else [0, 0])
         self.draw_count = draw_count
-        self.cooldowns = [dict(cooldowns[0]) if cooldowns else {},
-                          dict(cooldowns[1]) if cooldowns else {}]
+        # 短列表 / 脏元素防御（R7，镜像 battle_state._cooldowns 的缺位补空语义）
+        self.cooldowns = [
+            dict(cooldowns[0]) if cooldowns and isinstance(cooldowns[0], dict) else {},
+            dict(cooldowns[1]) if cooldowns and len(cooldowns) > 1 and isinstance(cooldowns[1], dict) else {},
+        ]
         self.sealed_round = list(sealed_round if sealed_round is not None else [-1, -1])
+
+    def set_preset(self, mode, mastery=False):
+        """镜像 battle_state.gd set_preset（R9）：换预设不动当前资源/比分，新局随后 reset_round_keep_score()。"""
+        self.mode = mode if mode in PRESETS else "lesson"
+        self.mastery = bool(mastery)
+        self.p = preset(self.mode)
+
+    def mode_actions(self):
+        """镜像 battle_state.gd mode_actions：本模式可用动作表（未过合法性）。"""
+        return self.p["actions"]
+
+    def draw_count_max(self):
+        """镜像 battle_state.gd draw_count_max（R2）：lesson = 保底阈值 3；classic = 重开上限 +1。"""
+        return 3 if self.p["draw_backstop"] else self.p["draw_replay_max"] + 1
 
     # ── 出招合法性（battle_state.gd can_use_action 八条）──
     def is_sealed(self, who):
@@ -200,29 +228,49 @@ class State:
     def snapshot(self):
         return {"round": self.round, "hp": list(self.hp), "qi": list(self.qi),
                 "shield": list(self.shield), "pending": list(self.pending),
-                "winner": self.winner, "score": list(self.score),
+                "phase": self.phase, "winner": self.winner, "score": list(self.score),
                 "draw_count": self.draw_count,
                 "cooldowns": [dict(cd) for cd in self.cooldowns],
                 "sealed_round": list(self.sealed_round),
                 "mode": self.mode, "mastery": self.mastery}
 
     def restore(self, snap):
-        """mode/mastery 必须与本地预设一致（房主权威）；不一致 → 拒绝并返回 False（状态不动）。"""
-        if "mode" in snap:
-            m = str(snap["mode"])
-            if m not in PRESETS or m != self.mode:
-                return False
-        if "mastery" in snap and bool(snap["mastery"]) != self.mastery:
+        """镜像 battle_state.gd restore（R2 契约，2026-10-27 联机外部数据防御）：
+        1) mode/mastery 必须在包里且与本地一致（缺键 = 篡改/截断 → 拒绝）；
+        2) draw_count 不得伪造终场：classic 超过 draw_replay_max()+1 → 拒绝；lesson 钳到保底阈值 3；
+        3) 比分不得伪造终场：classic 双方同时到分制 → 拒绝；恢复值已让整场结束而 winner 未结算 → 拒绝。
+        任何拒绝都保证状态不动。"""
+        if "mode" not in snap or "mastery" not in snap:
+            return False
+        m = str(snap["mode"])
+        if m not in PRESETS or m != self.mode:
+            return False
+        if bool(snap["mastery"]) != self.mastery:
             return False
         p = self.p
-        self.round = clamp(int(snap.get("round", 1)), 1, p["round_cap"])
+        new_winner = clamp(_to_int(snap.get("winner", -1)), -1, 2)
+        new_score = pair(snap.get("score"), 0, 0, 0, p["score_to_win"])
+        raw_draws = _to_int(snap.get("draw_count", 0))
+        if (not p["draw_backstop"]) and raw_draws > p["draw_replay_max"] + 1:
+            return False
+        new_draws = clamp(raw_draws, 0, self.draw_count_max())
+        if (not p["draw_backstop"]
+                and new_score[0] >= p["score_to_win"]
+                and new_score[1] >= p["score_to_win"]):
+            return False
+        over = (max(new_score) >= p["score_to_win"]
+                or ((not p["draw_backstop"]) and new_draws > p["draw_replay_max"]))
+        if over and new_winner < 0:
+            return False
+        self.round = clamp(_to_int(snap.get("round", 1)), 1, p["round_cap"])
         self.hp = pair(snap.get("hp"), p["max_hp"], p["max_hp"], 0, p["max_hp"])
         self.qi = pair(snap.get("qi"), 0, 0, 0, p["max_qi"])
         self.shield = pair(snap.get("shield"), p["max_shield"], p["max_shield"], 0, p["max_shield"])
         self.pending = pair(snap.get("pending"), -1, -1, -1, QUAN_JIANG)
-        self.winner = clamp(int(snap.get("winner", -1)), -1, 2)
-        self.score = pair(snap.get("score"), 0, 0, 0, p["score_to_win"])
-        self.draw_count = clamp(int(snap.get("draw_count", 0)), 0, p["round_cap"])
+        self.phase = clamp(_to_int(snap.get("phase", PHASE_OPENING)), PHASE_OPENING, PHASE_GAME_OVER)
+        self.winner = new_winner
+        self.score = new_score
+        self.draw_count = new_draws
         self.cooldowns = self._cooldowns(snap.get("cooldowns", [{}, {}]))
         self.sealed_round = pair(snap.get("sealed_round"), -1, -1, -1, p["round_cap"])
         return True
@@ -236,33 +284,35 @@ class State:
             if i >= len(v) or not isinstance(v[i], dict):
                 continue
             for k, used in v[i].items():
-                act = int(k)
+                act = _to_int(k)
                 if act not in self.p["actions"]:
                     continue
-                out[i][act] = clamp(int(used), 0, self.round)
+                out[i][act] = clamp(_to_int(used), 0, self.round)
         return out
 
     def reset_round_keep_score(self):
-        keep_score = [self.score[0], self.score[1]]
-        keep_draws = self.draw_count
-        p = self.p
-        self.round = OPENING_ROUND
-        self.hp = [p["max_hp"], p["max_hp"]]
-        self.qi = [0, 0]
-        self.shield = [p["max_shield"], p["max_shield"]]
-        self.pending = [-1, -1]
-        self.winner = -1
-        self.score = keep_score
-        self.draw_count = keep_draws
-        self.cooldowns = [{}, {}]
-        self.sealed_round = [-1, -1]
+        """镜像 battle_state.gd reset_round_keep_score：走 restore 落地（mode/mastery 必填）。"""
+        self.restore({
+            "mode": self.mode, "mastery": self.mastery,
+            "round": OPENING_ROUND,
+            "hp": [self.p["max_hp"], self.p["max_hp"]],
+            "qi": [0, 0],
+            "shield": [self.p["max_shield"], self.p["max_shield"]],
+            "pending": [-1, -1],
+            "phase": PHASE_SELECTING,
+            "winner": -1,
+            "score": [self.score[0], self.score[1]],
+            "draw_count": self.draw_count,
+            "cooldowns": [{}, {}],
+            "sealed_round": [-1, -1],
+        })
 
 
 def pair(v, d0, d1, lo, hi):
-    """镜像 battle_state.gd _pair：非 Array / 长度不足 → 默认值；越界钳制。"""
+    """镜像 battle_state.gd _pair：非 Array / 长度不足 → 默认值；越界钳制；非数值强转 0。"""
     if not isinstance(v, (list, tuple)) or len(v) < 2:
         return [d0, d1]
-    return [clamp(int(v[0]), lo, hi), clamp(int(v[1]), lo, hi)]
+    return [clamp(_to_int(v[0]), lo, hi), clamp(_to_int(v[1]), lo, hi)]
 
 
 class Result:
@@ -311,9 +361,20 @@ def check_winner(s):
             s.winner = 2
 
 
+def sanitize_action(s, a):
+    """镜像 resolve.gd sanitize_action（R3，2026-10-27 联机外部数据防御）：
+    不在本模式动作表的出招（禁用技能 / 劝降强出 / 越界值）→ 兜底攒气；
+    包子族例外：非法多连由 bao_max 收口（classic「非法 3 连包收口为单包」），既有语义不变。"""
+    if a in s.mode_actions():
+        return a
+    if a in BAO_N:
+        return a
+    return ZAN
+
+
 def resolve_turn(s, a0, a1):
-    """常规回合：①劝降 ②扣资源 ③吸收 ④增益 ⑤对撞 ⑥CD ⑦落地+终局。"""
-    acts = [int(a0), int(a1)]
+    """常规回合：⓪出招消毒 ①劝降 ②扣资源 ③吸收 ④增益 ⑤对撞 ⑥CD ⑦落地+终局。"""
+    acts = [sanitize_action(s, _to_int(a0)), sanitize_action(s, _to_int(a1))]
     r = Result(acts)
 
     # ① 劝降（classic 关闭）：满气满血 + 对方仅剩 1 血 → 直接判胜（不占动作 / 不扣资源 / 不进 CD）
@@ -1222,7 +1283,8 @@ def main():
     ok &= expect("[小局重开] score/draw_count 保留，其余复位",
                  s.score == [4, 5] and s.draw_count == 2 and s.round == OPENING_ROUND
                  and s.hp == [MAX_HP, MAX_HP] and s.qi == [0, 0] and s.winner == -1
-                 and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1])
+                 and s.cooldowns == [{}, {}] and s.sealed_round == [-1, -1]
+                 and s.phase == PHASE_SELECTING)
 
     # ── ㉒ classic 模式预设（docs/rules/game-rules-classic.md）────────────
     c = State(mode="classic")
@@ -1233,6 +1295,14 @@ def main():
                  and not c.p["skills_enabled"] and not c.p["quan_jiang_enabled"]
                  and not c.p["draw_backstop"] and c.p["draw_replay_max"] == 3
                  and c.p["round_cap"] == 40 and c.hp == [1, 1] and c.shield == [3, 3])
+
+    ok &= expect("[经典] 预设剔除死配置 cap_rule（文档 §5 同步删除）",
+                 "cap_rule" not in preset("classic") and "cap_rule" not in preset("lesson"))
+
+    c_open = State(mode="classic")
+    r = resolve_opening(c_open)
+    ok &= expect("[经典] 开局亮相：气 +1、盾已满 3 不叠加、血不动",
+                 r.opening and chk(c_open, [1, 1], [1, 1], [3, 3]))
 
     s = mk(qi=[5, 5], rnd=9, score=[1, 1], mode="classic")
     ok &= expect("[经典] 可用动作仅 攒/包子×1/防御（分数再高也不解锁技能）",
@@ -1318,9 +1388,13 @@ def main():
     snap = c.snapshot()
     ok &= expect("[快照] snapshot 带 mode + mastery",
                  snap["mode"] == "classic" and snap["mastery"] is False)
-    c2 = State(mode="classic")
-    ok &= expect("[快照] restore 同模式：mode/mastery/血上限保留",
-                 c2.restore(snap) is True and c2.mode == "classic" and c2.hp == [1, 1])
+    src = mk(hp=[3, 2], qi=[7, 1], shield=[1, 2], rnd=9, score=[3, 5], draw_count=2)
+    snap2 = src.snapshot()
+    c2 = State()
+    ok &= expect("[快照] restore 同模式：非默认 hp/qi/比分/回合/平局数原样落地",
+                 c2.restore(snap2) is True and c2.hp == [3, 2] and c2.qi == [7, 1]
+                 and c2.score == [3, 5] and c2.round == 9 and c2.draw_count == 2
+                 and c2.mode == "lesson" and not c2.mastery)
     lesson_s = State()
     ok &= expect("[快照] restore 校验：mode 不一致 → 拒绝（状态不动）",
                  lesson_s.restore(snap) is False and lesson_s.mode == "lesson"
@@ -1329,11 +1403,82 @@ def main():
     ok &= expect("[快照] restore 校验失败时不改任何字段",
                  lesson_s.restore(snap) is False and lesson_s.hp == [3, 2])
 
-    # ── ㉕ restore 的 cooldowns：过滤非本模式动作 + 钳到当前回合（对齐 battle_state._cooldowns）──
+    # ── ㉕ restore 防篡改 / 防伪造（联机外部数据防御，2026-10-27）────────────
+    t1 = State(mode="classic")
+    t1.qi = [2, 3]
+    ok &= expect("[快照] restore 防篡改：缺 mode 键 → 拒绝（状态不动）",
+                 not t1.restore({"mastery": False, "round": 7, "hp": [0, 0]})
+                 and t1.round == 1 and t1.qi == [2, 3] and t1.hp == [1, 1])
+    t2 = State(mode="classic")
+    ok &= expect("[快照] restore 防篡改：缺 mastery 键 → 拒绝（状态不动）",
+                 not t2.restore({"mode": "classic", "round": 7}) and t2.round == 1)
+    t3 = State(mode="classic")
+    ok &= expect("[快照] restore 防伪造：classic draw_count 超出重开上限 → 拒绝（状态不动）",
+                 not t3.restore({"mode": "classic", "mastery": False, "draw_count": 40})
+                 and not t3.restore({"mode": "classic", "mastery": False, "draw_count": 5, "winner": 2})
+                 and t3.draw_count == 0)
+    t4 = State()
+    ok &= expect("[快照] restore 防伪造：lesson draw_count 超界 → 钳到保底阈值 3（结算等价）",
+                 t4.restore({"mode": "lesson", "mastery": False, "draw_count": 40})
+                 and t4.draw_count == 3)
+    t5 = State(mode="classic")
+    ok &= expect("[快照] restore 防伪造：classic 伪造终场比分（[1,1] 双到线 / 未结算 [1,0]）→ 拒绝（状态不动）",
+                 not t5.restore({"mode": "classic", "mastery": False, "score": [1, 1]})
+                 and not t5.restore({"mode": "classic", "mastery": False, "score": [1, 1], "winner": 2})
+                 and not t5.restore({"mode": "classic", "mastery": False, "score": [1, 0]})
+                 and t5.score == [0, 0] and t5.winner == -1)
+    t6 = State(mode="classic")
+    ok &= expect("[快照] restore 终场快照例外：已结算（winner≥0）的合法终场可恢复",
+                 t6.restore({"mode": "classic", "mastery": False, "score": [1, 0], "winner": 0})
+                 and t6.score == [1, 0] and t6.is_match_over()
+                 and t6.restore({"mode": "classic", "mastery": False, "score": [0, 0],
+                                 "draw_count": 4, "winner": 2})
+                 and t6.draw_count == 4 and t6.is_match_over() and t6.match_winner() == 2)
+
+    # ── ㉖ restore 的 cooldowns：过滤非本模式动作 + 钳到当前回合（对齐 battle_state._cooldowns）──
     s = State(mode="classic")
     ok &= expect("[快照] restore cooldowns 过滤本模式外动作、钳到当前回合",
-                 s.restore({"round": 5, "cooldowns": [{XIAO_YANG: 3, BAO1: 99}, {BAO2: 2}]})
+                 s.restore({"mode": "classic", "mastery": False, "round": 5,
+                            "cooldowns": [{XIAO_YANG: 3, BAO1: 99}, {BAO2: 2}]})
                  and s.cooldowns == [{BAO1: 5}, {}])
+
+    # ── ㉗ restore 脏输入防御：非数值强转 0（GDScript int() 语义），冷却表短列表缺位补空 ──
+    t7 = mk(cooldowns=[{BAO1: 2}], mode="classic")
+    ok &= expect("[快照] restore 脏输入防御：非数值强转 0、cooldowns 短列表缺位补空",
+                 t7.restore({"mode": "classic", "mastery": False, "round": "abc",
+                             "draw_count": "xyz", "cooldowns": [{BAO1: 2}]})
+                 and t7.round == 1 and t7.draw_count == 0 and t7.cooldowns == [{BAO1: 1}, {}])
+
+    # ── ㉘ phase 字段随快照传输并钳制（GDScript 镜像双向对齐）──────────────────
+    t8 = State(mode="classic")
+    ok &= expect("[快照] phase 随包传输、越界钳制到 [OPENING, GAME_OVER]",
+                 t8.restore({"mode": "classic", "mastery": False, "phase": 99})
+                 and t8.phase == PHASE_GAME_OVER
+                 and t8.restore({"mode": "classic", "mastery": False, "phase": -5})
+                 and t8.phase == PHASE_OPENING
+                 and t8.snapshot().get("phase", -1) == PHASE_OPENING)
+
+    # ── ㉙ 出招消毒：本模式禁用动作 / 技能表外值 → 兜底攒气（sanitize_action）──
+    s = mk(qi=[0, 0], mode="classic")
+    r = resolve_turn(s, ZHONG_JI, ZAN)
+    ok &= expect("[消毒] classic 强出终极技 → 兜底攒气（ZAN vs ZAN，1 血不死、各 +1 气）",
+                 r.actions == [ZAN, ZAN] and s.winner == -1
+                 and chk(s, [1, 1], [1, 1], [3, 3]))
+
+    s = mk(hp=[4, 4], qi=[0, 0], shield=[3, 3])
+    r = resolve_turn(s, 99, ZAN)
+    ok &= expect("[消毒] lesson 未知动作 id → 兜底攒气（ZAN vs ZAN）",
+                 r.actions == [ZAN, ZAN] and s.winner == -1
+                 and chk(s, [4, 4], [1, 1], [3, 3]))
+
+    # ── ㉚ set_preset 中途换模式：不缩资源（行为保持），reset 后按新预设归位 ──────
+    t9 = State()
+    t9.set_preset("classic")
+    kept = (t9.mode == "classic" and t9.p["max_hp"] == 1
+            and t9.hp == [MAX_HP, MAX_HP])
+    t9.reset_round_keep_score()
+    ok &= expect("[预设] set_preset 不缩资源（行为保持），reset_round_keep_score 按新预设归位",
+                 kept and t9.hp == [1, 1] and t9.qi == [0, 0])
 
     print("=" * 52)
     print("ALL PASS" if ok else "HAS FAILURES")

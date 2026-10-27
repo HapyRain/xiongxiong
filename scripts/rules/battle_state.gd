@@ -23,6 +23,10 @@ var _params: Dictionary = {}
 
 
 func _init(mode_name: String = "lesson", is_mastery: bool = false) -> void:
+	# 先归零资源再配预设：让 set_preset 的「中途换模式」防呆断言只对真正的滥用（对局中换模式）报错，
+	# 不把「新建对局选模式」误判为滥用。
+	hp = [0, 0]
+	shield = [0, 0]
 	set_preset(mode_name, is_mastery)
 	hp = [max_hp(), max_hp()]
 	shield = [max_shield(), max_shield()]
@@ -30,10 +34,31 @@ func _init(mode_name: String = "lesson", is_mastery: bool = false) -> void:
 
 ## 配置模式预设 + 精通开关（未知模式回退 lesson）。不动当前资源/比分：
 ## 新对局请先 set_preset() 再 reset_round_keep_score()（后者按新预设复位资源）。
+## 中途（对局进行中）换模式会让旧资源瞬时越界（如 lesson 血 4 挂到 classic 血上限 1），
+## 行为保持「不缩放、等下次 clamp」；debug 构建对此断言报错，提醒调用方先 reset_round_keep_score()。
 func set_preset(mode_name: String, is_mastery: bool = false) -> void:
 	mode = mode_name if GameRules.PRESETS.has(mode_name) else "lesson"
 	mastery = is_mastery
 	_params = GameRules.preset(mode)
+	assert(
+		_is_pristine() or (
+			int(hp[0]) <= max_hp() and int(hp[1]) <= max_hp()
+			and int(qi[0]) <= max_qi() and int(qi[1]) <= max_qi()
+			and int(shield[0]) <= max_shield() and int(shield[1]) <= max_shield()
+		),
+		"set_preset: 对局进行中换模式导致资源越界，请先 reset_round_keep_score()"
+	)
+
+
+## 全新局判定（set_preset 防呆断言用）：尚未产生任何对局痕迹的空盘状态。
+func _is_pristine() -> bool:
+	return (
+		round == GameRules.OPENING_ROUND
+		and phase == GameRules.Phase.OPENING
+		and int(winner) == -1
+		and int(score[0]) == 0 and int(score[1]) == 0
+		and int(draw_count) == 0
+	)
 
 
 func max_hp() -> int:
@@ -62,6 +87,18 @@ func round_cap() -> int:
 
 func draw_replay_max() -> int:
 	return int(_params["draw_replay_max"])
+
+
+## draw_count 的语义上界（2026-10-27 联机外部数据防御）：classic = 平局重开上限 +1
+## （第 draw_replay_max+1 次平局整场判平，合法值最大即 draw_replay_max()+1）；
+## lesson = 平局保底阈值 3（≥3 的值结算完全等价，钳到 3 不改语义）。
+func draw_count_max() -> int:
+	return 3 if draw_backstop() else draw_replay_max() + 1
+
+
+## 本模式可用动作表（未过合法性，供 resolve 的出招消毒 / available_actions 共用）。
+func mode_actions() -> Array:
+	return _params["actions"]
 
 
 func draw_backstop() -> bool:
@@ -149,13 +186,40 @@ func snapshot() -> Dictionary:
 
 
 ## 快照恢复：外部数据（联机/回放）一律钳制到合法区间，越界就地修正而非信任。
-## 带 mode/mastery 时必须与本地预设一致（房主权威），不一致或未知模式 → 拒绝并返回 false（状态不动）。
+## 契约（2026-10-27 联机外部数据防御，见 game-rules-v2.md 变更记录/勘误）：
+## 1) mode/mastery 必须在包里且与本地预设一致（snapshot() 恒写入；缺键 = 篡改/截断 → 拒绝，房主权威）。
+## 2) draw_count 不得伪造终场：classic 超过合法上界 draw_replay_max()+1（=4，再大只会是伪造，
+##    会把进行中的对局伪造成「平局用尽整场判平」）→ 拒绝；lesson 钳到保底阈值 3（≥3 结算等价）。
+## 3) 比分不得伪造终场：classic 双方同时到分制（如 [1,1]）不可能自然产生 → 拒绝；
+##    任何模式下「恢复值已让整场结束」而 winner 未结算（< 0）→ 拒绝（合法终场快照必带已结算 winner）。
+##    已结算（winner ≥ 0）的合法终场快照照常恢复，由会话层收口终场流程。
+## 任何拒绝都保证状态不动（先整体校验、后一次性落地）。
 func restore(s: Dictionary) -> bool:
-	if s.has("mode"):
-		var m: String = str(s["mode"])
-		if not GameRules.PRESETS.has(m) or m != mode:
-			return false
-	if s.has("mastery") and bool(s["mastery"]) != mastery:
+	if not s.has("mode") or not s.has("mastery"):
+		return false
+	var m: String = str(s["mode"])
+	if not GameRules.PRESETS.has(m) or m != mode:
+		return false
+	if bool(s["mastery"]) != mastery:
+		return false
+	# 先算钳制后的比分 / 平局数 / winner，校验「不得伪造成终场」，全部通过后才落地。
+	var new_winner: int = GameRules.clamp_i(int(s.get("winner", -1)), -1, 2)
+	var new_score: Array = _pair(s.get("score"), 0, 0, 0, score_to_win())
+	var raw_draws: int = int(s.get("draw_count", 0))
+	if not draw_backstop() and raw_draws > draw_replay_max() + 1:
+		return false
+	var new_draws: int = GameRules.clamp_i(raw_draws, 0, draw_count_max())
+	if (
+		not draw_backstop()
+		and int(new_score[0]) >= score_to_win()
+		and int(new_score[1]) >= score_to_win()
+	):
+		return false
+	var over: bool = (
+		maxi(int(new_score[0]), int(new_score[1])) >= score_to_win()
+		or (not draw_backstop() and new_draws > draw_replay_max())
+	)
+	if over and new_winner < 0:
 		return false
 	round = GameRules.clamp_i(int(s.get("round", 1)), 1, round_cap())
 	hp = _pair(s.get("hp"), max_hp(), max_hp(), 0, max_hp())
@@ -163,9 +227,9 @@ func restore(s: Dictionary) -> bool:
 	shield = _pair(s.get("shield"), max_shield(), max_shield(), 0, max_shield())
 	pending = _pair(s.get("pending"), -1, -1, -1, GameRules.Action.QUAN_JIANG)
 	phase = GameRules.clamp_i(int(s.get("phase", GameRules.Phase.OPENING)), GameRules.Phase.OPENING, GameRules.Phase.GAME_OVER)
-	winner = GameRules.clamp_i(int(s.get("winner", -1)), -1, 2)
-	score = _pair(s.get("score"), 0, 0, 0, score_to_win())
-	draw_count = GameRules.clamp_i(int(s.get("draw_count", 0)), 0, round_cap())
+	winner = new_winner
+	score = new_score
+	draw_count = new_draws
 	cooldowns = _cooldowns(s.get("cooldowns"))
 	sealed_round = _pair(s.get("sealed_round"), -1, -1, -1, round_cap())
 	return true
@@ -253,8 +317,11 @@ func match_winner() -> int:
 ## 重开一小局：除 score / draw_count / mode / mastery 外全部复位（winner 重置为 -1，is_over() 恢复可开局）。
 ## 开局亮相（回合 1 点「攒」）的加分不在这里，由 PeerManager._do_opening() / BattleController._start_opening(true) 写入。
 ## 字段清单与 snapshot() 一致，缺一漏一都会导致重开后状态错位；资源上限按当前预设。
+## mode/mastery 必填（restore 契约）；仅限整场未结束时调用（会话层：round_end 且 not match_over）。
 func reset_round_keep_score() -> void:
 	restore({
+		"mode": mode,
+		"mastery": mastery,
 		"round": GameRules.OPENING_ROUND,
 		"hp": [max_hp(), max_hp()],
 		"qi": [0, 0],

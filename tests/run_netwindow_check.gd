@@ -113,6 +113,43 @@ func _check_lobby_countdown() -> void:
 	_exp("lobby config applied to client", client.state.mode == "classic")
 	host.leave()
 	client.leave()
+	_check_battle_start_failsafe()
+
+
+## I7 兜底：倒计时到 0 后 battle_start 迟迟不来 → 客户端必须在 ~8s 后离开 COUNTDOWN
+## （回入口），而不是永远挂在等待页。
+func _check_battle_start_failsafe() -> void:
+	var hp := LocalProvider.new()
+	var cp := LocalProvider.new()
+	hp.pair_with(cp)
+	var host := PeerManager.new()
+	root.add_child(host)
+	host.install_provider(hp, PeerManager.Mode.ENET)
+	var client := PeerManager.new()
+	root.add_child(client)
+	client.install_provider(cp, PeerManager.Mode.ENET)
+
+	host.host_game({"mode": PeerManager.Mode.ENET, "use_discover": false})
+	client.join_game({"mode": PeerManager.Mode.ENET})
+	_pump_pair(host, client)
+	host.accept_join()
+	_pump_pair(host, client)
+	host.set_ready(true)
+	client.set_ready(true)
+	_pump_pair(host, client)
+	_exp("failsafe: client in countdown", client.get_session() == PeerManager.Session.COUNTDOWN)
+
+	# 房主侧倒计时永不走完（模拟挂死）：客户端到 0 后开始等 battle_start
+	client.debug_tick_countdown(5000)
+	_exp("failsafe: countdown hit 0, still waiting",
+		client.get_session() == PeerManager.Session.COUNTDOWN)
+	client._process(3.0)
+	_exp("failsafe: patient within 8s", client.get_session() == PeerManager.Session.COUNTDOWN)
+	client._process(6.0)
+	_exp("failsafe: leaves countdown after timeout",
+		client.get_session() == PeerManager.Session.IDLE)
+	host.leave()
+	client.leave()
 
 
 func _pump_pair(a: PeerManager, b: PeerManager) -> void:

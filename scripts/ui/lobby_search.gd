@@ -6,6 +6,8 @@ const SEARCH_PATH := "res://scenes/lobby_search.tscn"
 const WAIT_SCENE := "res://scenes/lobby_wait.tscn"
 const NET_ENTRY_META := "xiongxiong_net_entry"
 const DISCOVER_SEC := 5.0
+## 加入请求等房主回应的上限：超时清掉 _joining 闩锁，避免「房主永远不应答 → 加入键永久灰死」（U3）
+const JOIN_TIMEOUT_SEC := 10.0
 ## 单屏不滚动：列表最多显示 3 个房间，其余只报数量
 const MAX_ROWS := 3
 
@@ -15,6 +17,7 @@ var _rows: Dictionary = {}
 var _more_label: Label
 var _state: String = "idle"
 var _joining: bool = false
+var _join_gen: int = 0
 var _search_gen: int = 0
 var _placeholder: Control
 var _state_label: Label
@@ -26,6 +29,8 @@ func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
 	UiNav.cleanup_overlays(get_tree())
 	UiNav.register_back_target(SEARCH_PATH, UiNav.MENU_SCENE, true)
+	# 系统返回必须走和「返回」按钮同一条清理路（stop_discover + leave），否则搜索会漏进菜单（U2）
+	UiNav.register_back_guard(SEARCH_PATH, _on_back_requested)
 	add_child(UiBackRouter.new())
 	_net = UiNav.net() as PeerManager
 	_build_ui()
@@ -50,6 +55,7 @@ func _build_ui() -> void:
 	add_child(title)
 
 	var margin := MarginContainer.new()
+	margin.name = "Margin"
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
 	margin.add_theme_constant_override("margin_left", 16)
 	margin.add_theme_constant_override("margin_right", 16)
@@ -58,6 +64,7 @@ func _build_ui() -> void:
 	add_child(margin)
 
 	var v := VBoxContainer.new()
+	v.name = "Content"
 	v.add_theme_constant_override("separation", 12)
 	margin.add_child(v)
 
@@ -93,6 +100,8 @@ func _build_ui() -> void:
 func _start_search() -> void:
 	if _net == null:
 		return
+	# 重新搜索 = 新一轮尝试：清掉旧的加入闩锁，否则上一次无应答会把「加入」永久锁死（U3）
+	_joining = false
 	if _net.get_session() != PeerManager.Session.IDLE:
 		_net.leave()
 	if _net.provider == null or _net.get_mode() != PeerManager.Mode.ENET:
@@ -111,7 +120,9 @@ func _start_search() -> void:
 	if err2 != OK:
 		_set_state("fail", "当前网络不支持搜索（%s）" % error_string(err2))
 		return
+	# 重扫 = 全清重建（U7：announce 只增不减，不存在「消失」的房间事件；旧的按 key 摘行分支是死代码，删）
 	_rooms.clear()
+	_clear_room_rows()
 	_render_rooms()
 	_set_state("searching", "正在搜索局域网房间…")
 	_search_gen += 1
@@ -138,7 +149,7 @@ func _on_search_timeout(gen: int) -> void:
 	if not is_inside_tree() or gen != _search_gen or _state != "searching" or _joining:
 		return
 	if _rooms.is_empty():
-		_set_state("empty", "没有找到房间，确认对方已创建房间")
+		_set_state("empty", "没有找到房间，确认对手已创建房间")
 	else:
 		_set_state("list", "发现 %d 个房间" % _rooms.size())
 		_render_rooms()
@@ -150,18 +161,25 @@ func _set_state(state: String, text: String) -> void:
 		_state_label.text = text
 
 
-func _render_rooms() -> void:
+## 重扫专用：旧房间行整批清掉（行只在重扫时消失，announce 增量不会减行）。
+func _clear_room_rows() -> void:
 	if _list == null:
 		return
-	# 先摘掉已消失的房间行，再给已有 key 补新行（同 key 的更新走 _on_room_found 的增量分支）
 	for key in _rows.keys():
-		if _rooms.has(key):
-			continue
 		var row: Control = _rows[key]
 		if is_instance_valid(row):
 			_list.remove_child(row)
 			row.queue_free()
-		_rows.erase(key)
+	_rows.clear()
+	if _more_label != null and is_instance_valid(_more_label):
+		_more_label.queue_free()
+		_more_label = null
+
+
+func _render_rooms() -> void:
+	if _list == null:
+		return
+	# 只补新行：同 key 的更新走 _on_room_found 的增量分支，减行只发生在重扫（_clear_room_rows）
 	var keys := _rooms.keys()
 	var shown := mini(keys.size(), MAX_ROWS)
 	for i in shown:
@@ -238,6 +256,20 @@ func _on_join(info: Dictionary) -> void:
 	if err != OK:
 		_joining = false
 		_status.text = "加入失败：%s" % error_string(err)
+		return
+	# 加入超时闩锁（U3）：房主不应答也要能重新加入 / 重新搜索
+	_join_gen += 1
+	var gen := _join_gen
+	get_tree().create_timer(JOIN_TIMEOUT_SEC).timeout.connect(_on_join_timeout.bind(gen))
+
+
+func _on_join_timeout(gen: int) -> void:
+	if not is_inside_tree() or gen != _join_gen or not _joining:
+		return
+	_joining = false
+	_status.text = "加入超时，房主未回应，请重新选择房间"
+	_set_state("list" if not _rooms.is_empty() else "empty",
+		"发现 %d 个房间" % _rooms.size() if not _rooms.is_empty() else "没有找到房间")
 
 
 func _on_join_answered(yes: bool) -> void:
@@ -265,3 +297,9 @@ func _back() -> void:
 	Engine.set_meta(NET_ENTRY_META, true)
 	UiNav.cleanup_overlays(get_tree())
 	get_tree().change_scene_to_file(UiNav.MENU_SCENE)
+
+
+## 系统返回键守卫：与「返回」按钮同一条清理路（stop_discover + leave），已接管返回 true（U2）。
+func _on_back_requested() -> bool:
+	_back()
+	return true

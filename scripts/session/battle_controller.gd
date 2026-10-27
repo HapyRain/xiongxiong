@@ -25,9 +25,38 @@ var _did_lock_fill: bool = false
 var _did_settle: bool = false
 
 
-## 开局由 start_match(cfg) 触发，_ready 不再自动开打（避免没选模式就进对局）。
+## 契约：_ready 绝不自动开局。所有入口（main.gd、测试）必须显式调用 start_match(cfg)，
+## 否则对局停在未初始化状态（window_seconds()==0）。「避免没选模式就进对局」是这条契约的由来。
 func _ready() -> void:
 	pass
+
+
+## ── UI 只读访问器：表现层只许走这些，不许读 _select_left/_resolving 等私有字段 ──
+
+## 当前选招窗总时长（秒）；未 start_match 前为 0。
+func window_seconds() -> float:
+	return _window_total
+
+
+## 当前选招窗剩余（秒）。
+func select_left() -> float:
+	return _select_left
+
+
+func resolving() -> bool:
+	return _resolving
+
+
+func did_settle() -> bool:
+	return _did_settle
+
+
+func did_lock_fill() -> bool:
+	return _did_lock_fill
+
+
+func opening_done() -> bool:
+	return _opening_done
 
 
 ## 单人开局入口。cfg = {mode:"classic"|"lesson", mastery:bool, difficulty:"normal"|"hard"}
