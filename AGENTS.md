@@ -118,11 +118,11 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 ## 当前状态（2026-10-27）
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（155 条）；**8 个自检 784 条断言全绿**。
-- **UI 已有 v2 §8 技能条**：13 技能格 + CD/解锁角标 + 顶部分数条（单机/联机都有）；视觉仍是一次性实现，随前端重做再换。
-- 本轮**初版全功能**：经典/课间双模式（规则预设）、单人难度、技能精通、联机房间/搜索/准备/5s 倒计时/离开回落、12 屏占位 UI、返回路由与二次确认、第 8 个 UI 冒烟自检。桌面/真机视觉仍是占位（`【占位】`），下一阶段做前端重做。
-- `main` 头部 **`2190e2f`**：初版全功能（`6f4edd9`）+ MCP 使用顺序文档。**未提交：2026-10-27 全量 review 修复批次**（多角度审查后修 3 Critical + 全部 Important/Minor：ENet 身份劫持/陌生对端 DoS、重放闸补全、双镜像 ㉖ 对称、restore 防篡改、模式外动作消毒、lobby 守卫三件套、UI 信号卫生/返回键清理等，29 文件）——本机复跑 8 自检（784 断言）+ Python 镜像（155 条）全绿。
-- 工作区未提交项：review 修复批次（见上）、`build/xiongxiong-debug.apk`（73MB 跟踪文件，重新导出后常驻改动）与 `build/gh_proxy.py`、`build/git_push_via_proxy.py`、`build/start_gh_proxy.bat`（未跟踪的代理辅助脚本）。是否提交、APK 是否停跟踪由用户决定。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（157 条）；**8 个自检 791 条断言全绿**。
+- **UI 已重构（`16b3df3`）**：竖屏**双层技能盘**——底部 3 主键【防御】【攒气】【包子】（包子连点 `BAO1→BAO2→BAO3→循环`，受当前气约束）+ 课间模式 2×4 进阶槽 8 格（按 1–8 分解锁）；classic 模式只显 3 主键。技能名统一 **2 字别名**（`GameRules.action_short_name`，硬约束 `length()==2`），耗气/CD/解锁门槛走独立角标子节点，**不往 `Button.text` 里拼接**；「元气潮玩对决风」色板（`scripts/ui/ui_theme.gd`）。全界面已**无 `【占位】` 残留**，单机/联机均为真实血气盾 HUD（`me_*` / `opp_*`）。
+- 本轮**初版全功能**：经典/课间双模式（规则预设）、单人难度、技能精通、联机房间/搜索/准备/5s 倒计时/离开回落、返回路由与二次确认、第 8 个 UI 冒烟自检（`run_ui_check`）。
+- `main` 头部 **`16b3df3`**：合并 UI 重构迭代（双层技能盘 / 新色板 / 去占位）+ 修聚光灯连接泄漏。上一版 `1253f10` = review 修复批次（ENet 身份劫持/陌生对端 DoS、重放闸补全、双镜像 ㉖ 对称、restore 防篡改、模式外动作消毒、lobby 守卫三件套、UI 信号卫生/返回键清理等，29 文件）+ 重新导出 APK。
+- 工作区未提交项：`build/xiongxiong-debug.apk`（73MB 跟踪文件，重新导出后常驻改动）。**`other/`（UI 迭代副本）与 `docs/xiongxiong_ui_redesign_plan.md` 已进 `.gitignore`，不入库**。APK 是否提交 / 是否停跟踪由用户决定。
 - 本机已装引擎 + `.godot` 已导入；Android 导出链已装好，`build\xiongxiong-debug.apk` 已用本机 debug key 打出（v2+v3 签名，包名 `com.xiongxiong.demo`）。
 - 用户已真机试玩联机流程，**体感无阻塞 bug**；真机当前仍未连接。
 - 换机器后：按 `WORKSPACE.md` 补引擎/模板/JDK/SDK，再跑 `build\setup_android_env.ps1`；脚本里所有路径都已不再写死旧机。

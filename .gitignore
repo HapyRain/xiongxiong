@@ -13,6 +13,10 @@ Thumbs.db
 # 本机环境交接（不入库，勿推送）
 docs/ENVIRONMENT.md
 
+# UI 迭代副本与设计稿（不入库）
+other/
+docs/xiongxiong_ui_redesign_plan.md
+
 # agent 工具本地目录
 .commandcode/
 
