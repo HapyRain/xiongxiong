@@ -23,8 +23,8 @@ const CONFIG := {
 		"glow_enabled": false,
 		"post_process_count": 0,
 		"fx_viewport_scale": 0.5,
-		"shader_complexity": 0,          # 0=modulate, 1=基础UV, 2=流光/扭曲
-		"tween_duration_scale": 0.75,    # <1 缩短动效时长
+		"shader_complexity": 0,
+		"tween_duration_scale": 0.75,
 		"fxaa": true,
 		"light2d_shadows": false,
 	},
@@ -42,7 +42,7 @@ const CONFIG := {
 		"light2d_shadows": false,
 	},
 	Tier.HIGH: {
-		"fps_target": 120,               # 运行时用 FpsGuard.resolve_high_fps() 压到 90/120
+		"fps_target": 120,
 		"vsync_mode": DisplayServer.VSYNC_ENABLED,
 		"particle_scale": 1.0,
 		"max_fx_instances": 12,
@@ -58,13 +58,14 @@ const CONFIG := {
 
 # ---- 当前状态 ----
 var tier: int = Tier.MID
-var auto_preset: bool = true          # true=启动自动预设；false=玩家手动
-var fps_cap_override: int = 0         # 0=跟随档位；否则强制分段帧率
+var auto_preset: bool = true
+var fps_cap_override: int = 0
 var device_probe: Dictionary = {}
 var last_applied: Dictionary = {}
 
-# 特效层降采样挂点（预留；主场景暂无特效 SubViewport 时为空）
 var _fx_viewports: Array[SubViewport] = []
+var _entry_layer: CanvasLayer = null
+var _last_scene: Node = null
 
 
 func _ready() -> void:
@@ -73,62 +74,84 @@ func _ready() -> void:
 	_inject_settings_button()
 
 
-## 主场景可不改逻辑：由 autoload 在角落挂一个齿轮入口。
-func _inject_settings_button() -> void:
+func _process(_delta: float) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
-	# 对局里由「菜单」入口打开同一面板；autoload _ready 时 current_scene 可能尚空，改在 tree 上延迟判定
 	var tree := get_tree()
 	if tree == null:
 		return
-	tree.node_added.connect(_on_node_added_for_settings, CONNECT_ONE_SHOT)
+	if tree.current_scene != _last_scene:
+		_last_scene = tree.current_scene
+		_try_attach_settings_btn()
+
+
+## 主场景可不改逻辑：由 autoload 在角落挂一个设置入口，但对局场景与主菜单（自带菜单/设置键）自动隐藏，杜绝右上角叠按钮 Bug。
+func _inject_settings_button() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	if not tree.node_added.is_connected(_on_node_added_for_settings):
+		tree.node_added.connect(_on_node_added_for_settings)
 	_try_attach_settings_btn()
 
 
 func _on_node_added_for_settings(_n: Node) -> void:
-	_try_attach_settings_btn()
+	_try_attach_settings_btn.call_deferred()
 
 
 func _try_attach_settings_btn() -> void:
 	var tree := get_tree()
 	if tree == null or tree.root == null:
 		return
-	# 齿轮挂在 autoload 自己身上（QualitySettings/SettingsEntryLayer/...），
-	# 按 root 固定路径查不到 → 用 group 判重；否则启动时 _ready + node_added 会各建一个重叠齿轮
-	if tree.get_first_node_in_group(UiNav.SETTINGS_ENTRY_GROUP) != null:
-		return
 	var scene_path := ""
+	var scene_name := ""
 	if tree.current_scene != null:
 		scene_path = str(tree.current_scene.scene_file_path)
-	# 对局场景不挂齿轮，避免与「菜单」叠按钮
-	if scene_path.ends_with("main.tscn") or scene_path.ends_with("net_battle.tscn"):
+		scene_name = str(tree.current_scene.name)
+	# 对局场景（main / net_battle）与主菜单（menu）均自带「菜单/设置」按钮，隐藏常驻浮动设置键，彻底消除右上角重合
+	var should_hide := (
+		scene_path.ends_with("main.tscn")
+		or scene_path.ends_with("net_battle.tscn")
+		or scene_path.ends_with("menu.tscn")
+		or scene_name in ["Main", "NetBattle", "Menu"]
+		or tree.root.get_node_or_null("Main") != null
+		or tree.root.get_node_or_null("NetBattle") != null
+	)
+	var existing := tree.get_first_node_in_group(UiNav.SETTINGS_ENTRY_GROUP) as Control
+	if existing != null:
+		existing.visible = not should_hide
+		if _entry_layer != null and is_instance_valid(_entry_layer):
+			_entry_layer.visible = not should_hide
 		return
-	var layer := CanvasLayer.new()
-	layer.name = "SettingsEntryLayer"
-	layer.layer = 50
-	add_child(layer)
+	if should_hide:
+		return
+
+	_entry_layer = CanvasLayer.new()
+	_entry_layer.name = "SettingsEntryLayer"
+	_entry_layer.layer = 50
+	add_child(_entry_layer)
 
 	var btn := Button.new()
 	btn.name = "SettingsButton"
 	btn.add_to_group(UiNav.SETTINGS_ENTRY_GROUP)
 	btn.text = "设置"
 	btn.tooltip_text = "画质 / 帧率设置"
-	# 贴最右，给对局内「菜单」留出左侧位置，避免重叠
 	btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	btn.offset_left = -44
+	btn.offset_left = -56
 	btn.offset_top = 8
-	btn.offset_right = -8
-	btn.offset_bottom = 40
-	btn.add_theme_font_size_override("font_size", 16)
+	btn.offset_right = -10
+	btn.offset_bottom = 38
+	btn.add_theme_font_size_override("font_size", 14)
 	btn.pressed.connect(_open_settings_panel)
-	layer.add_child(btn)
+	_entry_layer.add_child(btn)
 
 
 func _open_settings_panel() -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
-	# 避免重复打开（面板会把自己搬进 SettingsPanelLayer，只能按 group 查）
 	if UiNav.is_settings_open(tree):
 		return
 	var panel_scene: PackedScene = load("res://scenes/settings_panel.tscn")
@@ -155,7 +178,6 @@ func tier_name(t: int = -1) -> String:
 	return "中"
 
 
-## 目标帧率：高档自适配刷新率；可被 fps_cap_override 覆盖。
 func get_target_fps() -> int:
 	if fps_cap_override > 0:
 		return FpsGuard.snap_to_segment(fps_cap_override)
@@ -166,7 +188,6 @@ func get_target_fps() -> int:
 	return FpsGuard.snap_to_segment(base)
 
 
-## 玩家手动切档并持久化。
 func set_tier(t: int, manual: bool = true) -> void:
 	t = clampi(t, Tier.LOW, Tier.HIGH)
 	var changed := t != tier
@@ -179,7 +200,6 @@ func set_tier(t: int, manual: bool = true) -> void:
 	save_settings()
 
 
-## 恢复自动预设（重跑探测）。
 func restore_auto() -> void:
 	device_probe = probe_device()
 	tier = int(device_probe.get("auto_tier", Tier.MID))
@@ -190,12 +210,10 @@ func restore_auto() -> void:
 	save_settings()
 
 
-## 立即应用当前档位到引擎 / 特效层。
 func apply() -> void:
 	var c := get_config()
 	var applied_fps := FpsGuard.apply(get_target_fps(), int(c["vsync_mode"]))
 
-	# 特效层 SubViewport 降采样（UI 层不进 SubViewport，保持全分辨率）
 	var fx_scale := float(c["fx_viewport_scale"])
 	for vp in _fx_viewports:
 		if not is_instance_valid(vp):
@@ -217,7 +235,7 @@ func apply() -> void:
 	settings_applied.emit(tier)
 
 
-# ---------- 特效层挂载（预留 SubViewport 降采样） ----------
+# ---------- 特效层挂载 ----------
 
 func register_fx_viewport(vp: SubViewport) -> void:
 	if vp == null or _fx_viewports.has(vp):
@@ -231,7 +249,6 @@ func unregister_fx_viewport(vp: SubViewport) -> void:
 
 
 func _apply_fx_viewport(vp: SubViewport, scale: float) -> void:
-	# UI 不缩放：只缩特效渲染目标。scale≈0.5 → 填充约 1/4。
 	var base := vp.size
 	if base.x <= 0 or base.y <= 0:
 		base = Vector2i(390, 820)
@@ -243,7 +260,7 @@ func _apply_fx_viewport(vp: SubViewport, scale: float) -> void:
 	vp.size_2d_override_stretch = true
 
 
-# ---------- 启动探测启发式（§4.2） ----------
+# ---------- 启动探测启发式 ----------
 
 func probe_device() -> Dictionary:
 	var mem := OS.get_memory_info()
@@ -257,7 +274,6 @@ func probe_device() -> Dictionary:
 		gpu = RenderingServer.get_video_adapter_name()
 
 	var score := 0
-	# RAM 权重高
 	if physical_mb > 0:
 		if physical_mb < 3 * 1024:
 			score += 1
@@ -266,15 +282,13 @@ func probe_device() -> Dictionary:
 		else:
 			score += 3
 	else:
-		score += 2  # 读不到就按中端
+		score += 2
 
-	# 刷新率
 	if refresh >= 90.0:
 		score += 2
 	elif refresh >= 60.0:
 		score += 1
 
-	# CPU 核数
 	if cores <= 4:
 		score += 1
 	elif cores <= 8:
@@ -282,7 +296,6 @@ func probe_device() -> Dictionary:
 	else:
 		score += 3
 
-	# GPU 黑名单一票否决 / 白名单抬升
 	var gpu_l := gpu.to_lower()
 	if gpu_l != "":
 		for bad: String in ["mali-4", "mali-450", "adreno 5", "adreno 3", "powervr", "intel hd graphics"]:
@@ -328,7 +341,6 @@ func save_settings() -> void:
 	cf.set_value(SECTION, "probe_ram_mb", int(p.get("physical_mb", 0)))
 	cf.set_value(SECTION, "probe_cores", int(p.get("cpu_cores", 0)))
 	cf.set_value(SECTION, "probe_gpu", str(p.get("gpu_name", "")))
-	# 先写临时文件再替换，减半写损坏
 	var tmp := SETTINGS_PATH + ".tmp"
 	var err := cf.save(tmp)
 	if err == OK:
@@ -346,7 +358,6 @@ func load_settings() -> void:
 	var cf := ConfigFile.new()
 	var err := cf.load(SETTINGS_PATH)
 	if err != OK:
-		# 首次启动：自动预设
 		tier = int(device_probe.get("auto_tier", Tier.MID))
 		auto_preset = true
 		fps_cap_override = 0
@@ -359,6 +370,5 @@ func load_settings() -> void:
 	auto_preset = saved_auto
 	fps_cap_override = int(cf.get_value(SECTION, "fps_cap", 0))
 
-	# 玩家手动档优先；无手动档则用本次探测结果
 	if auto_preset:
 		tier = int(device_probe.get("auto_tier", Tier.MID))

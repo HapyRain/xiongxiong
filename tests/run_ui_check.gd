@@ -259,8 +259,11 @@ func _check_screen() -> void:
 			_exp("main: classic 三个出招按钮", _count_action_buttons(cs) == 3)
 			_exp("main: 对手真实血气盾 HUD", _find_named(cs, "opp_hp") != null and _find_named(cs, "opp_qi") != null and _find_named(cs, "opp_shield") != null)
 			_exp("main: 我方真实血气盾 HUD", _find_named(cs, "me_hp") != null and _find_named(cs, "me_qi") != null and _find_named(cs, "me_shield") != null)
+			_exp("main: MOBA 反馈横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
+			_exp("main: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 			_exp("main: 无【占位】残留", not flat.contains("【占位】"))
 			_exp("main: 技能按钮主文案严格为 2 个汉字", _all_action_buttons_two_chars(cs))
+			_check_ticker_five_lines(_find_named(cs, "BattleTicker") as PanelContainer)
 			# U7：槽位命名与内容一致（OppSlot，不是 YouSlot）
 			_exp("main: OppSlot 命名与内容一致",
 				_find_named(cs, "OppSlot") != null and _find_named(cs, "YouSlot") == null)
@@ -271,6 +274,8 @@ func _check_screen() -> void:
 				_exp("net_battle: lesson 双层技能盘 11 键", _count_action_buttons(cs) == 11)
 				_exp("net_battle: lesson 含攒气", _has_button_prefix(cs, "攒气"))
 				_exp("net_battle: lesson 技能按钮主文案严格 2 字", _all_action_buttons_two_chars(cs))
+				_exp("net_battle: MOBA 横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
+				_exp("net_battle: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 				_exp("net_battle: lesson 无【占位】残留", not flat.contains("【占位】"))
 			else:
 				_exp("net_battle: classic 攒/包子/防御",
@@ -743,6 +748,25 @@ func _all_action_buttons_two_chars(node: Node) -> bool:
 			if str((n as Button).text).length() != 2:
 				st["ok"] = false)
 	return bool(st["ok"]) and int(st["n"]) > 0
+
+
+func _settings_entry_hidden() -> bool:
+	var btn := get_first_node_in_group(UiNav.SETTINGS_ENTRY_GROUP) as Control
+	return btn == null or not btn.is_visible_in_tree()
+
+
+func _check_ticker_five_lines(ticker: PanelContainer) -> void:
+	_exp("ticker: 初始实例有效", ticker != null)
+	if ticker == null:
+		return
+	for i in 7:
+		BattleFx.push_ticker_line(ticker, "R%02d 测试记录 %d" % [i + 1, i + 1])
+	var hist: Array = ticker.get_meta("history", [])
+	_exp("ticker: 最多保留 5 条记录（前 5 轮）", hist.size() == 5 and str(hist[0]).begins_with("R03") and str(hist[4]).begins_with("R07"))
+	BattleFx.clear_ticker(ticker)
+	_exp("ticker: clear_ticker 清空", (ticker.get_meta("history", []) as Array).is_empty())
+	_exp("audio: BGM 与新增音效可加载", BattleFx.load_wav_safe("bgm_battle.wav", true) != null and BattleFx.load_wav_safe("block_success.wav") != null)
+	_exp("ui_tex: 技能图标与状态遮罩可加载", UiTheme.load_ui_texture("icon_zan.png") != null and UiTheme.load_ui_texture("state_cd_overlay.png") != null)
 
 
 func _walk(node: Node, cb: Callable) -> void:

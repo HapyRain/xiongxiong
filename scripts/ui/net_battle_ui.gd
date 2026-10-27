@@ -1,6 +1,8 @@
 ## net_battle_ui.gd
-## 竖版联机对局 UI：对手在上 / 中央亮招对撞舞台 / 我方状态与双层拇指技能盘在下。
-## 热座入口已移除（底层 HOTSEAT 仅测试）；对手离开 → 人机接管提示并继续。
+## 竖版联机对局 UI（v2 满配视听反馈版）：
+##   顶部：比分条 + 右上角唯一「菜单」按钮（已修复与 QualitySettings 设置按钮重合 Bug）+ 对手状态卡
+##   中部：正中偏上 MOBA 击杀感博弈横幅 + 双侧带实时图标的亮招对撞卡 + 左侧拍点进度条 + 右下「5 轮打字机上推战报栏」
+##   底部：我方状态卡 + 四态双层拇指技能盘（含禁用点击拒绝抖动与音效）+ 随回合推进紧绷感 BGM
 extends Control
 
 const SCENE := "res://scenes/net_battle.tscn"
@@ -10,8 +12,10 @@ var _status_label: Label
 var _round_label: Label
 var _log_label: Label
 var _score_label: Label
-var _arena_me_card: Label
-var _arena_you_card: Label
+var _moba_banner: PanelContainer
+var _ticker: PanelContainer
+var _me_duel_card: PanelContainer
+var _you_duel_card: PanelContainer
 var _tempo_root: Control
 var _tempo_bg: ColorRect
 var _tempo_fill: ColorRect
@@ -24,15 +28,12 @@ var _me_hp_row: HBoxContainer
 var _me_qi_row: HBoxContainer
 var _you_hp_row: HBoxContainer
 var _you_qi_row: HBoxContainer
+var _me_panel: PanelContainer
+var _you_panel: PanelContainer
 var _fx_layer: Control
 var _reveal_layer: CanvasLayer
 var _spot_layer: Control
-var _sfx_clap: AudioStream
-var _sfx_ding: AudioStream
-var _sfx_hit: AudioStream
-var _sfx_block: AudioStream
-var _sfx_zan: AudioStream
-var _sfx_players: Array = []
+var _audio_bank: Dictionary = {}
 
 ## 封存 / 同意 / 倒计时 / 终局遮罩
 var _overlay: Control
@@ -44,7 +45,6 @@ var _btn_menu: Button
 var _btn_rematch: Button
 var _overlay_mode: String = ""
 var _result_card: Control
-## 返回菜单二次确认（返回键 / 遮罩「返回菜单」都走这里，确认前不切场景）
 var _leave_dialog: Control
 
 
@@ -57,16 +57,15 @@ func _ready() -> void:
 	controller.name = "NetworkedBattleController"
 	add_child(controller)
 	controller.attach(Net)
+	_audio_bank = BattleFx.setup_audio_bank(self)
 	_build_ui()
 	_build_overlay()
-	_setup_audio()
 	controller.beat.connect(_on_beat)
 	controller.preselect_changed.connect(_on_preselect)
 	controller.phase_changed.connect(_on_phase)
 	controller.round_resolved.connect(_on_resolved)
 	controller.game_over.connect(_on_game_over)
 	controller.status_text.connect(_on_controller_status)
-	# U1：Net 是 autoload，比场景命长；具名连接保证场景释放时自动断开
 	Net.actions_revealed.connect(_on_reveal_actions)
 	Net.peer_left.connect(_on_peer_left)
 	Net.ai_takeover_started.connect(_on_ai_takeover)
@@ -77,6 +76,8 @@ func _ready() -> void:
 	Net.session_restored.connect(_on_session_restored)
 	Net.battle_started.connect(_on_net_battle_started)
 	controller.begin()
+	BattleFx.start_bgm(_audio_bank)
+	BattleFx.play_named_sfx(_audio_bank, "game_start", -2.0)
 	_on_phase(controller.state.phase, controller.state.round)
 	_refresh_all()
 
@@ -102,16 +103,13 @@ func _build_ui() -> void:
 	_fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_fx_layer)
 
-	# 右上角：设置/菜单（避开 QualitySettings 的 ⚙）
-	var top_menu := Button.new()
-	top_menu.text = "菜单"
+	# 右上角唯一「菜单」按钮（QualitySettings 已在对局场景自动隐藏常驻设置键，无重叠）
+	var top_menu := UiTheme.make_btn("菜单", UiTheme.BG_CARD, UiTheme.INK, 13, 32)
 	top_menu.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	top_menu.offset_left = -108
+	top_menu.offset_left = -68
 	top_menu.offset_top = 8
-	top_menu.offset_right = -52
+	top_menu.offset_right = -12
 	top_menu.offset_bottom = 40
-	top_menu.add_theme_font_size_override("font_size", 14)
-	top_menu.add_theme_color_override("font_color", UiTheme.INK)
 	top_menu.pressed.connect(_on_top_menu)
 	BattleFx.bind_press(top_menu, "menu")
 	add_child(top_menu)
@@ -121,25 +119,32 @@ func _build_ui() -> void:
 	margin.add_theme_constant_override("margin_left", 12)
 	margin.add_theme_constant_override("margin_right", 12)
 	margin.add_theme_constant_override("margin_top", 44)
-	margin.add_theme_constant_override("margin_bottom", 10)
+	margin.add_theme_constant_override("margin_bottom", 8)
 	add_child(margin)
 
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
+	v.add_theme_constant_override("separation", 5)
 	margin.add_child(v)
 
-	# 分数条（顶部）：我 = 本地角色座位
-	_score_label = UiTheme.ink_label("", 14, UiTheme.INK_SOFT)
-	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(_score_label)
+	# 分数条（顶部）
+	var top_bar := HBoxContainer.new()
+	top_bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	top_bar.add_theme_constant_override("separation", 10)
+	v.add_child(top_bar)
+
+	_round_label = UiTheme.ink_label("回合 1/40", 13, UiTheme.INK_SOFT)
+	top_bar.add_child(_round_label)
+
+	_score_label = UiTheme.ink_label("", 13, UiTheme.INK)
+	top_bar.add_child(_score_label)
 
 	# 对手（上）
-	var you_panel := PanelContainer.new()
-	you_panel.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, UiTheme.WAVE.lightened(0.35), 2))
-	v.add_child(you_panel)
+	_you_panel = PanelContainer.new()
+	_you_panel.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, UiTheme.WAVE.lightened(0.35), 2))
+	v.add_child(_you_panel)
 	var you_v := VBoxContainer.new()
-	you_v.add_theme_constant_override("separation", 4)
-	you_panel.add_child(you_v)
+	you_v.add_theme_constant_override("separation", 3)
+	_you_panel.add_child(you_v)
 	var you_head := HBoxContainer.new()
 	you_v.add_child(you_head)
 	var you_title := UiTheme.ink_label("对手", 15, UiTheme.INK)
@@ -151,90 +156,81 @@ func _build_ui() -> void:
 	you_head.add_child(you_wait)
 	you_v.add_child(_make_stat_row("you", _you_boxes))
 
-	# 中央对撞舞台
+	# 中央对撞舞台（上偏中 MOBA 横幅 + 中央亮招卡 + 左下拍点条 + 右下 5 轮打字机战报）
 	var center := VBoxContainer.new()
 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	center.alignment = BoxContainer.ALIGNMENT_CENTER
-	center.add_theme_constant_override("separation", 4)
+	center.add_theme_constant_override("separation", 5)
 	v.add_child(center)
 
 	_takeover_banner = Label.new()
 	_takeover_banner.text = ""
 	_takeover_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_takeover_banner.add_theme_font_size_override("font_size", 14)
+	_takeover_banner.add_theme_font_size_override("font_size", 13)
 	_takeover_banner.add_theme_color_override("font_color", UiTheme.DANGER)
 	_takeover_banner.visible = false
 	center.add_child(_takeover_banner)
 
-	_round_label = UiTheme.ink_label("回合 -", 13, UiTheme.INK_SOFT)
-	_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	center.add_child(_round_label)
-	_status_label = UiTheme.ink_label("对局", 19, UiTheme.INK)
+	_moba_banner = BattleFx.make_moba_banner()
+	center.add_child(_moba_banner)
+
+	_status_label = UiTheme.ink_label("对局", 14, UiTheme.INK_SOFT)
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_status_label.visible = false
 	center.add_child(_status_label)
 
 	var duel_row := HBoxContainer.new()
 	duel_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	duel_row.add_theme_constant_override("separation", 14)
+	duel_row.add_theme_constant_override("separation", 12)
 	center.add_child(duel_row)
-	duel_row.add_child(_make_arena_slot("我", UiTheme.ACCENT, true))
-	duel_row.add_child(UiTheme.ink_label("VS", 15, UiTheme.INK_FAINT))
-	duel_row.add_child(_make_arena_slot("对手", UiTheme.WAVE, false))
+	_me_duel_card = BattleFx.make_duel_card("我", UiTheme.ACCENT)
+	_you_duel_card = BattleFx.make_duel_card("对手", UiTheme.WAVE)
+	duel_row.add_child(_me_duel_card)
+	duel_row.add_child(UiTheme.ink_label("⚡VS⚡", 14, UiTheme.INK_FAINT))
+	duel_row.add_child(_you_duel_card)
 
-	_tempo_root = _make_tempo_bar()
-	center.add_child(_tempo_root)
+	var lower_row := HBoxContainer.new()
+	lower_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	lower_row.add_theme_constant_override("separation", 8)
+	center.add_child(lower_row)
 
-	_log_label = UiTheme.ink_label("……", 12, UiTheme.INK_SOFT)
+	var tempo_wrap := _make_tempo_bar()
+	tempo_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lower_row.add_child(tempo_wrap)
+
+	_ticker = BattleFx.make_battle_ticker()
+	lower_row.add_child(_ticker)
+
+	_log_label = UiTheme.ink_label("……", 11, UiTheme.INK_SOFT)
 	_log_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_log_label.visible = false
 	center.add_child(_log_label)
 
-	# 我方（下）：状态卡 + 双层拇指技能盘
-	var me_panel := PanelContainer.new()
-	me_panel.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, UiTheme.SHIELD.lightened(0.35), 2))
-	v.add_child(me_panel)
+	# 我方（下）：状态卡 + 双层四态拇指技能盘
+	_me_panel = PanelContainer.new()
+	_me_panel.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, UiTheme.SHIELD.lightened(0.35), 2))
+	v.add_child(_me_panel)
 	var me_v := VBoxContainer.new()
-	me_v.add_theme_constant_override("separation", 6)
-	me_panel.add_child(me_v)
+	me_v.add_theme_constant_override("separation", 5)
+	_me_panel.add_child(me_v)
 	var me_title := UiTheme.ink_label("我", 15, UiTheme.INK)
 	me_v.add_child(me_title)
 	me_v.add_child(_make_stat_row("me", _me_boxes))
 	me_v.add_child(_make_skill_deck(0, _me_btns))
 
 
-func _make_arena_slot(title_str: String, accent: Color, is_me: bool) -> PanelContainer:
-	var p := PanelContainer.new()
-	p.custom_minimum_size = Vector2(120, 60)
-	p.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, accent, 2))
-	var box := VBoxContainer.new()
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_theme_constant_override("separation", 2)
-	p.add_child(box)
-	var t := UiTheme.ink_label(title_str, 11, UiTheme.INK_SOFT)
-	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(t)
-	var act_lab := UiTheme.ink_label("待命", 20, accent.darkened(0.1))
-	act_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(act_lab)
-	if is_me:
-		_arena_me_card = act_lab
-	else:
-		_arena_you_card = act_lab
-	return p
-
-
 func _make_tempo_bar() -> Control:
 	var wrap := VBoxContainer.new()
+	wrap.alignment = BoxContainer.ALIGNMENT_CENTER
 	wrap.add_theme_constant_override("separation", 4)
-	wrap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var cap := UiTheme.ink_label("出招节奏", 11, UiTheme.INK_FAINT)
+	var cap := UiTheme.ink_label("拍点节奏", 11, UiTheme.INK_FAINT)
 	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	wrap.add_child(cap)
 
 	_tempo_root = Control.new()
-	_tempo_root.custom_minimum_size = Vector2(200, 12)
+	_tempo_root.custom_minimum_size = Vector2(128, 12)
 	_tempo_root.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_tempo_root.clip_contents = true
 	_tempo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -273,7 +269,7 @@ func _process(_delta: float) -> void:
 	var left: float = controller.select_left()
 	var elapsed: float = win - left
 	var t: float = clampf(elapsed / maxf(win, 0.01), 0.0, 1.0)
-	var w: float = _tempo_root.size.x if _tempo_root.size.x > 0 else 200.0
+	var w: float = _tempo_root.size.x if _tempo_root.size.x > 0 else 128.0
 	_tempo_fill.size = Vector2(w * t, 12)
 	if t >= 0.82:
 		_tempo_fill.color = UiTheme.DANGER
@@ -323,7 +319,6 @@ func _make_stat_row(prefix: String, boxes: Array) -> VBoxContainer:
 	return col
 
 
-## 双层拇指技能盘：上排 2×4 进阶技能槽（仅课间模式）+ 下排 3 大核心主键（防/攒/包连点）。
 func _make_skill_deck(who: int, btns: Dictionary) -> VBoxContainer:
 	var s: BattleState = controller.state
 	var deck := VBoxContainer.new()
@@ -338,10 +333,10 @@ func _make_skill_deck(who: int, btns: Dictionary) -> VBoxContainer:
 		grid.add_theme_constant_override("v_separation", 6)
 		for a in GameRules.ADVANCED_SKILLS:
 			var act := int(a)
-			var b := UiTheme.make_skill_slot(act, false)
+			var b := UiTheme.make_skill_slot(act, false, _on_skill_rejected)
 			var seat: int = who
 			b.pressed.connect(func(): _on_pick(seat, act))
-			BattleFx.bind_press(b, "fang" if GameRules.is_defense(act) else "bo")
+			BattleFx.bind_press(b, GameRules.action_category(act))
 			grid.add_child(b)
 			btns[act] = b
 		deck.add_child(grid)
@@ -351,7 +346,7 @@ func _make_skill_deck(who: int, btns: Dictionary) -> VBoxContainer:
 	primary_row.add_theme_constant_override("separation", 8)
 	for a in GameRules.PRIMARY_ACTIONS:
 		var act := int(a)
-		var b := UiTheme.make_skill_slot(act, true)
+		var b := UiTheme.make_skill_slot(act, true, _on_skill_rejected)
 		var seat: int = who
 		if act == GameRules.Action.BAO1:
 			b.pressed.connect(func(): _on_bao_pick(seat))
@@ -367,6 +362,11 @@ func _make_skill_deck(who: int, btns: Dictionary) -> VBoxContainer:
 
 	deck.add_child(primary_row)
 	return deck
+
+
+func _on_skill_rejected(_act: int, reason: String) -> void:
+	BattleFx.play_named_sfx(_audio_bank, "ui_deny", -2.0)
+	BattleFx.show_moba_banner(_moba_banner, reason, "请改选其它可用招式", UiTheme.DANGER, true)
 
 
 func _on_bao_pick(who: int) -> void:
@@ -448,7 +448,7 @@ func _build_overlay() -> void:
 	btn_col.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.add_child(btn_col)
 
-	_btn_continue = UiTheme.make_btn("继续", UiTheme.OK, Color.WHITE, 17, 48)
+	_btn_continue = UiTheme.make_btn("继续", UiTheme.OK_GREEN, Color.WHITE, 17, 48)
 	_btn_continue.custom_minimum_size = Vector2(200, 48)
 	_btn_continue.pressed.connect(func():
 		Net.submit_resume_vote(true)
@@ -583,13 +583,7 @@ func _on_beat(_n: int) -> void:
 	var clap_pitch := 1.0
 	if controller != null and controller.state != null:
 		clap_pitch = BattleTempo.clap_pitch(controller.state.round)
-	for p: AudioStreamPlayer in _sfx_players:
-		if p.stream == _sfx_clap and p.playing:
-			p.pitch_scale = clap_pitch
-	_play_sfx(_sfx_clap, -2.0)
-	for p: AudioStreamPlayer in _sfx_players:
-		if p.stream == _sfx_clap and p.playing:
-			p.pitch_scale = clap_pitch
+	BattleFx.play_named_sfx(_audio_bank, "clap", -1.5, clap_pitch)
 	if _status_label != null and controller != null and controller.window_open():
 		_status_label.text = "出招中"
 
@@ -597,31 +591,54 @@ func _on_beat(_n: int) -> void:
 func _on_resolved(result: Dictionary) -> void:
 	_hide_spotlight()
 	var mine: int = Net.get_local_role()
+	if mine != 0 and mine != 1:
+		mine = 0
 	var texts: Array = result.get("texts", [])
 	var text := str(texts[mine]) if texts.size() > mine else str(result.get("text", ""))
 	_log(text)
 	if not bool(result.get("opening", false)) and text != "":
 		_status_label.text = text
-	var acts: Array = result.get("actions", [-1, -1])
-	if acts.size() >= 2:
-		if _arena_me_card != null:
-			_arena_me_card.text = GameRules.action_short_name(int(acts[mine]))
-		if _arena_you_card != null:
-			_arena_you_card.text = GameRules.action_short_name(int(acts[1 - mine]))
 	_refresh_all()
 	_play_reveal_cards(result)
-	_play_impact_fx(result)
-	_play_impact_sfx(result)
+	if _fx_layer != null and _fx_layer.get_parent() != null:
+		_fx_layer.get_parent().move_child(_fx_layer, _fx_layer.get_parent().get_child_count() - 1)
+	BattleFx.play_clash_director(
+		_fx_layer,
+		controller.state if controller != null else null,
+		result,
+		mine,
+		_me_panel if _me_panel != null else self,
+		_you_panel if _you_panel != null else self,
+		_moba_banner,
+		_ticker,
+		_audio_bank,
+		_me_duel_card,
+		_you_duel_card
+	)
 
 
 func _on_pick(who: int, action: int) -> void:
 	if action == GameRules.Action.ZAN:
 		_hide_spotlight()
 	if controller.try_select(who, action):
-		_play_sfx(_sfx_zan if action == GameRules.Action.ZAN else _sfx_ding, -6.0)
+		if action == GameRules.Action.ZAN:
+			BattleFx.play_named_sfx(_audio_bank, "zan", -4.0, 1.0)
+		elif GameRules.is_bao(action):
+			var cnt := GameRules.bao_count(action)
+			BattleFx.play_named_sfx(_audio_bank, "ui_select", -3.0, 1.0 + float(cnt - 1) * 0.16)
+		else:
+			BattleFx.play_named_sfx(_audio_bank, "ui_select", -3.0, 1.05)
+		BattleFx.show_moba_banner(
+			_moba_banner,
+			"✓ 已锁定：【%s】" % GameRules.action_short_name(action),
+			UiTheme.action_hint(action) + " · 封盘前可随时改选",
+			UiTheme.action_color(action),
+			false
+		)
 		_log("已选 %s" % GameRules.action_short_name(action))
 		_refresh_all()
 	else:
+		BattleFx.play_named_sfx(_audio_bank, "ui_deny", -2.0)
 		_log("当前无法出招")
 
 
@@ -641,6 +658,7 @@ func _hide_spotlight() -> void:
 
 
 func _exit_tree() -> void:
+	BattleFx.stop_bgm(_audio_bank)
 	_hide_spotlight()
 
 
@@ -655,19 +673,26 @@ func _on_preselect(who: int, action: int) -> void:
 
 func _on_battle_started_ui() -> void:
 	_hide_overlay()
+	BattleFx.clear_ticker(_ticker)
+	BattleFx.start_bgm(_audio_bank)
+	BattleFx.play_named_sfx(_audio_bank, "game_start", -2.0)
 
 
 func _on_phase(phase: int, round_no: int) -> void:
 	_round_label.text = "回合 %d / %d" % [round_no, controller.state.round_cap()]
+	if controller != null and controller.state != null:
+		BattleFx.update_bgm_tension(_audio_bank, controller.state)
 	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null \
 		and not controller.opening_done()
 	match phase:
 		GameRules.Phase.SELECTING:
 			if is_opening:
 				_status_label.text = "点击「攒气」开始对决"
+				BattleFx.show_moba_banner(_moba_banner, "⚡ 点击「攒气」开始对决 ⚡", "第 1 回合开局亮相 · 双方气 +1", UiTheme.ACCENT, false)
 				_show_spotlight()
 			else:
 				_status_label.text = "同步出招"
+				BattleFx.show_moba_banner(_moba_banner, "🎯 第 %d 回合 · 同步选招" % round_no, "两声拍手内点选技能 · 预判对手招式", UiTheme.SHIELD, false)
 				_hide_spotlight()
 			if _overlay != null and _overlay.visible and _overlay_mode in ["game_over", "rematch", "takeover"]:
 				_hide_overlay()
@@ -683,52 +708,6 @@ func _on_phase(phase: int, round_no: int) -> void:
 	_refresh_all()
 
 
-# ---------- 音效 / 亮招卡片 ----------
-
-func _setup_audio() -> void:
-	_sfx_clap = load("res://assets/audio/clap.wav")
-	_sfx_ding = load("res://assets/audio/ding.wav")
-	_sfx_hit = load("res://assets/audio/hit.wav")
-	_sfx_block = load("res://assets/audio/block.wav")
-	_sfx_zan = load("res://assets/audio/zan.wav")
-	for i in 4:
-		var p := AudioStreamPlayer.new()
-		p.bus = "Master"
-		add_child(p)
-		_sfx_players.append(p)
-
-
-func _play_sfx(stream: AudioStream, volume_db: float = 0.0) -> void:
-	if stream == null:
-		return
-	for p: AudioStreamPlayer in _sfx_players:
-		if not p.playing:
-			p.stream = stream
-			p.volume_db = volume_db
-			p.play()
-			return
-	if _sfx_players.size() > 0:
-		_sfx_players[0].stream = stream
-		_sfx_players[0].volume_db = volume_db
-		_sfx_players[0].play()
-
-
-func _play_impact_sfx(result: Dictionary) -> void:
-	if bool(result.get("opening", false)):
-		_play_sfx(_sfx_zan, -2.0)
-		return
-	var hit: Array = result.get("hit", [false, false])
-	var blocked: Array = result.get("blocked", [false, false])
-	var any_hit := (hit.size() > 0 and (bool(hit[0]) or (hit.size() > 1 and bool(hit[1]))))
-	var any_block := (blocked.size() > 0 and (bool(blocked[0]) or (blocked.size() > 1 and bool(blocked[1]))))
-	if any_hit:
-		_play_sfx(_sfx_hit, 0.0)
-	elif any_block:
-		_play_sfx(_sfx_block, 0.0)
-	else:
-		_play_sfx(_sfx_ding, -4.0)
-
-
 func _play_reveal_cards(result: Dictionary) -> void:
 	if UiNav.is_settings_open(get_tree()):
 		return
@@ -742,7 +721,7 @@ func _play_reveal_cards(result: Dictionary) -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_reveal_layer.add_child(root)
 	var dim := ColorRect.new()
-	dim.color = Color(0.06, 0.09, 0.16, 0.25)
+	dim.color = Color(0.06, 0.09, 0.16, 0.22)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(dim)
@@ -756,12 +735,14 @@ func _play_reveal_cards(result: Dictionary) -> void:
 	var acts: Array = result.get("actions", [-1, -1])
 	var timeouts: Array = result.get("timeout", [false, false])
 	var mine: int = Net.get_local_role()
+	if mine != 0 and mine != 1:
+		mine = 0
 	var my_act: int = int(acts[mine]) if acts.size() > mine else -1
 	var op_act: int = int(acts[1 - mine]) if acts.size() > (1 - mine) else -1
 	var my_to: bool = bool(timeouts[mine]) if timeouts.size() > mine else false
 	var op_to: bool = bool(timeouts[1 - mine]) if timeouts.size() > (1 - mine) else false
-	var me_card := _make_action_card("我", GameRules.action_short_name(my_act), UiTheme.action_color(my_act), my_to)
-	var you_card := _make_action_card("对手", GameRules.action_short_name(op_act), UiTheme.action_color(op_act), op_to)
+	var me_card := _make_action_card("我", my_act, UiTheme.action_color(my_act), my_to)
+	var you_card := _make_action_card("对手", op_act, UiTheme.action_color(op_act), op_to)
 	box.add_child(me_card)
 	box.add_child(you_card)
 	me_card.scale = Vector2(0.2, 0.2)
@@ -782,7 +763,7 @@ func _free_reveal_layer() -> void:
 		_reveal_layer = null
 
 
-func _make_action_card(title: String, action: String, accent: Color, is_timeout: bool = false) -> PanelContainer:
+func _make_action_card(title: String, act_id: int, accent: Color, is_timeout: bool = false) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var sb := UiTheme.card_style(UiTheme.BG_CARD, 16, accent, 3)
 	sb.content_margin_left = 18
@@ -791,44 +772,34 @@ func _make_action_card(title: String, action: String, accent: Color, is_timeout:
 	sb.content_margin_bottom = 12
 	panel.add_theme_stylebox_override("panel", sb)
 	var v := VBoxContainer.new()
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.add_theme_constant_override("separation", 4)
 	panel.add_child(v)
-	v.add_child(UiTheme.ink_label(title, 13, UiTheme.INK_SOFT))
-	var act := UiTheme.ink_label(action, 32, accent)
+	var t_lab := UiTheme.ink_label(title, 13, UiTheme.INK_SOFT)
+	t_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(t_lab)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+	v.add_child(row)
+
+	var ic := TextureRect.new()
+	ic.texture = UiTheme.load_ui_texture(UiTheme.action_icon_name(act_id))
+	ic.custom_minimum_size = Vector2(36, 36)
+	ic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	ic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	row.add_child(ic)
+
+	var act := UiTheme.ink_label(GameRules.action_short_name(act_id), 30, accent)
 	act.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(act)
+	row.add_child(act)
 	if is_timeout:
 		var badge := UiTheme.make_btn("超时", UiTheme.DANGER, Color.WHITE, 11, 22)
 		badge.custom_minimum_size = Vector2(52, 22)
 		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		v.add_child(badge)
 	return panel
-
-
-func _play_impact_fx(result: Dictionary) -> void:
-	if _fx_layer == null or bool(result.get("opening", false)):
-		return
-	if UiNav.is_settings_open(get_tree()):
-		return
-	if _fx_layer.get_parent() != null:
-		_fx_layer.get_parent().move_child(_fx_layer, _fx_layer.get_parent().get_child_count() - 1)
-	var hit: Array = result.get("hit", [false, false])
-	var blocked: Array = result.get("blocked", [false, false])
-	var mine: int = Net.get_local_role()
-	var me_target: Control = _me_hp_row.get_parent() as Control if _me_hp_row else self
-	var you_target: Control = _you_hp_row.get_parent() as Control if _you_hp_row else self
-	var my_hit: bool = bool(hit[mine]) if hit.size() > mine else false
-	var other_hit: bool = bool(hit[1 - mine]) if hit.size() > (1 - mine) else false
-	var my_block: bool = bool(blocked[mine]) if blocked.size() > mine else false
-	var other_block: bool = bool(blocked[1 - mine]) if blocked.size() > (1 - mine) else false
-	if my_hit:
-		BattleFx.play_hurt(_fx_layer, me_target)
-	if other_hit:
-		BattleFx.play_hit(_fx_layer, you_target)
-	if my_block:
-		BattleFx.play_block(_fx_layer, me_target)
-	if other_block:
-		BattleFx.play_block(_fx_layer, you_target)
 
 
 func _on_reveal_actions(actions: Array, _results: Dictionary) -> void:
@@ -858,7 +829,7 @@ func _on_game_over(winner: int) -> void:
 		b.disabled = true
 	var view_win: int = winner if winner == 2 or winner < 0 else (0 if winner == mine else 1)
 	if _fx_layer != null:
-		BattleFx.play_result(_fx_layer, view_win, _status_label)
+		BattleFx.play_result(_fx_layer, view_win, _moba_banner)
 	_show_overlay("game_over", "对局结束", body + "\n再来一局，还是回菜单？", false, false, true)
 	if _btn_rematch != null:
 		_btn_rematch.visible = true
@@ -972,6 +943,7 @@ func _request_leave() -> void:
 
 func _confirm_leave() -> void:
 	_close_leave_dialog()
+	BattleFx.stop_bgm(_audio_bank)
 	if _overlay_mode == "rematch":
 		Net.answer_rematch(false)
 	UiNav.return_to_menu(get_tree())
@@ -991,6 +963,9 @@ func _on_rematch_answered(yes: bool) -> void:
 			_btn_rematch.disabled = false
 		if _btn_menu != null:
 			_btn_menu.text = "返回菜单"
+		BattleFx.clear_ticker(_ticker)
+		BattleFx.start_bgm(_audio_bank)
+		BattleFx.play_named_sfx(_audio_bank, "game_start", -2.0)
 		_refresh_all()
 		_log("新对局开始")
 	else:
@@ -1003,6 +978,7 @@ func _on_rematch_answered(yes: bool) -> void:
 func _leave_menu_after_decline() -> void:
 	var t := get_tree()
 	if t != null:
+		BattleFx.stop_bgm(_audio_bank)
 		UiNav.return_to_menu(t)
 
 
@@ -1021,7 +997,7 @@ func _refresh_all() -> void:
 	_set_row(_me_boxes, s, mine)
 	_set_row(_you_boxes, s, 1 - mine)
 	if _score_label != null:
-		_score_label.text = "比分 我 %d : %d 对手 · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), s.score_to_win()]
+		_score_label.text = "我 %d : %d 对手 · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), s.score_to_win()]
 	var input_ok: bool = controller.is_pick_open()
 	var can_lock: bool = input_ok and _overlay.visible == false
 	var preselect: Array = controller.local_preselect()
@@ -1030,8 +1006,8 @@ func _refresh_all() -> void:
 		var b: Button = _me_btns[a]
 		var act := int(a)
 		UiTheme.update_skill_slot(b, s, mine, act, can_lock, picked, GameRules.PRIMARY_ACTIONS.has(act))
-	if can_lock and _arena_me_card != null:
-		_arena_me_card.text = GameRules.action_short_name(picked) if picked >= 0 else "待选"
+	if can_lock and _me_duel_card != null:
+		BattleFx.update_duel_card(_me_duel_card, picked, "待选")
 	if not can_lock and _overlay != null and not _overlay.visible and not s.is_over():
 		if _status_label != null and controller != null and (controller.resolving() or controller.did_settle()):
 			_status_label.text = "结算中"
