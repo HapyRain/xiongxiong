@@ -27,17 +27,12 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $Templates   = Join-Path $env:APPDATA "Godot\export_templates\4.7.2.stable"
 $BuildOut    = Join-Path $ProjectRoot "build"
-$ToolsRoot   = "E:\github\tools"
 
-## JDK：参数 > JAVA_HOME > E:\github\tools\jdk-* > Adoptium 默认安装目录
+## JDK：参数 > JAVA_HOME > Adoptium 默认安装目录
 function Find-Jdk([string]$Explicit) {
     $cands = @()
     if ($Explicit) { $cands += $Explicit }
     if ($env:JAVA_HOME) { $cands += $env:JAVA_HOME }
-    if (Test-Path $ToolsRoot) {
-        $cands += (Get-ChildItem $ToolsRoot -Directory -Filter "jdk-*" -ErrorAction SilentlyContinue |
-                   Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName)
-    }
     $cands += (Join-Path $env:LOCALAPPDATA "Programs\Eclipse Adoptium")
     foreach ($c in $cands) {
         if ($c -and (Test-Path (Join-Path $c "bin\java.exe"))) { return (Resolve-Path $c).Path }
@@ -45,13 +40,12 @@ function Find-Jdk([string]$Explicit) {
     return $null
 }
 
-## Android SDK：参数 > ANDROID_HOME > ANDROID_SDK_ROOT > E:\github\tools\android-sdk > %LOCALAPPDATA%
+## Android SDK：参数 > ANDROID_HOME > ANDROID_SDK_ROOT > %LOCALAPPDATA%\Android\Sdk
 function Find-AndroidSdk([string]$Explicit) {
     $cands = @()
     if ($Explicit) { $cands += $Explicit }
     if ($env:ANDROID_HOME) { $cands += $env:ANDROID_HOME }
     if ($env:ANDROID_SDK_ROOT) { $cands += $env:ANDROID_SDK_ROOT }
-    $cands += (Join-Path $ToolsRoot "android-sdk")
     $cands += (Join-Path $env:LOCALAPPDATA "Android\Sdk")
     foreach ($c in $cands) {
         if ($c -and (Test-Path (Join-Path $c "platform-tools\adb.exe"))) { return (Resolve-Path $c).Path }
@@ -69,12 +63,12 @@ function Find-GodotConsole([string]$Explicit) {
     $roots = @(
         (Join-Path $env:USERPROFILE "Desktop"),
         (Join-Path $env:USERPROFILE "Downloads"),
-        "E:\github\tools",
-        "C:\godot",
-        "D:\godot"
+        $env:USERPROFILE,
+        "C:\Godot",
+        "D:\Godot"
     ) | Where-Object { $_ -and (Test-Path $_) }
     foreach ($r in $roots) {
-        $hit = Get-ChildItem -Path $r -Filter "Godot*_console.exe" -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
+        $hit = Get-ChildItem -Path $r -Filter "Godot_v4.7.2*_console.exe" -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
                Select-Object -First 1
         if ($hit) { $cands += $hit.FullName }
     }
@@ -124,7 +118,7 @@ Test-Part "导出模板 android_release.apk" (Test-Path $tplRelease) "同上"
 $javaHome = Find-Jdk $JavaSdk
 $javaOk = [bool]$javaHome
 if ($javaOk) { $env:JAVA_HOME = $javaHome }
-Test-Part "JDK 17" $javaOk "解压 Temurin 17 到 E:\github\tools\jdk-*，或传 -JavaSdk <JDK 根目录>"
+Test-Part "JDK 17" $javaOk "解压 Temurin 17（如到 %LOCALAPPDATA%\Programs\Eclipse Adoptium），或传 -JavaSdk <JDK 根目录>"
 
 $sdk = Find-AndroidSdk $AndroidSdk
 if ($sdk) { $env:ANDROID_HOME = $sdk }

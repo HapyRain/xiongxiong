@@ -7,7 +7,7 @@
 #
 # 用法：
 #   .\setup_android_env.ps1
-#   .\setup_android_env.ps1 -JavaSdk "E:\github\tools\jdk-17.0.20.1+1" -AndroidSdk "E:\github\tools\android-sdk"
+#   .\setup_android_env.ps1 -JavaSdk "C:\path\to\jdk-17" -AndroidSdk "C:\path\to\Android\Sdk"
 #   .\setup_android_env.ps1 -Quiet
 #
 # 注意：**先关掉 Godot 编辑器再跑**。编辑器开着时它退出会把自己的内存设置写回文件，覆盖这里写的路径。
@@ -20,16 +20,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ToolsRoot = "E:\github\tools"
 
 function Find-Jdk([string]$Explicit) {
     $cands = @()
     if ($Explicit) { $cands += $Explicit }
     if ($env:JAVA_HOME) { $cands += $env:JAVA_HOME }
-    if (Test-Path $ToolsRoot) {
-        $cands += (Get-ChildItem $ToolsRoot -Directory -Filter "jdk-*" -ErrorAction SilentlyContinue |
-                   Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName)
-    }
     $cands += (Join-Path $env:LOCALAPPDATA "Programs\Eclipse Adoptium")
     foreach ($c in $cands) {
         if ($c -and (Test-Path (Join-Path $c "bin\java.exe"))) { return (Resolve-Path $c).Path }
@@ -42,7 +37,6 @@ function Find-AndroidSdk([string]$Explicit) {
     if ($Explicit) { $cands += $Explicit }
     if ($env:ANDROID_HOME) { $cands += $env:ANDROID_HOME }
     if ($env:ANDROID_SDK_ROOT) { $cands += $env:ANDROID_SDK_ROOT }
-    $cands += (Join-Path $ToolsRoot "android-sdk")
     $cands += (Join-Path $env:LOCALAPPDATA "Android\Sdk")
     foreach ($c in $cands) {
         if ($c -and (Test-Path (Join-Path $c "platform-tools\adb.exe"))) { return (Resolve-Path $c).Path }
@@ -52,8 +46,8 @@ function Find-AndroidSdk([string]$Explicit) {
 
 $javaHome = Find-Jdk $JavaSdk
 $sdk      = Find-AndroidSdk $AndroidSdk
-if (-not $javaHome) { throw "找不到 JDK 17：传 -JavaSdk <JDK 根目录>，或解压到 $ToolsRoot\jdk-*" }
-if (-not $sdk)      { throw "找不到 Android SDK：传 -AndroidSdk <SDK 根目录>，或解压到 $ToolsRoot\android-sdk" }
+if (-not $javaHome) { throw "找不到 JDK 17：传 -JavaSdk <JDK 根目录>，或解压 Temurin 17 到 %LOCALAPPDATA%\Programs\Eclipse Adoptium" }
+if (-not $sdk)      { throw "找不到 Android SDK：传 -AndroidSdk <SDK 根目录>，或安装到 %LOCALAPPDATA%\Android\Sdk" }
 
 $apksigner = Get-ChildItem (Join-Path $sdk "build-tools") -Recurse -Filter "apksigner.bat" -ErrorAction SilentlyContinue |
              Sort-Object FullName -Descending | Select-Object -First 1
