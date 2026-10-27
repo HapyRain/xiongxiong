@@ -205,7 +205,7 @@ func _check_main_scene() -> void:
 	root.add_child(lesson)
 	if not lesson.is_node_ready():
 		lesson.notification(Node.NOTIFICATION_READY)
-	_exp("main lesson：技能盘占位 13 格", _count_action_buttons(lesson) == 13)
+	_exp("main lesson：双层技能盘 11 键（3主键+8进阶）", _count_action_buttons(lesson) == 11)
 	root.remove_child(lesson)
 	lesson.free()
 	BattleController.pending_cfg = {}

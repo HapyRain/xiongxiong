@@ -3,17 +3,17 @@
 class_name BattleFx
 extends RefCounted
 
-const COLOR_HP := Color(0.91, 0.28, 0.32)
-const COLOR_HP_EMPTY := Color(0.88, 0.82, 0.78)
-const COLOR_QI := Color(0.22, 0.55, 0.92)
-const COLOR_QI_EMPTY := Color(0.82, 0.84, 0.88)
-const COLOR_SHIELD := Color(0.36, 0.72, 0.79)
-const COLOR_SHIELD_EMPTY := Color(0.78, 0.74, 0.68)
-const COLOR_HIT := Color(0.92, 0.25, 0.22)
-const COLOR_BLOCK := Color(0.35, 0.70, 0.95)
-const COLOR_WIN := Color(0.18, 0.72, 0.38)
-const COLOR_LOSE := Color(0.85, 0.25, 0.22)
-const COLOR_DRAW := Color(0.55, 0.50, 0.42)
+const COLOR_HP := Color(0.937, 0.267, 0.267)       # #EF4444 鲜红血点
+const COLOR_HP_EMPTY := Color(0.886, 0.910, 0.941) # #E2E8F0
+const COLOR_QI := Color(0.961, 0.620, 0.043)       # #F59E0B 元气琥珀金气珠
+const COLOR_QI_EMPTY := Color(0.886, 0.910, 0.941) # #E2E8F0
+const COLOR_SHIELD := Color(0.055, 0.647, 0.914)   # #0EA5E9 天青蓝护盾
+const COLOR_SHIELD_EMPTY := Color(0.886, 0.910, 0.941)
+const COLOR_HIT := Color(0.937, 0.267, 0.267)
+const COLOR_BLOCK := Color(0.055, 0.647, 0.914)
+const COLOR_WIN := Color(0.063, 0.725, 0.506)
+const COLOR_LOSE := Color(0.863, 0.149, 0.149)
+const COLOR_DRAW := Color(0.478, 0.525, 0.604)
 
 
 ## 一排图标：filled 个实心 + (max-filled) 个空心。用圆角 Panel，禁止 FULL_RECT 撑满。
@@ -44,18 +44,18 @@ static func _pip_style(on: bool, color: Color, empty_color: Color, pip_size: Vec
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = color if on else empty_color
 	if on:
-		sb.border_color = color.darkened(0.18)
+		sb.border_color = color.darkened(0.22)
 	else:
-		sb.border_color = empty_color.darkened(0.12)
+		sb.border_color = empty_color.darkened(0.14)
 	sb.set_border_width_all(1)
-	var r := int(round(minf(pip_size.x, pip_size.y) * 0.32))
+	var r := int(round(minf(pip_size.x, pip_size.y) * 0.35))
 	sb.set_corner_radius_all(r)
 	sb.anti_aliasing = true
 	return sb
 
 
 ## 更新已有 pip 行的亮灭。
-## 每帧都会被 net_battle_ui._process → _refresh_all 调到（26 个 pip），
+## 每帧都会被 _process → _refresh_all 调到（26 个 pip），
 ## 若每次都重建 StyleBoxFlat 会连触发 NOTIFICATION_THEME_CHANGED + 重排；
 ## 这里按「亮灭 + 颜色 + 尺寸」缓存 key，未变直接跳过。
 static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_color: Color) -> void:
@@ -80,23 +80,23 @@ static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_col
 
 ## 血：红心圆点行
 static func make_hp_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_HP, COLOR_HP_EMPTY, Vector2(16, 16), 4)
+	return make_pip_row(max_n, filled, COLOR_HP, COLOR_HP_EMPTY, Vector2(16, 14), 4)
 
 
-## 气：蓝色能量珠
+## 气：琥珀金能量珠
 static func make_qi_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_QI, COLOR_QI_EMPTY, Vector2(12, 12), 4)
+	return make_pip_row(max_n, filled, COLOR_QI, COLOR_QI_EMPTY, Vector2(12, 12), 3)
 
 
-## 盾：竖条
+## 盾：天青蓝护盾格
 static func make_shield_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY, Vector2(10, 16), 3)
+	return make_pip_row(max_n, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY, Vector2(14, 14), 4)
 
 
-# ---------- 开局聚光灯：压暗全场，只亮出「攒」 ----------
+# ---------- 开局聚光灯：压暗全场，只亮出「攒气」 ----------
 
 ## 返回 Control（挂在 current_scene 下）；不用时 queue_free()。
-static func show_focus_spotlight(tree: SceneTree, target: Control, caption: String = "点击「攒」开始对决") -> Control:
+static func show_focus_spotlight(tree: SceneTree, target: Control, caption: String = "点击「攒气」开始对决") -> Control:
 	if tree == null or tree.current_scene == null or target == null:
 		return null
 	var host: Node = tree.current_scene
@@ -109,15 +109,10 @@ static func show_focus_spotlight(tree: SceneTree, target: Control, caption: Stri
 	root.set_meta("spot_caption", caption)
 
 	if not target.tree_exiting.is_connected(_on_spot_target_exit.bind(root.get_instance_id())):
-		# 只绑 instance_id，别把 root 对象本身绑进回调：
-		# 场景退出时 root 可能已被释放，把已释放 Object 作为参数传给带类型的参数会报
-		# "Cannot convert argument 1 from Object to Object"。
 		target.tree_exiting.connect(_on_spot_target_exit.bind(root.get_instance_id()), CONNECT_ONE_SHOT)
-	# 布局变化自愈（Qwen：首帧 size 够大但 pos=0 会锁死）
 	if not target.item_rect_changed.is_connected(_on_spot_target_rect.bind(root)):
 		target.item_rect_changed.connect(_on_spot_target_rect.bind(root))
 
-	# 等布局稳定：连续两帧 rect 一致且不为原点
 	_wait_stable_rect(tree, target, root, caption)
 	return root
 
@@ -135,7 +130,6 @@ static func _on_spot_target_rect(root: Control) -> void:
 	var caption: String = str(root.get_meta("spot_caption", ""))
 	if target == null or not is_instance_valid(target):
 		return
-	# 节流到下一帧再重建，避免布局风暴
 	var tree := root.get_tree()
 	if tree == null:
 		return
@@ -153,7 +147,6 @@ static func _wait_stable_rect(tree: SceneTree, target: Control, root: Control, c
 		if not is_instance_valid(root) or not is_instance_valid(target):
 			return
 		var r := target.get_global_rect()
-		# 布局未完成：pos=(0,0) 但按钮并非真在原点
 		if r.position.length() < 1.0 and r.size.y < 200 and tries < 12:
 			prev = r
 			continue
@@ -163,13 +156,11 @@ static func _wait_stable_rect(tree: SceneTree, target: Control, root: Control, c
 			_build_spot_geometry(root, target, caption, true)
 			return
 		prev = r
-	# 兜底：12 帧后按当前 rect 建
 	if is_instance_valid(root) and is_instance_valid(target):
 		_build_spot_geometry(root, target, caption, true)
 
 
 static func _target_local_rect(root: Control, target: Control) -> Rect2:
-	# root 为全屏 Control 时，global_rect 原点即 root 局部原点（DPI/stretch 下仍对）
 	var gr := target.get_global_rect()
 	var origin := root.get_global_rect().position
 	return Rect2(gr.position - origin, gr.size)
@@ -178,8 +169,6 @@ static func _target_local_rect(root: Control, target: Control) -> Rect2:
 static func _build_spot_geometry(root: Control, target: Control, caption: String, animate: bool = true) -> void:
 	if root == null or not is_instance_valid(root) or target == null or not is_instance_valid(target):
 		return
-	# 重建前先杀掉上一轮的「循环呼吸」tween：它挂在即将被回收的边框上，
-	# 目标全失效后仍无限循环 → 引擎会报 "Infinite loop detected"。
 	if root.has_meta("loop_tween"):
 		var old_loop: Variant = root.get_meta("loop_tween")
 		if old_loop is Tween and (old_loop as Tween).is_valid():
@@ -188,13 +177,12 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 	for c in root.get_children():
 		c.queue_free()
 	var r := _target_local_rect(root, target)
-	# 真·布局未完成才重试（不要再用 size>=100 当完成）
 	if r.size.x < 8 or r.size.y < 8:
 		root.get_tree().create_timer(0.03).timeout.connect(func():
 			if is_instance_valid(root) and is_instance_valid(target):
 				_build_spot_geometry(root, target, caption, animate))
 		return
-	var hole := r.grow(14)
+	var hole := r.grow(10)
 
 	var vs := Vector2(390, 820)
 	if root.get_viewport() != null and root.get_viewport().get_visible_rect().size.x > 0:
@@ -202,8 +190,7 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 	var vw := maxf(root.size.x, vs.x)
 	var vh := maxf(root.size.y, vs.y)
 
-	# 渐入暗幕
-	var dim_color := Color(0.04, 0.035, 0.03, 0.0 if animate else 0.68)
+	var dim_color := Color(0.05, 0.07, 0.12, 0.0 if animate else 0.65)
 	var d0 := _add_dim(root, Rect2(0, 0, vw, maxf(0, hole.position.y)), dim_color)
 	var d1 := _add_dim(root, Rect2(0, hole.end.y, vw, maxf(0, vh - hole.end.y)), dim_color)
 	var d2 := _add_dim(root, Rect2(0, hole.position.y, maxf(0, hole.position.x), hole.size.y), dim_color)
@@ -212,11 +199,10 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		var tw_dim := root.create_tween().set_parallel(true)
 		for d in [d0, d1, d2, d3]:
 			if d != null:
-				tw_dim.tween_property(d, "color", Color(0.04, 0.035, 0.03, 0.68), 0.22)
+				tw_dim.tween_property(d, "color", Color(0.05, 0.07, 0.12, 0.65), 0.22)
 
-	# 空心金框 + 入场缩放聚焦
 	var border := 3.0
-	var gold := Color(1.0, 0.82, 0.25, 0.95)
+	var gold := Color(1.0, 0.78, 0.18, 0.98)
 	var edges: Array[ColorRect] = []
 	edges.append(_edge_rect(hole.position - Vector2(border, border), Vector2(hole.size.x + border * 2, border), gold))
 	edges.append(_edge_rect(Vector2(hole.position.x - border, hole.end.y), Vector2(hole.size.x + border * 2, border), gold))
@@ -237,8 +223,6 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		tw_in.chain().tween_callback(func():
 			if not is_instance_valid(root):
 				return
-			# 目标已被后续重建回收 → 跳过呼吸脉冲。
-			# 否则 tween 里全是无效目标，配合 set_loops() 会报 "Infinite loop detected"。
 			for e in edges:
 				if not is_instance_valid(e):
 					return
@@ -251,7 +235,6 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 			for i in range(1, edges.size()):
 				tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 1.0), 0.48))
 	else:
-		# 同上：目标已回收就别建无限循环 tween
 		for e in edges:
 			if not is_instance_valid(e):
 				return
@@ -264,7 +247,6 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		for i in range(1, edges.size()):
 			tw.parallel().tween_property(edges[i], "modulate", Color(1, 1, 1, 1.0), 0.48)
 
-	# 目标按钮轻脉冲（仅首建时播一次）
 	if animate and target != null and is_instance_valid(target):
 		target.pivot_offset = target.size * 0.5
 		var tw_b := root.create_tween()
@@ -275,13 +257,13 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		var lab := Label.new()
 		lab.text = caption
 		lab.add_theme_font_size_override("font_size", 17)
-		lab.add_theme_color_override("font_color", Color(1, 0.95, 0.85))
+		lab.add_theme_color_override("font_color", Color(1, 0.96, 0.86))
 		lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		lab.modulate = Color(1, 1, 1, 1 if not animate else 0)
 		root.add_child(lab)
 		lab.reset_size()
-		lab.position = Vector2((vw - lab.size.x) * 0.5, hole.position.y - 56)
+		lab.position = Vector2((vw - lab.size.x) * 0.5, hole.position.y - 48)
 		if animate:
 			var tw2 := root.create_tween()
 			tw2.tween_property(lab, "modulate", Color(1, 1, 1, 1), 0.25)
@@ -308,11 +290,24 @@ static func _add_dim(root: Control, rect: Rect2, color: Color) -> ColorRect:
 
 
 static func hide_focus_spotlight(layer: Control) -> void:
-	if layer != null and is_instance_valid(layer):
-		layer.queue_free()
+	if layer == null or not is_instance_valid(layer):
+		return
+	# 显式解绑挂在目标按钮上的连接。
+	# _on_spot_target_rect.bind(root) 每次都绑上一个新的 layer，`is_connected` 比较永不命中，
+	# 不在这里 disconnect 就会随每个小局 / 每次「再来一局」在按钮上累积死连接。
+	if layer.has_meta("spot_target"):
+		var target := layer.get_meta("spot_target") as Control
+		if target != null and is_instance_valid(target):
+			var rect_cb := _on_spot_target_rect.bind(layer)
+			if target.item_rect_changed.is_connected(rect_cb):
+				target.item_rect_changed.disconnect(rect_cb)
+			var exit_cb := _on_spot_target_exit.bind(layer.get_instance_id())
+			if target.tree_exiting.is_connected(exit_cb):
+				target.tree_exiting.disconnect(exit_cb)
+	layer.queue_free()
 
 
-## 「血」标签 + 图标行 + 数值，排成一行，避免糊在一起。
+## 「血」标签 + 图标行 + 数值，排成紧凑一行。
 static func make_stat_line(title: String, row: HBoxContainer, value_lab: Label) -> HBoxContainer:
 	var line := HBoxContainer.new()
 	line.add_theme_constant_override("separation", 6)
@@ -320,8 +315,8 @@ static func make_stat_line(title: String, row: HBoxContainer, value_lab: Label) 
 	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var t := Label.new()
 	t.text = title
-	t.custom_minimum_size.x = 22
-	t.add_theme_font_size_override("font_size", 13)
+	t.custom_minimum_size.x = 20
+	t.add_theme_font_size_override("font_size", 12)
 	t.add_theme_color_override("font_color", UiTheme.INK_SOFT)
 	line.add_child(t)
 	if row != null:
@@ -357,32 +352,25 @@ static func press_feedback(btn: BaseButton, kind: String = "default") -> void:
 	var tw := btn.create_tween()
 	match kind:
 		"zan":
-			# 攒：暖色弹跳上顶
 			_tint_flash(btn, Color(1.0, 0.78, 0.22), 0.18)
-			tw.tween_property(btn, "scale", Vector2(1.12, 1.12), 0.08).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-			tw.tween_property(btn, "scale", Vector2(1.0, 1.0), 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			tw.tween_property(btn, "scale", Vector2(1.10, 1.10), 0.08).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw.tween_property(btn, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		"bo":
-			# 波：短促收缩再弹开 + 轻旋
-			_tint_flash(btn, Color(1.0, 0.55, 0.2), 0.16)
-			tw.tween_property(btn, "scale", Vector2(0.88, 0.88), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-			tw.tween_property(btn, "rotation", -0.12, 0.05)
+			_tint_flash(btn, Color(1.0, 0.45, 0.25), 0.16)
+			tw.tween_property(btn, "scale", Vector2(0.90, 0.90), 0.05).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 			tw.tween_property(btn, "scale", Vector2(1.08, 1.08), 0.08).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-			tw.tween_property(btn, "rotation", 0.0, 0.08)
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.08)
 		"fang":
-			# 防：压扁再撑住（盾感）
-			_tint_flash(btn, Color(0.35, 0.70, 0.95), 0.18)
-			tw.tween_property(btn, "scale", Vector2(1.15, 0.82), 0.07).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-			tw.tween_property(btn, "scale", Vector2(0.95, 1.08), 0.08)
-			tw.tween_property(btn, "scale", Vector2.ONE, 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			_tint_flash(btn, Color(0.25, 0.75, 0.98), 0.18)
+			tw.tween_property(btn, "scale", Vector2(1.12, 0.86), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			tw.tween_property(btn, "scale", Vector2(0.96, 1.05), 0.07)
+			tw.tween_property(btn, "scale", Vector2.ONE, 0.10).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 		"menu":
-			# 菜单：右移轻推
 			var base := btn.position
 			tw.tween_property(btn, "position", base + Vector2(4, 0), 0.06)
 			tw.tween_property(btn, "position", base, 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 			_tint_flash(btn, Color(0.45, 0.45, 0.48), 0.14)
 		"danger":
-			# 危险（退出等）：红闪 + 微抖
 			_tint_flash(btn, Color(0.9, 0.25, 0.22), 0.22)
 			var bpos := btn.position
 			tw.tween_property(btn, "position", bpos + Vector2(-3, 0), 0.04)
@@ -391,7 +379,6 @@ static func press_feedback(btn: BaseButton, kind: String = "default") -> void:
 			tw.tween_property(btn, "scale", Vector2(0.96, 0.96), 0.05)
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.1)
 		"quiet":
-			# 安静型（关闭/取消）：仅轻缩放
 			tw.tween_property(btn, "scale", Vector2(0.96, 0.96), 0.06)
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.1)
 		_:
@@ -399,7 +386,6 @@ static func press_feedback(btn: BaseButton, kind: String = "default") -> void:
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.12)
 
 
-## 按下瞬间染色再回落
 static func _tint_flash(btn: BaseButton, color: Color, dur: float) -> void:
 	if btn == null or not is_instance_valid(btn):
 		return
@@ -408,7 +394,6 @@ static func _tint_flash(btn: BaseButton, color: Color, dur: float) -> void:
 	tw.tween_property(btn, "self_modulate", Color(1, 1, 1, 1), dur)
 
 
-## 给按钮接上按压动效（pressed 时触发）。
 static func bind_press(btn: BaseButton, kind: String = "default") -> void:
 	if btn == null:
 		return
@@ -423,7 +408,6 @@ static func _on_pressed_feedback(btn: BaseButton, kind: String) -> void:
 
 # ---------- 特效 ----------
 
-## 命中：目标闪红 + 轻微抖动 + 爆点
 static func play_hit(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
@@ -432,7 +416,6 @@ static func play_hit(host: Control, target: Control) -> void:
 	_burst(host, target, COLOR_HIT, 10)
 
 
-## 格挡：盾面蓝光 + 环波
 static func play_block(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
@@ -440,15 +423,13 @@ static func play_block(host: Control, target: Control) -> void:
 	_ring(host, target, COLOR_BLOCK)
 
 
-## 受击：短红闪（被波打中）
 static func play_hurt(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
-	_flash_rect(host, target, Color(1, 0.4, 0.35, 0.55))
+	_flash_rect(host, target, Color(1, 0.35, 0.35, 0.55))
 	_shake(target)
 
 
-## 胜负庆祝：中心弹字 + 彩色纸屑
 static func play_result(host: Control, winner: int, center: Control = null) -> void:
 	if host == null:
 		return
@@ -459,12 +440,11 @@ static func play_result(host: Control, winner: int, center: Control = null) -> v
 	_confetti(host, 28 if winner == 0 else 12)
 
 
-## 发波弹道：从 from 控件飞向 to
 static func play_projectile(host: Control, from: Control, to: Control, friendly: bool) -> void:
 	if host == null or from == null or to == null:
 		return
 	var ball := ColorRect.new()
-	ball.color = COLOR_QI if friendly else Color(0.95, 0.55, 0.2)
+	ball.color = COLOR_QI if friendly else COLOR_HIT
 	ball.size = Vector2(18, 18)
 	ball.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(ball)
@@ -564,7 +544,7 @@ static func _pop_label(host: Control, anchor: Control, text: String, color: Colo
 
 
 static func _confetti(host: Control, n: int) -> void:
-	var colors := [COLOR_HP, COLOR_QI, Color(0.98, 0.78, 0.2), COLOR_WIN, Color(0.7, 0.4, 0.9)]
+	var colors := [COLOR_HP, COLOR_QI, UiTheme.SHIELD, COLOR_WIN, UiTheme.SPECIAL]
 	for i in n:
 		var p := ColorRect.new()
 		p.color = colors[i % colors.size()]

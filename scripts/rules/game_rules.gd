@@ -25,7 +25,7 @@ enum Action {
 	BAO_QI,       ## 爆气：1 气，CD3，先把盾补满再结算
 	HUI_FU,       ## 回复：0 气，CD8，+1 血
 	ZHONG_JI,     ## 终极技：5 气，CD5，命中 2 血
-	QUAN_JIANG,   ## 劝降（隐藏）：满气满血 + 对方仅剩 1 血 → 直接赢本小局
+	QUAN_JIANG,   ## 劝降（隐藏）：满气满血 + 对手仅剩 1 血 → 直接赢本小局
 }
 
 enum Phase { OPENING, SELECTING, CLAP1, CLAP2, LOCKED, RESOLVING, PRESENTING, GAME_OVER }
@@ -42,6 +42,17 @@ const BAO_MAX := 3
 ## 技能条顺序（可出招的技能；劝降为隐藏自动技，不入本列）
 const SKILLS := [
 	Action.ZAN, Action.BAO1, Action.BAO2, Action.BAO3, Action.FANG,
+	Action.STRONG_FANG, Action.XIAO_YANG, Action.JI_QI, Action.XI_SHOU,
+	Action.DA_YANG, Action.BAO_QI, Action.HUI_FU, Action.ZHONG_JI,
+]
+
+## 底部三大核心主键（左防、中攒、右包连点）
+const PRIMARY_ACTIONS := [
+	Action.FANG, Action.ZAN, Action.BAO1,
+]
+
+## 课间模式 2×4 进阶技能槽（按 1–8 分解锁序）
+const ADVANCED_SKILLS := [
 	Action.STRONG_FANG, Action.XIAO_YANG, Action.JI_QI, Action.XI_SHOU,
 	Action.DA_YANG, Action.BAO_QI, Action.HUI_FU, Action.ZHONG_JI,
 ]
@@ -117,6 +128,42 @@ static func action_name(a: int) -> String:
 		Action.ZHONG_JI: return "终极技"
 		Action.QUAN_JIANG: return "劝降"
 	return "?"
+
+
+## 两字技能别名（硬约束：所有 Action 返回值严格为 2 个汉字，供 UI 按钮与亮招卡展示）
+static func action_short_name(a: int) -> String:
+	match a:
+		Action.ZAN: return "攒气"
+		Action.BAO1: return "包子"
+		Action.BAO2: return "双包"
+		Action.BAO3: return "三包"
+		Action.FANG: return "防御"
+		Action.STRONG_FANG: return "强防"
+		Action.XIAO_YANG: return "小羊"
+		Action.JI_QI: return "集气"
+		Action.XI_SHOU: return "吸收"
+		Action.DA_YANG: return "大羊"
+		Action.BAO_QI: return "爆气"
+		Action.HUI_FU: return "回复"
+		Action.ZHONG_JI: return "终极"
+		Action.QUAN_JIANG: return "劝降"
+	return "未知"
+
+
+## 动作视觉语义分类：zan / attack / defense / gain / special
+static func action_category(a: int) -> String:
+	match a:
+		Action.ZAN:
+			return "zan"
+		Action.BAO1, Action.BAO2, Action.BAO3, Action.XIAO_YANG, Action.DA_YANG:
+			return "attack"
+		Action.FANG, Action.STRONG_FANG:
+			return "defense"
+		Action.JI_QI, Action.HUI_FU:
+			return "gain"
+		Action.XI_SHOU, Action.BAO_QI, Action.ZHONG_JI, Action.QUAN_JIANG:
+			return "special"
+	return "zan"
 
 
 ## 耗气

@@ -1,5 +1,5 @@
 ## lobby_create.gd
-## 创建房间（占位 UI）：模式 + 精通 → 房主建房 → 等待页。
+## 创建房间：模式 + 精通 → 房主建房 → 等待页。
 extends Control
 
 const CREATE_PATH := "res://scenes/lobby_create.tscn"
@@ -49,8 +49,7 @@ func _build_ui() -> void:
 	v.add_theme_constant_override("separation", 12)
 	margin.add_child(v)
 
-	# TODO(ui): 替换为真实房间头图
-	v.add_child(UiPlaceholder.block("房间头图", Vector2(340, 120)))
+	v.add_child(UiTheme.banner_card("🏠 局域网建房", "房主权威结算 · 同 Wi-Fi 或热点直连", UiTheme.ACCENT, 96))
 
 	var mode_row := HBoxContainer.new()
 	mode_row.add_theme_constant_override("separation", 12)
@@ -83,7 +82,7 @@ func _build_ui() -> void:
 	_status.custom_minimum_size.y = 40
 	v.add_child(_status)
 
-	var back := UiTheme.make_btn("返回", UiTheme.LINE, UiTheme.INK, 15, 42)
+	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 15, 42)
 	back.pressed.connect(_back)
 	v.add_child(back)
 
@@ -114,12 +113,13 @@ func _paint(b: Button, mode: String) -> void:
 	var on := _mode == mode
 	var bg := UiTheme.ACCENT if on else UiTheme.BG_CARD
 	var fg := Color.WHITE if on else UiTheme.INK
+	var border_col := bg.darkened(0.22) if on else UiTheme.LINE
 	b.add_theme_color_override("font_color", fg)
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)
-	b.add_theme_stylebox_override("normal", UiTheme.button_style(bg))
-	b.add_theme_stylebox_override("hover", UiTheme.button_style(bg.lightened(0.08)))
-	b.add_theme_stylebox_override("pressed", UiTheme.button_style(bg.darkened(0.08)))
+	b.add_theme_stylebox_override("normal", UiTheme.button_style(bg, 12, border_col))
+	b.add_theme_stylebox_override("hover", UiTheme.button_style(bg.lightened(0.08), 12, border_col))
+	b.add_theme_stylebox_override("pressed", UiTheme.button_style(bg.darkened(0.08), 12, border_col))
 
 
 func _on_create() -> void:

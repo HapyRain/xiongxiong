@@ -888,6 +888,21 @@ func _init() -> void:
 	ok = _exp(ok, "[预设] set_preset 不缩资源（行为保持），reset_round_keep_score 按新预设归位",
 		kept and t9.hp == [1, 1] and t9.qi == [0, 0])
 
+	# ── ㉛ 技能两字别名硬约束（action_short_name 严格 2 个汉字 + 双层技能盘常量）──────
+	var all_two_chars := true
+	for a in GameRules.Action.values():
+		var sn := GameRules.action_short_name(int(a))
+		if sn.length() != 2 or sn == "未知":
+			all_two_chars = false
+	ok = _exp(ok, "[两字硬约束] 全部 14 个 Action 的 action_short_name 严格为 2 个汉字",
+		all_two_chars and GameRules.action_short_name(STRONG_FANG) == "强防"
+		and GameRules.action_short_name(ZHONG_JI) == "终极"
+		and GameRules.action_short_name(BAO1) == "包子"
+		and GameRules.action_short_name(BAO2) == "双包"
+		and GameRules.action_short_name(BAO3) == "三包")
+	ok = _exp(ok, "[双层技能盘] PRIMARY_ACTIONS=3 主键，ADVANCED_SKILLS=8 进阶槽",
+		GameRules.PRIMARY_ACTIONS.size() == 3 and GameRules.ADVANCED_SKILLS.size() == 8)
+
 	print("=".repeat(52))
 	if not ok:
 		for n in _failed:

@@ -31,6 +31,17 @@ UNLOCK = {STRONG_FANG: 1, XIAO_YANG: 2, JI_QI: 3, XI_SHOU: 4,
           DA_YANG: 5, BAO_QI: 6, HUI_FU: 7, ZHONG_JI: 8}
 SKILLS = [ZAN, BAO1, BAO2, BAO3, FANG, STRONG_FANG, XIAO_YANG, JI_QI,
           XI_SHOU, DA_YANG, BAO_QI, HUI_FU, ZHONG_JI]
+PRIMARY_ACTIONS = [FANG, ZAN, BAO1]
+ADVANCED_SKILLS = [STRONG_FANG, XIAO_YANG, JI_QI, XI_SHOU, DA_YANG, BAO_QI, HUI_FU, ZHONG_JI]
+SHORT_NAMES = {
+    ZAN: "攒气", BAO1: "包子", BAO2: "双包", BAO3: "三包", FANG: "防御",
+    STRONG_FANG: "强防", XIAO_YANG: "小羊", JI_QI: "集气", XI_SHOU: "吸收",
+    DA_YANG: "大羊", BAO_QI: "爆气", HUI_FU: "回复", ZHONG_JI: "终极", QUAN_JIANG: "劝降",
+}
+
+
+def action_short_name(a):
+    return SHORT_NAMES.get(a, "未知")
 BAO_N = {BAO1: 1, BAO2: 2, BAO3: 3}
 GAINS = (ZAN, JI_QI, HUI_FU, BAO_QI)          # 可被吸收偷的增益类
 SEALABLE = (FANG, BAO_QI)                      # 封盾期间被禁
@@ -1479,6 +1490,17 @@ def main():
     t9.reset_round_keep_score()
     ok &= expect("[预设] set_preset 不缩资源（行为保持），reset_round_keep_score 按新预设归位",
                  kept and t9.hp == [1, 1] and t9.qi == [0, 0])
+
+    # ── ㉛ 技能两字别名硬约束（action_short_name 严格 2 个汉字 + 双层技能盘常量）──────
+    ok &= expect("[两字硬约束] 全部 14 个 Action 的 action_short_name 严格为 2 个汉字",
+                 all(len(action_short_name(a)) == 2 and action_short_name(a) != "未知" for a in range(14))
+                 and action_short_name(STRONG_FANG) == "强防"
+                 and action_short_name(ZHONG_JI) == "终极"
+                 and action_short_name(BAO1) == "包子"
+                 and action_short_name(BAO2) == "双包"
+                 and action_short_name(BAO3) == "三包")
+    ok &= expect("[双层技能盘] PRIMARY_ACTIONS=3 主键，ADVANCED_SKILLS=8 进阶槽",
+                 len(PRIMARY_ACTIONS) == 3 and len(ADVANCED_SKILLS) == 8)
 
     print("=" * 52)
     print("ALL PASS" if ok else "HAS FAILURES")

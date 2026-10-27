@@ -188,7 +188,7 @@ func _check_screen() -> void:
 			_exp("menu: 首次进菜单显示 Splash", splash != null)
 			_exp("menu: Splash 有进入游戏", _has_button_prefix(cs, "进入游戏"))
 			if splash != null:
-				_exp("menu: Splash 占位加载动画", _flat(splash).contains("【占位】加载"))
+				_exp("menu: Splash 欢迎横幅（无【占位】残留）", _flat(splash).contains("致敬童年") and not _flat(splash).contains("【占位】"))
 				# U8：断言真的可见/真的收起，不是只断言存在
 				_exp("menu: 首次进菜单 Splash 可见", splash.visible)
 				var enter := cs.get("_splash_enter") as Button
@@ -257,22 +257,27 @@ func _check_screen() -> void:
 				_sent_before_back = _probe.sent.size()
 		"res://scenes/main.tscn":
 			_exp("main: classic 三个出招按钮", _count_action_buttons(cs) == 3)
-			_exp("main: 对手资源占位", _find_named(cs, "Placeholder_对手资源") != null)
-			_exp("main: 我方资源占位", _find_named(cs, "Placeholder_我方资源") != null)
+			_exp("main: 对手真实血气盾 HUD", _find_named(cs, "opp_hp") != null and _find_named(cs, "opp_qi") != null and _find_named(cs, "opp_shield") != null)
+			_exp("main: 我方真实血气盾 HUD", _find_named(cs, "me_hp") != null and _find_named(cs, "me_qi") != null and _find_named(cs, "me_shield") != null)
+			_exp("main: 无【占位】残留", not flat.contains("【占位】"))
+			_exp("main: 技能按钮主文案严格为 2 个汉字", _all_action_buttons_two_chars(cs))
 			# U7：槽位命名与内容一致（OppSlot，不是 YouSlot）
 			_exp("main: OppSlot 命名与内容一致",
 				_find_named(cs, "OppSlot") != null and _find_named(cs, "YouSlot") == null)
 			_check_main_first_phase()
 		"res://scenes/net_battle.tscn":
 			if str(cfg.get("net", "")) == "battle_lesson":
-				# U8：lesson 模式冒烟 —— 13 格技能盘
-				_exp("net_battle: lesson 13 格技能盘", _count_action_buttons(cs) == 13)
+				# U8：lesson 模式冒烟 —— 双层技能盘（3 主键 + 8 进阶槽 = 11 键）
+				_exp("net_battle: lesson 双层技能盘 11 键", _count_action_buttons(cs) == 11)
 				_exp("net_battle: lesson 含攒气", _has_button_prefix(cs, "攒气"))
+				_exp("net_battle: lesson 技能按钮主文案严格 2 字", _all_action_buttons_two_chars(cs))
+				_exp("net_battle: lesson 无【占位】残留", not flat.contains("【占位】"))
 			else:
 				_exp("net_battle: classic 攒/包子/防御",
 					_has_button_prefix(cs, "攒气") and _has_button_prefix(cs, "包子")
 					and _has_button_prefix(cs, "防御"))
 				_exp("net_battle: classic 三个出招按钮", _count_action_buttons(cs) == 3)
+				_exp("net_battle: classic 技能按钮主文案严格 2 字", _all_action_buttons_two_chars(cs))
 				_check_rematch_oneshots(cs)
 
 
@@ -728,6 +733,16 @@ func _count_action_buttons(node: Node) -> int:
 		if n is Button and str(n.name).begins_with("Action"):
 			count["n"] += 1)
 	return int(count["n"])
+
+
+func _all_action_buttons_two_chars(node: Node) -> bool:
+	var st := {"ok": true, "n": 0}
+	_walk(node, func(n: Node):
+		if n is Button and str(n.name).begins_with("Action"):
+			st["n"] += 1
+			if str((n as Button).text).length() != 2:
+				st["ok"] = false)
+	return bool(st["ok"]) and int(st["n"]) > 0
 
 
 func _walk(node: Node, cb: Callable) -> void:

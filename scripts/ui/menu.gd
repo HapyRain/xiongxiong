@@ -1,5 +1,5 @@
 ## menu.gd
-## Splash overlay（占位加载）→ 主菜单（单人 / 联机 / 设置 / 退出）→ 联机入口（作为房主 / 搜索房间）。
+## Splash overlay（开屏欢迎页）→ 主菜单（单人 / 联机 / 设置 / 退出）→ 联机入口（作为房主 / 搜索房间）。
 ## 房间/等待页在 lobby_*.tscn；本文件只做入口与跳转。
 extends Control
 
@@ -25,13 +25,10 @@ var _host_info: Label
 
 func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
-	# 从对局返回时清掉可能残留的聚光灯/设置层
 	UiNav.cleanup_overlays(get_tree())
 	if Net != null and Net.get_session() != PeerManager.Session.IDLE:
 		Net.leave()
 	_build_ui()
-	# U1：Net 是 autoload，比场景命长；连 lambda 会在本场景释放后继续触发（报错刷屏）。
-	# 一律用具名方法连接：对象释放时 Godot 自动断开。
 	Net.mode_changed.connect(_on_mode_changed)
 	Net.session_changed.connect(_on_session_changed)
 	Net.status_text.connect(_on_net_status_text)
@@ -88,21 +85,22 @@ func _section(text: String) -> Label:
 func _mode_card(title: String, accent: Color, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = title
-	b.custom_minimum_size = Vector2(0, 88)
+	b.custom_minimum_size = Vector2(0, 84)
 	b.add_theme_font_override("font", UiTheme.default_font())
 	b.add_theme_font_size_override("font_size", 22)
 	b.add_theme_color_override("font_color", Color.WHITE)
 	b.add_theme_color_override("font_hover_color", Color.WHITE)
 	b.add_theme_color_override("font_pressed_color", Color.WHITE)
-	b.add_theme_stylebox_override("normal", UiTheme.button_style(accent, 20))
-	b.add_theme_stylebox_override("hover", UiTheme.button_style(accent.lightened(0.08), 20))
-	b.add_theme_stylebox_override("pressed", UiTheme.button_style(accent.darkened(0.1), 20))
+	var border_col := accent.darkened(0.25)
+	b.add_theme_stylebox_override("normal", UiTheme.button_style(accent, 18, border_col, 2))
+	b.add_theme_stylebox_override("hover", UiTheme.button_style(accent.lightened(0.08), 18, border_col, 2))
+	b.add_theme_stylebox_override("pressed", UiTheme.button_style(accent.darkened(0.10), 18, border_col, 2))
 	b.pressed.connect(cb)
 	BattleFx.bind_press(b, "zan" if accent == UiTheme.ACCENT else "fang")
 	return b
 
 
-# ---------- Splash（占位加载） ----------
+# ---------- Splash（开屏欢迎层） ----------
 
 func _build_splash() -> void:
 	if bool(Engine.get_meta(SPLASH_SEEN_META, false)):
@@ -124,14 +122,14 @@ func _build_splash() -> void:
 	_splash.add_child(center)
 
 	var v := VBoxContainer.new()
-	v.custom_minimum_size = Vector2(300, 0)
+	v.custom_minimum_size = Vector2(310, 0)
 	v.add_theme_constant_override("separation", 16)
 	center.add_child(v)
 
-	var title := UiTheme.ink_label("拍拍熊熊", 34, UiTheme.INK)
+	var title := UiTheme.ink_label("拍拍熊熊", 36, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
-	v.add_child(UiPlaceholder.block("加载动画", Vector2(280, 220)))
+	v.add_child(UiTheme.banner_card("🐾 课间对决 · 致敬童年", "攒气 · 防御 · 包子 · 破防\n两拍定胜负，读招见真章", UiTheme.ACCENT, 148))
 
 	_splash_status = UiTheme.ink_label("", 13, UiTheme.INK_SOFT)
 	_splash_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -143,20 +141,16 @@ func _build_splash() -> void:
 	BattleFx.bind_press(_splash_enter, "zan")
 	v.add_child(_splash_enter)
 
-	# 没有异步加载管线：资源同步就绪即显示入口；以后接真加载再换成 await。
-	# shortcut: 假设资源已同步就绪，接异步加载时改为进度回调再显示入口。
 	_set_splash_state(_resources_ready())
 
 
-## Splash 入口按钮永远可点（就绪=进入游戏 / 未就绪=重试），
-## 不能出现「资源未就绪就只剩一块吞输入的 Splash、没有任何出口」的死局（U7）。
 func _set_splash_state(ready: bool) -> void:
 	if _splash_enter == null:
 		return
 	_splash_enter.visible = true
 	_splash_enter.text = "进入游戏" if ready else "重试"
 	if _splash_status != null:
-		_splash_status.text = "资源已就绪" if ready else "【占位】资源未就绪，点「重试」"
+		_splash_status.text = "资源已就绪" if ready else "资源未就绪，点「重试」"
 
 
 func _on_splash_button() -> void:
@@ -181,7 +175,7 @@ func _build_home_page() -> Control:
 	page.set_anchors_preset(Control.PRESET_FULL_RECT)
 
 	page.add_child(_title("拍拍熊熊", 36, UiTheme.INK, 72))
-	page.add_child(_title("1v1 三分钟一局超爽超解压", 14, UiTheme.INK_SOFT, 124))
+	page.add_child(_title("1v1 竖屏同步读招对决 · 致敬童年", 14, UiTheme.INK_SOFT, 124))
 
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_CENTER)
@@ -194,7 +188,7 @@ func _build_home_page() -> Control:
 	box.add_child(_mode_card("单人模式", UiTheme.ACCENT, _on_single))
 	box.add_child(_mode_card("联机对战", UiTheme.SHIELD, func(): _show_page(true)))
 
-	var settings := UiTheme.make_btn("设置", UiTheme.LINE, UiTheme.INK, 16, 48)
+	var settings := UiTheme.make_btn("设置", UiTheme.BG_CARD, UiTheme.INK, 16, 48)
 	settings.pressed.connect(_on_settings)
 	box.add_child(settings)
 
@@ -202,7 +196,6 @@ func _build_home_page() -> Control:
 	quit.pressed.connect(_on_quit)
 	box.add_child(quit)
 
-	# 主页可见错误行：入口失败必须在「用户正看着的页」上说出来（U7）
 	_home_status = UiTheme.ink_label("", 13, UiTheme.DANGER)
 	_home_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_home_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -219,7 +212,7 @@ func _build_net_page() -> Control:
 	page.name = "PageNet"
 	page.set_anchors_preset(Control.PRESET_FULL_RECT)
 
-	page.add_child(_title("联机对战", 22, UiTheme.INK, 48))
+	page.add_child(_title("联机对战", 24, UiTheme.INK, 48))
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -234,7 +227,7 @@ func _build_net_page() -> Control:
 	margin.add_child(v)
 
 	var info := PanelContainer.new()
-	info.add_theme_stylebox_override("panel", UiTheme.card_style())
+	info.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 14, UiTheme.SHIELD))
 	v.add_child(info)
 	_host_info = UiTheme.ink_label("请双方连接同一 Wi-Fi，或一人开热点另一人加入\n再创建 / 搜索房间", 13, UiTheme.INK_SOFT)
 	_host_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -257,7 +250,7 @@ func _build_net_page() -> Control:
 	_status.custom_minimum_size.y = 40
 	v.add_child(_status)
 
-	var back := UiTheme.make_btn("返回", UiTheme.LINE, UiTheme.INK, 15, 42)
+	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 15, 44)
 	back.pressed.connect(func(): _show_page(false))
 	v.add_child(back)
 
@@ -276,7 +269,6 @@ func _show_page(net: bool) -> void:
 func _refresh_status() -> void:
 	if _host_info == null:
 		return
-	# 不展示 IP：手机双网卡（蜂窝+Wi-Fi）容易抄错；引导共网即可
 	var wifis := PackedStringArray()
 	if Net != null and Net.provider != null and Net.provider.has_method("get_wifi_ipv4s"):
 		wifis = Net.provider.call("get_wifi_ipv4s")
@@ -295,7 +287,6 @@ func _on_single() -> void:
 	get_tree().change_scene_to_file(SOLO_SCENE)
 
 
-## 把失败写到当前可见页（主页状态行 + 联机页状态行），别只写隐藏页（U7）。
 func _report_error(msg: String) -> void:
 	if _home_status != null:
 		_home_status.text = msg

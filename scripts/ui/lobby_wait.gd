@@ -1,5 +1,5 @@
 ## lobby_wait.gd
-## 等待页（占位 UI）：双座位 + 准备 + 5s 倒计时 + 离开；房主收到加入请求弹单确认框。
+## 等待页：双座位 + 准备 + 5s 倒计时 + 离开；房主收到加入请求弹单确认框。
 extends Control
 
 const WAIT_PATH := "res://scenes/lobby_wait.tscn"
@@ -21,13 +21,11 @@ func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
 	UiNav.cleanup_overlays(get_tree())
 	UiNav.register_back_target(WAIT_PATH, UiNav.MENU_SCENE, true)
-	# 系统返回必须走和「离开房间」按钮同一条清理路（leave_room），否则倒计时中直接漏回菜单（U2）
 	UiNav.register_back_guard(WAIT_PATH, _on_back_requested)
 	add_child(UiBackRouter.new())
 	_net = UiNav.net() as PeerManager
 	_build_ui()
 	if _net != null:
-		# U1：Net 是 autoload，比场景命长；lambda 连接在场景释放后仍会触发（报错刷屏）→ 全部具名连接
 		_net.room_updated.connect(_on_room_updated)
 		_net.ready_changed.connect(_on_ready_changed)
 		_net.lobby_countdown_tick.connect(_on_countdown)
@@ -82,8 +80,7 @@ func _build_ui() -> void:
 	_room_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_room_name)
 
-	# TODO(ui): 替换为真实对战桌
-	v.add_child(UiPlaceholder.block("对战桌", Vector2(340, 150)))
+	v.add_child(UiTheme.banner_card("⚡ 1v1 对决台 ⚡", "双方点击「准备」后 5 秒倒计时开局", UiTheme.SHIELD, 96))
 
 	var seats := HBoxContainer.new()
 	seats.add_theme_constant_override("separation", 10)
@@ -120,7 +117,7 @@ func _build_ui() -> void:
 	_status.custom_minimum_size.y = 36
 	v.add_child(_status)
 
-	var leave := UiTheme.make_btn("离开房间", UiTheme.LINE, UiTheme.INK_SOFT, 15, 44)
+	var leave := UiTheme.make_btn("离开房间", UiTheme.BG_CARD, UiTheme.INK_SOFT, 15, 44)
 	leave.pressed.connect(_on_leave)
 	v.add_child(leave)
 
@@ -137,12 +134,10 @@ func _refresh() -> void:
 	var tag := "经典" if mode == "classic" else "课间"
 	if bool(r.get("mastery", false)):
 		tag += " · 精通"
-	# 机型/房间名只放副文案（房间名行），不许当座位名（文案规则：只用「我」/「对手」）（U4）
 	_room_name.text = "%s\n%s" % [str(r.get("name", "房间")), tag]
 	if host_name != "":
 		_room_name.text += " · " + host_name
 
-	# 座位名按各自视角标「我」/「对手」，别拿 host_name（=机型）当名字（U4）
 	var me_seat := 0 if _net.is_host() else 1
 	_seat_names[me_seat].text = "我"
 	_seat_names[1 - me_seat].text = "对手"
@@ -158,7 +153,6 @@ func _refresh() -> void:
 		_countdown.text = "双方准备后 5 秒开局" if not (host_ready and client_ready) else "即将开局"
 	if _ready_btn != null:
 		_ready_btn.text = "取消准备" if _local_ready() else "准备"
-		# set_ready 只在 LOBBY/READY_CHECK 生效；其余状态按钮必须禁用，别让人点一个 no-op（U7）
 		var sess := _net.get_session()
 		_ready_btn.disabled = sess != PeerManager.Session.LOBBY \
 			and sess != PeerManager.Session.READY_CHECK
@@ -184,9 +178,9 @@ func _on_countdown(remain_ms: int) -> void:
 	if _countdown == null:
 		return
 	if remain_ms > 0:
-		_countdown.text = "【占位】%d 秒后开局" % maxi(1, int(ceil(remain_ms / 1000.0)))
+		_countdown.text = "%d 秒后开局" % maxi(1, int(ceil(remain_ms / 1000.0)))
 	else:
-		_countdown.text = "【占位】开局中…"
+		_countdown.text = "开局中…"
 	_refresh()
 
 
@@ -203,8 +197,6 @@ func _on_leave() -> void:
 	_back_to_entry()
 
 
-## 系统返回键守卫：与「离开房间」按钮同一条清理路（leave_room，倒计时中也发离房通知），
-## 已接管返回 true（U2）。
 func _on_back_requested() -> bool:
 	_on_leave()
 	return true
@@ -212,8 +204,6 @@ func _on_back_requested() -> bool:
 
 # ---------- 加入请求（房主，单弹窗） ----------
 
-## 第二个 join_requested 到达时不能静默丢掉（新来者会一直干等）：
-## 显式拒绝新来者，已有的确认弹窗维持原状（U7）。
 func _on_join_requested(_id: int, _profile: Dictionary) -> void:
 	if _dialog != null and is_instance_valid(_dialog):
 		if _net != null:
@@ -259,7 +249,7 @@ func _modal(title: String, body: String, yes_text: String, no_text: String, cb: 
 	add_child(layer)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.45)
+	dim.color = Color(0.06, 0.09, 0.16, 0.45)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(dim)
 
@@ -293,7 +283,7 @@ func _modal(title: String, body: String, yes_text: String, no_text: String, cb: 
 	row.add_child(yes)
 
 	if no_text != "":
-		var no := UiTheme.make_btn(no_text, UiTheme.LINE, UiTheme.INK, 15, 42)
+		var no := UiTheme.make_btn(no_text, UiTheme.BG_CARD, UiTheme.INK, 15, 42)
 		no.custom_minimum_size.x = 120
 		no.pressed.connect(func(): cb.call(false))
 		row.add_child(no)

@@ -1,7 +1,8 @@
 ## main.gd
-## 单人对战页（占位视觉）：顶部对手资源 / 回合比分 / 中部揭示区 / 底部按模式出招。
-## 后端真接线：按钮走 BattleController.try_select；小局结算与终场用占位面板。
-## TODO(ui): 替换资源条/揭示区/技能盘为真实 UI（占位块见 UiPlaceholder）。
+## 单人对战页（正式视觉）：
+##   顶部：回合/比分条 + 对手血/气/盾状态卡（OppSlot）
+##   中部：中央对撞舞台（双侧亮招卡 + 拍点倒计时条 + 战报）（RevealSlot）
+##   底部：我方血/气/盾状态卡（MeSlot）+ 双层拇指操作盘（2×4 进阶技能槽 + 3 大核心主键）（BottomSlot）
 extends Control
 
 const SCENE := "res://scenes/main.tscn"
@@ -11,7 +12,7 @@ const DEFAULT_CFG := {"mode": "lesson", "mastery": false, "difficulty": "normal"
 @onready var controller: BattleController = $BattleController
 @onready var info_label: Label = %InfoLabel
 @onready var result_label: Label = %ResultLabel
-## 对手资源槽（命名与内容一致；勿叫 YouSlot —— 这里放的是「对手资源」占位）
+## 对手资源槽（命名与内容一致；勿叫 YouSlot）
 @onready var opp_slot: VBoxContainer = %OppSlot
 @onready var reveal_slot: VBoxContainer = %RevealSlot
 @onready var bottom_slot: VBoxContainer = %BottomSlot
@@ -20,6 +21,21 @@ const DEFAULT_CFG := {"mode": "lesson", "mastery": false, "difficulty": "normal"
 
 var _cfg: Dictionary = {}
 var _action_btns: Dictionary = {}
+var _me_boxes: Array = []
+var _opp_boxes: Array = []
+var _me_hp_row: HBoxContainer
+var _opp_hp_row: HBoxContainer
+var _me_state_tag: Label
+var _opp_state_tag: Label
+var _arena_status: Label
+var _arena_me_card: Label
+var _arena_opp_card: Label
+var _tempo_root: Control
+var _tempo_fill: ColorRect
+var _tempo_ticks: Array[ColorRect] = []
+var _fx_layer: Control
+var _spot_layer: Control
+
 var _sfx_clap: AudioStream
 var _sfx_ding: AudioStream
 var _sfx_hit: AudioStream
@@ -30,102 +46,308 @@ var _players: Array = []
 
 func _ready() -> void:
 	UiTheme.apply_to_tree(get_tree())
-	# 单人选择页传来的 cfg；直接进 main（主菜单旧入口）时按 lesson 默认开打
 	_cfg = (BattleController.pending_cfg as Dictionary).duplicate()
 	BattleController.pending_cfg = {}
 	if _cfg.is_empty():
 		_cfg = DEFAULT_CFG.duplicate()
 	UiNav.register_back_target(SCENE, UiNav.MENU_SCENE)
-	# 系统返回与「菜单」按钮必须走同一条离开路（单人对局 = 即时离开回菜单，无二次确认）（U7）
 	UiNav.register_back_guard(SCENE, _on_back_requested)
 	add_child(UiBackRouter.new())
 	menu_btn.pressed.connect(_leave_to_menu)
+	BattleFx.bind_press(menu_btn, "menu")
 	_setup_audio()
 
-	var opp_ph := UiPlaceholder.block("对手资源", Vector2(0, 96))
-	opp_ph.size_flags_vertical = Control.SIZE_FILL
-	opp_slot.add_child(opp_ph)
-	# 我方资源与对手同构，插在底部出招区之前
-	var me_slot := VBoxContainer.new()
-	me_slot.name = "MeSlot"
-	me_slot.custom_minimum_size = Vector2(0, 96)
-	var vbox := bottom_slot.get_parent() as VBoxContainer
-	vbox.add_child(me_slot)
-	vbox.move_child(me_slot, bottom_slot.get_index())
-	var me_ph := UiPlaceholder.block("我方资源", Vector2(0, 96))
-	me_ph.size_flags_vertical = Control.SIZE_FILL
-	me_slot.add_child(me_ph)
-	var reveal_ph := UiPlaceholder.block("揭示区", Vector2(0, 80))
-	reveal_slot.add_child(reveal_ph)
-	reveal_slot.move_child(reveal_ph, 0)
+	_fx_layer = Control.new()
+	_fx_layer.name = "FxLayer"
+	_fx_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_fx_layer)
 
-	# U5：先连接再 start_match —— start_match 同步发出首个 phase_changed（battle_controller._start_opening），
-	# 后连会把开局那一拍丢掉。这里保持既有处理顺序：首发进 _on_phase 只做 _refresh，行为不变。
+	# U5：先连接信号再 start_match，保证开局首拍 phase_changed 不丢失
 	controller.phase_changed.connect(_on_phase)
 	controller.beat.connect(_on_beat)
 	controller.round_resolved.connect(_on_resolved)
 	controller.game_over.connect(_on_game_over)
 	controller.start_match(_cfg)
+
+	_build_hud_and_arena()
 	_build_actions()
 	overlay.visible = false
+	_on_phase(controller.state.phase, controller.state.round)
 	_refresh()
+
+
+func _exit_tree() -> void:
+	_hide_spotlight()
 
 
 func _process(_delta: float) -> void:
+	_update_tempo_bar()
 	_refresh()
 
 
-## 底部出招区：classic 三个按钮；lesson 技能盘占位 13 格（仍真实可选）。
+func _build_hud_and_arena() -> void:
+	# 1. 对手状态卡
+	var opp_card := _make_fighter_card("对手", "opp", _opp_boxes)
+	opp_slot.add_child(opp_card)
+
+	# 2. 中央对撞舞台 + 拍点进度条
+	var arena := _make_arena_box()
+	reveal_slot.add_child(arena)
+	reveal_slot.move_child(arena, 0)
+
+	# 3. 我方状态卡（插在底部出招区之前）
+	var me_slot := VBoxContainer.new()
+	me_slot.name = "MeSlot"
+	var vbox := bottom_slot.get_parent() as VBoxContainer
+	vbox.add_child(me_slot)
+	vbox.move_child(me_slot, bottom_slot.get_index())
+	var me_card := _make_fighter_card("我", "me", _me_boxes)
+	me_slot.add_child(me_card)
+
+
+func _make_fighter_card(title_text: String, prefix: String, boxes: Array) -> PanelContainer:
+	var s: BattleState = controller.state
+	var accent := UiTheme.SHIELD if prefix == "me" else UiTheme.WAVE
+	var panel := PanelContainer.new()
+	panel.name = prefix.capitalize() + "HudCard"
+	panel.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, accent.lightened(0.35), 2))
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	panel.add_child(col)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	col.add_child(head)
+
+	var title := UiTheme.ink_label(title_text, 15, UiTheme.INK)
+	head.add_child(title)
+
+	var tag := UiTheme.ink_label("", 12, UiTheme.INK_SOFT)
+	tag.name = prefix + "_tag"
+	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	head.add_child(tag)
+
+	var hp_row := BattleFx.make_hp_row(s.max_hp(), s.max_hp())
+	var qi_row := BattleFx.make_qi_row(s.max_qi(), 0)
+	var sh_row := BattleFx.make_shield_row(s.max_shield(), s.max_shield())
+	if prefix == "me":
+		_me_hp_row = hp_row
+		_me_state_tag = tag
+	else:
+		_opp_hp_row = hp_row
+		_opp_state_tag = tag
+
+	var hp_lab := Label.new()
+	hp_lab.name = prefix + "_hp"
+	var qi_lab := Label.new()
+	qi_lab.name = prefix + "_qi"
+	var sh_lab := Label.new()
+	sh_lab.name = prefix + "_shield"
+	boxes.append(hp_lab)
+	boxes.append(qi_lab)
+	boxes.append(sh_lab)
+
+	col.add_child(BattleFx.make_stat_line("血", hp_row, hp_lab))
+	col.add_child(BattleFx.make_stat_line("气", qi_row, qi_lab))
+	col.add_child(BattleFx.make_stat_line("盾", sh_row, sh_lab))
+	col.set_meta("hp_row", hp_row)
+	col.set_meta("qi_row", qi_row)
+	col.set_meta("shield_row", sh_row)
+	return panel
+
+
+func _make_arena_box() -> VBoxContainer:
+	var wrap := VBoxContainer.new()
+	wrap.name = "ArenaBox"
+	wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	wrap.alignment = BoxContainer.ALIGNMENT_CENTER
+	wrap.add_theme_constant_override("separation", 6)
+
+	_arena_status = UiTheme.ink_label("点击「攒气」开始对决", 18, UiTheme.INK)
+	_arena_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	wrap.add_child(_arena_status)
+
+	var duel_row := HBoxContainer.new()
+	duel_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	duel_row.add_theme_constant_override("separation", 14)
+	wrap.add_child(duel_row)
+
+	var me_box := _make_duel_slot("我", UiTheme.ACCENT, true)
+	var vs_lab := UiTheme.ink_label("VS", 16, UiTheme.INK_FAINT)
+	var opp_box := _make_duel_slot("对手", UiTheme.WAVE, false)
+	duel_row.add_child(me_box)
+	duel_row.add_child(vs_lab)
+	duel_row.add_child(opp_box)
+
+	wrap.add_child(_make_tempo_bar())
+	return wrap
+
+
+func _make_duel_slot(who_title: String, border_col: Color, is_me: bool) -> PanelContainer:
+	var p := PanelContainer.new()
+	p.custom_minimum_size = Vector2(124, 68)
+	p.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, border_col, 2))
+	var v := VBoxContainer.new()
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
+	v.add_theme_constant_override("separation", 2)
+	p.add_child(v)
+	var t := UiTheme.ink_label(who_title, 11, UiTheme.INK_SOFT)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(t)
+	var act_lab := UiTheme.ink_label("待命", 22, border_col.darkened(0.1))
+	act_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(act_lab)
+	if is_me:
+		_arena_me_card = act_lab
+	else:
+		_arena_opp_card = act_lab
+	return p
+
+
+func _make_tempo_bar() -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 4)
+	wrap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	_tempo_root = Control.new()
+	_tempo_root.custom_minimum_size = Vector2(220, 12)
+	_tempo_root.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_tempo_root.clip_contents = true
+	_tempo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wrap.add_child(_tempo_root)
+
+	var bg := ColorRect.new()
+	bg.color = UiTheme.DISABLED_BG
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(bg)
+
+	_tempo_fill = ColorRect.new()
+	_tempo_fill.color = UiTheme.ACCENT
+	_tempo_fill.size = Vector2(0, 12)
+	_tempo_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tempo_root.add_child(_tempo_fill)
+
+	_tempo_ticks.clear()
+	for _i in 2:
+		var tick := ColorRect.new()
+		tick.color = Color(0.06, 0.09, 0.16, 0.45)
+		tick.size = Vector2(2, 12)
+		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_tempo_root.add_child(tick)
+		_tempo_ticks.append(tick)
+	return wrap
+
+
+func _update_tempo_bar() -> void:
+	if _tempo_fill == null or controller == null or controller.state == null:
+		return
+	var s: BattleState = controller.state
+	var win := controller.window_seconds()
+	var left := controller.select_left()
+	var elapsed := win - left
+	var t := clampf(elapsed / maxf(win, 0.01), 0.0, 1.0)
+	var w := _tempo_root.size.x if _tempo_root.size.x > 0 else 220.0
+	_tempo_fill.size = Vector2(w * t, 12)
+	if t >= 0.82:
+		_tempo_fill.color = UiTheme.DANGER
+	elif t >= 0.55:
+		_tempo_fill.color = UiTheme.ACCENT
+	else:
+		_tempo_fill.color = UiTheme.SHIELD
+	if _tempo_ticks.size() >= 2 and win > 0.01:
+		var clap := BattleTempo.clap2_at(s.round)
+		_tempo_ticks[0].position = Vector2(1, 0)
+		_tempo_ticks[1].position = Vector2(clampf(clap / win, 0.0, 1.0) * w - 1.0, 0)
+	_tempo_root.visible = controller.is_pick_open() and not s.is_over()
+
+
+## 底部双层拇指操作盘：
+##   上层（课间模式）：2×4 进阶技能槽（8 个两字技能）
+##   下层（常驻核心区）：3 大拇指主键【防御】【攒气】【包子】（包子支持连点 1→2→3 连）
 func _build_actions() -> void:
 	var s: BattleState = controller.state
-	var acts: Array = GameRules.preset(s.mode)["actions"]
-	var grid := GridContainer.new()
-	grid.columns = 3 if acts.size() <= 3 else 4
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var placeholder: bool = acts.size() > 3
-	for a in acts:
+	var deck := VBoxContainer.new()
+	deck.name = "SkillDeck"
+	deck.add_theme_constant_override("separation", 8)
+	deck.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	if s.skills_enabled():
+		var grid := GridContainer.new()
+		grid.name = "SkillGrid"
+		grid.columns = 4
+		grid.add_theme_constant_override("h_separation", 6)
+		grid.add_theme_constant_override("v_separation", 6)
+		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		for a in GameRules.ADVANCED_SKILLS:
+			var act := int(a)
+			var b := UiTheme.make_skill_slot(act, false)
+			b.pressed.connect(func(): _pick(act))
+			BattleFx.bind_press(b, "fang" if GameRules.is_defense(act) else "bo")
+			grid.add_child(b)
+			_action_btns[act] = b
+		deck.add_child(grid)
+
+	var primary_row := HBoxContainer.new()
+	primary_row.name = "PrimaryRow"
+	primary_row.add_theme_constant_override("separation", 8)
+	primary_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for a in GameRules.PRIMARY_ACTIONS:
 		var act := int(a)
-		var col: Color = UiTheme.PLACEHOLDER_BG
-		var fg: Color = UiTheme.INK
-		if not placeholder:
-			col = UiTheme.ACCENT
-			if act == GameRules.Action.BAO1:
-				col = UiTheme.WAVE
-				fg = Color.WHITE
-			elif act == GameRules.Action.FANG:
-				col = UiTheme.SHIELD
-				fg = Color.WHITE
-		var b := Button.new()
-		b.name = "Action%d" % act
-		b.text = ("【占位】" if placeholder else "") + GameRules.action_name(act)
-		b.clip_text = true
-		b.custom_minimum_size = Vector2(0, 52)
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.add_theme_font_size_override("font_size", 12 if placeholder else 18)
-		b.add_theme_font_override("font", UiTheme.default_font())
-		b.add_theme_color_override("font_color", fg)
-		b.add_theme_color_override("font_hover_color", fg)
-		b.add_theme_color_override("font_pressed_color", fg)
-		b.add_theme_color_override("font_disabled_color", Color(0.35, 0.33, 0.3))
-		b.add_theme_stylebox_override("normal", UiTheme.button_style(col, 12))
-		b.add_theme_stylebox_override("hover", UiTheme.button_style(col.lightened(0.08), 12))
-		b.add_theme_stylebox_override("pressed", UiTheme.button_style(col.darkened(0.08), 12))
-		b.add_theme_stylebox_override("disabled", UiTheme.button_style(Color(0.80, 0.78, 0.74), 12))
-		b.pressed.connect(func(): _pick(act))
-		grid.add_child(b)
+		var b := UiTheme.make_skill_slot(act, true)
+		if act == GameRules.Action.BAO1:
+			b.pressed.connect(_on_bao_pressed)
+			BattleFx.bind_press(b, "bo")
+		elif act == GameRules.Action.ZAN:
+			b.pressed.connect(func(): _pick(GameRules.Action.ZAN))
+			BattleFx.bind_press(b, "zan")
+		else:
+			b.pressed.connect(func(): _pick(GameRules.Action.FANG))
+			BattleFx.bind_press(b, "fang")
+		primary_row.add_child(b)
 		_action_btns[act] = b
-	bottom_slot.add_child(grid)
+
+	deck.add_child(primary_row)
+	bottom_slot.add_child(deck)
+
+
+func _on_bao_pressed() -> void:
+	if controller == null or controller.state == null:
+		return
+	var s: BattleState = controller.state
+	var cur := int(s.pending[0])
+	var target_act := UiTheme.next_bao_action(s, 0, cur)
+	_pick(target_act)
 
 
 func _pick(action: int) -> void:
+	if action == GameRules.Action.ZAN:
+		_hide_spotlight()
 	if controller.try_select(0, action):
 		_play_sfx(_sfx_zan if action == GameRules.Action.ZAN else _sfx_ding, -6.0)
 		_refresh()
 
 
-# ---------- 音效（从 HEAD 版 main.gd 恢复：拍点 / 选招 / 结算） ----------
+func _show_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		return
+	var zan_btn: Button = _action_btns.get(GameRules.Action.ZAN) as Button
+	if zan_btn == null:
+		return
+	_spot_layer = BattleFx.show_focus_spotlight(get_tree(), zan_btn, "点击「攒气」开始对决")
+
+
+func _hide_spotlight() -> void:
+	if _spot_layer != null and is_instance_valid(_spot_layer):
+		BattleFx.hide_focus_spotlight(_spot_layer)
+	_spot_layer = null
+
+
+# ---------- 音效 ----------
 
 func _setup_audio() -> void:
 	_sfx_clap = load("res://assets/audio/clap.wav")
@@ -149,7 +371,6 @@ func _play_sfx(stream: AudioStream, volume_db: float = 0.0) -> void:
 			p.volume_db = volume_db
 			p.play()
 			return
-	# 全忙则抢第一个
 	if not _players.is_empty():
 		_players[0].stream = stream
 		_players[0].volume_db = volume_db
@@ -167,21 +388,81 @@ func _refresh() -> void:
 	info_label.text = "回合 %d/%d · 我 %d : %d 对手 · 先到 %d 分" % [
 		int(s.round), s.round_cap(), int(s.score[0]), int(s.score[1]), s.score_to_win(),
 	]
+	_set_stat_row(_me_boxes, s, 0)
+	_set_stat_row(_opp_boxes, s, 1)
+
 	var open: bool = controller.is_pick_open()
+	var picked: int = int(s.pending[0])
 	for k in _action_btns.keys():
+		var act := int(k)
 		var b: Button = _action_btns[k]
-		b.disabled = not open or not s.can_use_action(0, int(k))
+		UiTheme.update_skill_slot(b, s, 0, act, open, picked, GameRules.PRIMARY_ACTIONS.has(act))
+
+	if _me_state_tag != null:
+		var seal_txt := "🚫封盾 " if s.is_sealed(0) else ""
+		var pick_txt := ("已选:" + GameRules.action_short_name(picked)) if picked >= 0 else "请选招"
+		_me_state_tag.text = seal_txt + pick_txt
+	if _opp_state_tag != null:
+		var opp_seal := "🚫封盾 " if s.is_sealed(1) else ""
+		var opp_pick := "已就绪" if int(s.pending[1]) >= 0 else "思考中…"
+		_opp_state_tag.text = opp_seal + opp_pick
+	if open and _arena_me_card != null:
+		_arena_me_card.text = GameRules.action_short_name(picked) if picked >= 0 else "待选"
+	if open and _arena_opp_card != null:
+		_arena_opp_card.text = "已锁" if int(s.pending[1]) >= 0 else "…"
 
 
-func _on_phase(phase: int, _round_no: int) -> void:
-	# 小局结算面板只挡这一拍；新小局开局窗一到就收起
+func _set_stat_row(boxes: Array, s: BattleState, i: int) -> void:
+	if boxes.size() < 3:
+		return
+	var hp := clampi(int(s.hp[i]), 0, s.max_hp())
+	var qi := clampi(int(s.qi[i]), 0, s.max_qi())
+	var shield_n := clampi(int(s.shield[i]), 0, s.max_shield())
+	boxes[0].text = "血 %d/%d" % [hp, s.max_hp()]
+	boxes[1].text = "气 %d/%d" % [qi, s.max_qi()]
+	boxes[2].text = "盾 %d/%d" % [shield_n, s.max_shield()]
+	var src: Control = boxes[0].get_parent() as Control
+	var col: Control = src.get_parent() as Control if src != null else null
+	if col == null:
+		return
+	if col.has_meta("hp_row"):
+		BattleFx.update_hp_row(col.get_meta("hp_row") as HBoxContainer, hp)
+	if col.has_meta("qi_row"):
+		BattleFx.update_qi_row(col.get_meta("qi_row") as HBoxContainer, qi)
+	if col.has_meta("shield_row"):
+		BattleFx.update_shield_row(col.get_meta("shield_row") as HBoxContainer, shield_n)
+
+
+func _on_phase(phase: int, round_no: int) -> void:
 	if phase == GameRules.Phase.SELECTING and overlay.visible:
 		overlay.visible = false
+	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null and not controller.opening_done()
+	if _arena_status != null:
+		match phase:
+			GameRules.Phase.SELECTING:
+				if is_opening:
+					_arena_status.text = "点击「攒气」开始对决"
+					_show_spotlight()
+				else:
+					_arena_status.text = "拍点选招（可随时改选）"
+					_hide_spotlight()
+			GameRules.Phase.RESOLVING, GameRules.Phase.PRESENTING:
+				_arena_status.text = "双方亮招！"
+				_hide_spotlight()
+			GameRules.Phase.GAME_OVER:
+				_arena_status.text = "对局结束"
+				_hide_spotlight()
 	_refresh()
 
 
 func _on_resolved(result: GameRules.RoundResult) -> void:
+	_hide_spotlight()
 	result_label.text = result.text
+	if result.actions.size() >= 2:
+		if _arena_me_card != null:
+			_arena_me_card.text = GameRules.action_short_name(int(result.actions[0]))
+		if _arena_opp_card != null:
+			_arena_opp_card.text = GameRules.action_short_name(int(result.actions[1]))
 	if result.opening:
 		_play_sfx(_sfx_zan, -2.0)
 	elif result.hit[0] or result.hit[1]:
@@ -190,21 +471,44 @@ func _on_resolved(result: GameRules.RoundResult) -> void:
 		_play_sfx(_sfx_block, 0.0)
 	elif int(result.qi_delta[0]) > 0 or int(result.qi_delta[1]) > 0:
 		_play_sfx(_sfx_ding, -4.0)
+
+	if not result.opening and _fx_layer != null:
+		var me_t: Control = _me_hp_row.get_parent() as Control if _me_hp_row else self
+		var opp_t: Control = _opp_hp_row.get_parent() as Control if _opp_hp_row else self
+		if bool(result.hit[0]):
+			BattleFx.play_hurt(_fx_layer, me_t)
+		if bool(result.hit[1]):
+			BattleFx.play_hit(_fx_layer, opp_t)
+		if bool(result.blocked[0]):
+			BattleFx.play_block(_fx_layer, me_t)
+		if bool(result.blocked[1]):
+			BattleFx.play_block(_fx_layer, opp_t)
+
 	var s: BattleState = controller.state
 	if s.is_over() and not s.is_match_over():
-		_show_overlay("小局结算 · 我 %d : %d 对手" % [int(s.score[0]), int(s.score[1])], false)
+		var sub := "我 %d : %d 对手" % [int(s.score[0]), int(s.score[1])]
+		if s.skills_enabled() and not s.mastery and s.winner == 0:
+			var sc := int(s.score[0])
+			for a in GameRules.ADVANCED_SKILLS:
+				if GameRules.unlock_score(int(a)) == sc:
+					sub += "\n解锁新技能：【%s】" % GameRules.action_short_name(int(a))
+		_show_overlay("小局结算", sub, false)
 
 
 func _on_game_over(winner: int) -> void:
-	var text := "终场 · 平局"
+	var s: BattleState = controller.state
+	var title := "终场 · 平局"
 	if winner == 0:
-		text = "终场 · 我方胜利"
+		title = "终场 · 我方胜利！"
 	elif winner == 1:
-		text = "终场 · 对手胜利"
-	_show_overlay(text, true)
+		title = "终场 · 对手胜利"
+	var sub := "最终比分 · 我 %d : %d 对手" % [int(s.score[0]), int(s.score[1])]
+	if _fx_layer != null:
+		BattleFx.play_result(_fx_layer, winner, _arena_status)
+	_show_overlay(title, sub, true)
 
 
-func _show_overlay(text: String, with_buttons: bool) -> void:
+func _show_overlay(title_text: String, sub_text: String, with_buttons: bool) -> void:
 	for c in overlay.get_children():
 		overlay.remove_child(c)
 		c.queue_free()
@@ -212,7 +516,7 @@ func _show_overlay(text: String, with_buttons: bool) -> void:
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 
 	var dim := ColorRect.new()
-	dim.color = Color(0.12, 0.1, 0.08, 0.45)
+	dim.color = Color(0.06, 0.09, 0.16, 0.55)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(dim)
 
@@ -222,9 +526,9 @@ func _show_overlay(text: String, with_buttons: bool) -> void:
 
 	var v := VBoxContainer.new()
 	v.custom_minimum_size = Vector2(300, 0)
-	v.add_theme_constant_override("separation", 10)
+	v.add_theme_constant_override("separation", 12)
 	center.add_child(v)
-	v.add_child(UiPlaceholder.block(text, Vector2(300, 160)))
+	v.add_child(UiTheme.banner_card(title_text, sub_text, UiTheme.ACCENT, 120))
 
 	if with_buttons:
 		var again := UiTheme.make_btn("再来一局", UiTheme.ACCENT, Color.WHITE, 17, 48)
@@ -235,12 +539,10 @@ func _show_overlay(text: String, with_buttons: bool) -> void:
 		v.add_child(back)
 
 
-## 单人对局的唯一离开路：菜单按钮 / 系统返回 / 终场「返回菜单」都走它（即时离开，无二次确认）。
 func _leave_to_menu() -> void:
 	UiNav.return_to_menu(get_tree())
 
 
-## 系统返回键守卫：与「菜单」按钮同一离开路，已接管返回 true（U7）。
 func _on_back_requested() -> bool:
 	_leave_to_menu()
 	return true
@@ -250,4 +552,5 @@ func _on_again() -> void:
 	overlay.visible = false
 	result_label.text = ""
 	controller.start_match(_cfg)
+	_on_phase(controller.state.phase, controller.state.round)
 	_refresh()
