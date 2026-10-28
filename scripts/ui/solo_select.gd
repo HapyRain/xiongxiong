@@ -1,7 +1,6 @@
 ## solo_select.gd
-## 单人模式选择（占位视觉）：经典/课间 + 普通/困难 + 精通（仅课间）+ 开始/返回。
-## 开始 → 把 cfg 放进 BattleController.pending_cfg → main.tscn。单屏 390×820，不滚动。
-## TODO(ui): 替换两张模式卡与难度/精通控件为真实视觉。
+## 1080P (1080×1920) 单人模式选择：经典/课间 + 普通/困难 + 精通（仅课间）+ 开始/返回。
+## 开始 → 把 cfg 放进 BattleController.pending_cfg → main.tscn。单屏 1080×1920，不滚动。
 extends Control
 
 const SCENE := "res://scenes/solo_select.tscn"
@@ -32,80 +31,87 @@ func _build() -> void:
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+	UiTheme.add_stage_background(self, 0.35)
 
 	var margin := MarginContainer.new()
 	margin.name = "Margin"
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 20)
-	margin.add_theme_constant_override("margin_right", 20)
-	margin.add_theme_constant_override("margin_top", 20)
-	margin.add_theme_constant_override("margin_bottom", 20)
+	margin.add_theme_constant_override("margin_left", 54)
+	margin.add_theme_constant_override("margin_right", 54)
+	margin.add_theme_constant_override("margin_top", 48)
+	margin.add_theme_constant_override("margin_bottom", 48)
 	add_child(margin)
 
 	var v := VBoxContainer.new()
 	v.name = "Content"
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 24)
 	margin.add_child(v)
 
-	var title := UiTheme.ink_label("单人对战", 30, UiTheme.INK)
+	var title := UiTheme.ink_label("单人对战", 68, Color(1.0, 0.94, 0.70), 12, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
-	var sub := UiTheme.ink_label("选择模式与难度", 13, UiTheme.INK_SOFT)
+	var sub := UiTheme.ink_label("选择模式与难度", 28, Color(0.90, 0.95, 1.0), 5, UiTheme.INK)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(sub)
 
 	v.add_child(_section("模式"))
 	for m in ["classic", "lesson"]:
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(0, 80)
+		b.custom_minimum_size = Vector2(0, 176)
 		b.add_theme_font_override("font", UiTheme.default_font())
-		b.add_theme_font_size_override("font_size", 17)
+		b.add_theme_font_size_override("font_size", 36)
 		b.pressed.connect(func():
 			_mode = str(m)
 			_refresh())
+		BattleFx.bind_press(b, "zan" if m == "lesson" else "fang")
 		v.add_child(b)
 		_mode_btns[str(m)] = b
 
 	v.add_child(_section("难度"))
 	var diff_row := HBoxContainer.new()
-	diff_row.add_theme_constant_override("separation", 10)
+	diff_row.add_theme_constant_override("separation", 24)
 	v.add_child(diff_row)
 	for d in ["normal", "hard"]:
 		var b := Button.new()
 		b.text = "普通" if d == "normal" else "困难"
-		b.custom_minimum_size = Vector2(0, 48)
+		b.custom_minimum_size = Vector2(0, 112)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.add_theme_font_override("font", UiTheme.default_font())
-		b.add_theme_font_size_override("font_size", 16)
+		b.add_theme_font_size_override("font_size", 36)
 		b.pressed.connect(func():
 			_difficulty = str(d)
 			_refresh())
+		BattleFx.bind_press(b, "default")
 		diff_row.add_child(b)
 		_diff_btns[str(d)] = b
 
 	_mastery_btn = CheckButton.new()
 	_mastery_btn.text = "技能精通（仅课间）"
-	_mastery_btn.custom_minimum_size = Vector2(0, 40)
+	_mastery_btn.custom_minimum_size = Vector2(0, 88)
 	_mastery_btn.add_theme_font_override("font", UiTheme.default_font())
-	_mastery_btn.add_theme_font_size_override("font_size", 15)
-	_mastery_btn.add_theme_color_override("font_color", UiTheme.INK)
+	_mastery_btn.add_theme_font_size_override("font_size", 32)
+	_mastery_btn.add_theme_color_override("font_color", Color.WHITE)
+	_mastery_btn.add_theme_constant_override("outline_size", 5)
+	_mastery_btn.add_theme_color_override("font_outline_color", UiTheme.INK)
 	_mastery_btn.toggled.connect(func(on: bool): _mastery = on)
 	v.add_child(_mastery_btn)
 
-	var start := UiTheme.make_btn("开始对战", UiTheme.ACCENT, Color.WHITE, 18, 52)
+	var start := UiTheme.make_btn("开始对战", UiTheme.ACCENT, Color.WHITE, 42, 124)
 	start.pressed.connect(_on_start)
+	BattleFx.bind_press(start, "zan")
 	v.add_child(start)
 
-	var back := UiTheme.make_btn("返回", UiTheme.LINE, UiTheme.INK, 15, 44)
+	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 34, 102)
 	back.pressed.connect(_on_back)
+	BattleFx.bind_press(back, "menu")
 	v.add_child(back)
 
 
 func _section(text: String) -> Label:
-	var lab := UiTheme.ink_label(text, 14, UiTheme.INK_SOFT)
-	lab.custom_minimum_size.y = 20
+	var lab := UiTheme.ink_label(text, 30, Color(0.92, 0.96, 1.0), 5, UiTheme.INK)
+	lab.custom_minimum_size.y = 40
 	return lab
 
 
@@ -114,9 +120,11 @@ func _paint(b: Button, bg: Color, fg: Color) -> void:
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)
 	b.add_theme_color_override("font_disabled_color", UiTheme.INK_FAINT)
-	b.add_theme_stylebox_override("normal", UiTheme.button_style(bg, 14))
-	b.add_theme_stylebox_override("hover", UiTheme.button_style(bg.lightened(0.08), 14))
-	b.add_theme_stylebox_override("pressed", UiTheme.button_style(bg.darkened(0.08), 14))
+	b.add_theme_constant_override("outline_size", 6 if fg == Color.WHITE else 0)
+	b.add_theme_color_override("font_outline_color", UiTheme.INK)
+	b.add_theme_stylebox_override("normal", UiTheme.button_style(bg, 26, UiTheme.INK, 4, 8))
+	b.add_theme_stylebox_override("hover", UiTheme.button_style(bg.lightened(0.08), 26, UiTheme.INK, 4, 8))
+	b.add_theme_stylebox_override("pressed", UiTheme.button_style(bg.darkened(0.08), 26, UiTheme.INK, 4, 3))
 
 
 func _refresh() -> void:
@@ -124,12 +132,11 @@ func _refresh() -> void:
 		var on: bool = m == _mode
 		var b: Button = _mode_btns[m]
 		b.text = ("✓ " if on else "") + str(MODE_TITLE[m]) + "\n" + str(MODE_DESC[m])
-		_paint(b, UiTheme.ACCENT if on else UiTheme.LINE, Color.WHITE if on else UiTheme.INK)
+		_paint(b, UiTheme.ACCENT if on else UiTheme.BG_CARD, Color.WHITE if on else UiTheme.INK)
 	for d in _diff_btns.keys():
 		var on: bool = d == _difficulty
 		var b: Button = _diff_btns[d]
-		_paint(b, UiTheme.SHIELD if on else UiTheme.LINE, Color.WHITE if on else UiTheme.INK)
-	# 精通只在课间可点；切回经典时强制关掉
+		_paint(b, UiTheme.SHIELD if on else UiTheme.BG_CARD, Color.WHITE if on else UiTheme.INK)
 	_mastery_btn.disabled = _mode != "lesson"
 	if _mode != "lesson" and _mastery:
 		_mastery = false

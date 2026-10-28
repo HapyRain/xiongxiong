@@ -139,11 +139,11 @@ func _try_attach_settings_btn() -> void:
 	btn.text = "设置"
 	btn.tooltip_text = "画质 / 帧率设置"
 	btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	btn.offset_left = -56
-	btn.offset_top = 8
-	btn.offset_right = -10
-	btn.offset_bottom = 38
-	btn.add_theme_font_size_override("font_size", 14)
+	btn.offset_left = -148
+	btn.offset_top = 20
+	btn.offset_right = -24
+	btn.offset_bottom = 92
+	btn.add_theme_font_size_override("font_size", 30)
 	btn.pressed.connect(_open_settings_panel)
 	_entry_layer.add_child(btn)
 
@@ -251,7 +251,7 @@ func unregister_fx_viewport(vp: SubViewport) -> void:
 func _apply_fx_viewport(vp: SubViewport, scale: float) -> void:
 	var base := vp.size
 	if base.x <= 0 or base.y <= 0:
-		base = Vector2i(390, 820)
+		base = Vector2i(1080, 1920)
 	var target := Vector2i(
 		maxi(1, int(round(float(base.x) * scale))),
 		maxi(1, int(round(float(base.y) * scale)))
@@ -298,22 +298,22 @@ func probe_device() -> Dictionary:
 
 	var gpu_l := gpu.to_lower()
 	if gpu_l != "":
-		for bad: String in ["mali-4", "mali-450", "adreno 5", "adreno 3", "powervr", "intel hd graphics"]:
-			if gpu_l.contains(bad):
-				score = mini(score, 2)
-				break
-		for good: String in ["adreno 7", "adreno 6", "mali-g7", "mali-g8", "xclipse", "apple gpu", "rtx", "radeon"]:
-			if gpu_l.contains(good):
-				score += 2
-				break
-
-	var auto_tier: int
-	if score >= 8:
-		auto_tier = Tier.HIGH
-	elif score >= 5:
-		auto_tier = Tier.MID
+		if _match_any(gpu_l, ["adreno 7", "adreno (tm) 7", "immortalis", "mali-g7", "mali-g8", "apple a1", "apple m", "rtx", "radeon rx"]):
+			score += 3
+		elif _match_any(gpu_l, ["adreno 6", "adreno (tm) 6", "mali-g5", "mali-g6", "gtx", "iris", "uhd"]):
+			score += 2
+		elif _match_any(gpu_l, ["adreno 5", "mali-t", "mali-4", "powervr"]):
+			score += 1
+		else:
+			score += 2
 	else:
-		auto_tier = Tier.LOW
+		score += 2
+
+	var auto_t := Tier.MID
+	if score <= 4:
+		auto_t = Tier.LOW
+	elif score >= 8:
+		auto_t = Tier.HIGH
 
 	return {
 		"physical_mb": physical_mb,
@@ -322,25 +322,41 @@ func probe_device() -> Dictionary:
 		"gpu_name": gpu,
 		"os_name": OS.get_name(),
 		"score": score,
-		"auto_tier": auto_tier,
+		"auto_tier": auto_t,
 	}
 
 
-# ---------- 持久化 user://settings.cfg ----------
+static func _match_any(hay: String, needles: Array) -> bool:
+	for n in needles:
+		if hay.find(str(n)) >= 0:
+			return true
+	return false
+
+
+# ---------- 持久化 ----------
+
+func load_settings() -> void:
+	device_probe = probe_device()
+	var default_tier := int(device_probe["auto_tier"])
+	var cf := ConfigFile.new()
+	if cf.load(SETTINGS_PATH) != OK:
+		tier = default_tier
+		auto_preset = true
+		fps_cap_override = 0
+		return
+	auto_preset = bool(cf.get_value(SECTION, "auto_preset", true))
+	fps_cap_override = int(cf.get_value(SECTION, "fps_cap", 0))
+	if auto_preset:
+		tier = default_tier
+	else:
+		tier = clampi(int(cf.get_value(SECTION, "tier", default_tier)), Tier.LOW, Tier.HIGH)
+
 
 func save_settings() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value(SECTION, "tier", tier)
 	cf.set_value(SECTION, "auto_preset", auto_preset)
 	cf.set_value(SECTION, "fps_cap", fps_cap_override)
-	cf.set_value(SECTION, "updated_at", Time.get_datetime_string_from_system())
-	var p := device_probe
-	cf.set_value(SECTION, "probe_auto_tier", int(p.get("auto_tier", Tier.MID)))
-	cf.set_value(SECTION, "probe_score", int(p.get("score", 0)))
-	cf.set_value(SECTION, "probe_refresh", float(p.get("refresh_rate", 0.0)))
-	cf.set_value(SECTION, "probe_ram_mb", int(p.get("physical_mb", 0)))
-	cf.set_value(SECTION, "probe_cores", int(p.get("cpu_cores", 0)))
-	cf.set_value(SECTION, "probe_gpu", str(p.get("gpu_name", "")))
 	var tmp := SETTINGS_PATH + ".tmp"
 	var err := cf.save(tmp)
 	if err == OK:
@@ -351,24 +367,3 @@ func save_settings() -> void:
 			dir.rename(tmp, SETTINGS_PATH)
 	else:
 		cf.save(SETTINGS_PATH)
-
-
-func load_settings() -> void:
-	device_probe = probe_device()
-	var cf := ConfigFile.new()
-	var err := cf.load(SETTINGS_PATH)
-	if err != OK:
-		tier = int(device_probe.get("auto_tier", Tier.MID))
-		auto_preset = true
-		fps_cap_override = 0
-		save_settings()
-		return
-
-	var saved_tier := int(cf.get_value(SECTION, "tier", Tier.MID))
-	var saved_auto := bool(cf.get_value(SECTION, "auto_preset", true))
-	tier = clampi(saved_tier, Tier.LOW, Tier.HIGH)
-	auto_preset = saved_auto
-	fps_cap_override = int(cf.get_value(SECTION, "fps_cap", 0))
-
-	if auto_preset:
-		tier = int(device_probe.get("auto_tier", Tier.MID))

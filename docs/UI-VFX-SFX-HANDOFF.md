@@ -1,63 +1,81 @@
-# 《拍拍熊熊》v2 视觉资产、全技能动效、音效与 MOBA 反馈交接指南
+# 《拍拍熊熊》v3 (1080P 全屏三渲二特效 · 炉石烧绳锚点 · 街机双层技能盘) 零漂移交接规范
 
-> **用途**：供后续本地开发或 Agent 接手时快速了解 `assets/ui/`、`assets/audio/` 以及 `scripts/ui/battle_fx.gd` / `scripts/ui/ui_theme.gd` 的挂载方式与替换规范。
-
----
-
-## 1. 本轮解决的核心问题清单
-
-1. **修复右上角「设置」与「菜单」按钮重合 Bug (`scripts/performance/quality_settings.gd`)**：
-   * `QualitySettings` 原先在进入 `menu.tscn` 时挂了常驻 `CanvasLayer(layer=50)` 的 `SettingsButton`，且 `node_added` 使用了 `CONNECT_ONE_SHOT`，导致切入 `main.tscn` / `net_battle.tscn` 时未隐藏，与对局右上角的 `MenuBtn` 重合。
-   * 现已改为持续监听场景切换：凡进入 `menu.tscn`、`main.tscn`、`net_battle.tscn`（均自带菜单/设置按钮），`SettingsEntryLayer` 自动隐藏，并将 `net_battle_ui.gd` 右上角菜单按钮规整至 `-68..-12`。
-2. **MOBA 级中央偏上博弈反馈横幅 (`MobaBanner`) + 格挡/被格挡/吸收非对称演出 (`BattleFx.play_clash_director`)**：
-   * **格挡成功侧**：金青双层圣盾扩环 + 上浮正反馈大字 `🛡️ 格挡成功！` / `⚡ 强防弹反！` + 高亢金属共鸣音 `block_success.wav`。
-   * **被格挡侧（攻击受挫方）**：面板向后震退弹回（Recoil）+ 碎火粒子 + `💥 攻击被挡！` + 撞铁受挫音 `blocked_rebound.wav`，且包子投射物在命中护盾时会向侧面弹飞碎裂。
-   * **吸收博弈**：吸收成功时从被偷方抽取 6 颗紫色能量球飞入吸收方（`xi_shou_ok.wav` + `🌀 吸收成功！偷取【XX】`）；吸收撞上攻击失败时触发黑洞内爆反噬（`xi_shou_fail.wav` + `💔 吸收反噬 -1血！`）；吸收撞上防御时提示 `💨 吸收落空`。
-3. **右下偏中「5 轮打字机上推战报栏」(`BattleTicker`)**：
-   * 位于中央舞台右下方（我方状态卡右上方，宽 `214px` × 高 `82px`），左侧并排放置拍点进度条。
-   * 最多保留最近 **5 回合**交手记录（`R01`..`R40`），每回合结算时旧记录平滑向上推移并按远近阶梯淡化透明度（`0.42 → 0.82`），最新一条在最底部以**打字机逐字敲出效果**（`visible_ratio: 0.0 → 1.0`）呈现。
-4. **按钮四态交互（Normal / Hover-Selected / Pressed / Disabled-Reject）**：
-   * 每个技能按钮左上方挂载专属图标 `IconTex`，底层挂载状态遮罩 `StateTex`（冷却斜纹、未解锁锁框、封盾红链、选中金光）。
-   * **禁用态可感知拒绝反馈**：当玩家在选招时点击处于 CD、未解锁、封盾或缺气的按钮时，触发水平拒绝抖动 `BattleFx.play_reject_feedback` + 拒绝音效 `ui_deny.wav` + 中央横幅提示具体原因（如 `⏳ 【小羊】冷却中（还需 2 回合）`）。
-5. **随回合推进的「紧绷感」BGM (`bgm_battle.wav`) + 开局号角 (`game_start.wav`)**：
-   * 开局自动播放 `game_start.wav` 并启动无缝循环的 `bgm_battle.wav`。
-   * 每回合调用 `BattleFx.update_bgm_tension()`：随着回合数增加、任意一方残血（1 血）或临近赛点，平滑提升 BGM 的 `pitch_scale`（`1.00 → 1.30`）与音量（`-12 dB → -6.5 dB`），越到后期越紧迫。
+> **定位与强约束说明**：本文件是《拍拍熊熊》v3 视听与 UI 系统的唯一权威交接契约。本地 Agent 在接手维护或微调时，**必须严格遵守下方「八条铁律（Zero-Drift Guardrails）」**，严禁自行发挥、严禁退回旧版 390×820 低清布局或无描边灰块按钮。
 
 ---
 
-## 2. UI 贴图资产目录 (`assets/ui/`) 与替换方式
+## 一、 本地 Agent 必读：八条零漂移铁律（Zero-Drift Guardrails）
 
-当前已通过 `UiTheme.load_ui_texture()` 实现**免 import 直读加载**（即使未打开 Godot 编辑器执行 `--import`，运行时也能直接读取 PNG 字节流生成 `ImageTexture`）。
+1. **分辨率铁律（1080×1920 竖版 1080P）**：
+   * `project.godot` 的设计视口分辨率固定为 `viewport_width=1080`、`viewport_height=1920`（桌面端调试窗口缩放预览 `window_width_override=540`、`window_height_override=960`）。
+   * **禁止**将视口改回 `390×820`，所有字体、线宽、粒子半径均按 1080P 规格定义。
+2. **严禁使用常量名 `UiTheme.OK`（防全局遮蔽）**：
+   * 在 `scripts/ui/ui_theme.gd` 中成功绿常量必须命名为 **`OK_GREEN`**，**严禁**定义为 `const OK`，否则会遮蔽 Godot 全局枚举 `Error.OK` 导致编译报错。
+3. **技能栏图文分离与粗黑描边铁律（严禁图标垫在文字正下方）**：
+   * 在 `UiTheme.make_skill_slot()` 中，技能图标 `IconTex` 必须固定锚定在**按钮左侧独立区域**（`anchor_left=0, offset_left=8..12`），**严禁**使用 `PRESET_FULL_RECT` 铺满按钮中心垫在文字底下。
+   * 按钮主文案（严格 2 个汉字 `GameRules.action_short_name(act)`）必须设置纯白字色 `#FFFFFF` + **`8~10px` 纯黑漫画描边 (`outline_size = 8..10, font_outline_color = #090D17`)**。
+4. **严禁在技能按钮上使用 Emoji（`🔒 / ⏳ / 🚫` 全面禁用）**：
+   * 技能槽底部状态统一由深色半透明底栏 `SubBar/SubBadge` 承载，文案只准用纯中文与数字：`1分解锁`..`8分解锁`、`冷却 2`、`护盾被封`、`缺气(2)`、`耗 1 盾`、`+1气 +1盾`、`连点1~3连`。
+5. **严禁结算期间整盘技能按钮闪烁变灰**：
+   * 在 `UiTheme.update_skill_slot()` 中，必须严格区分 `usable = s.can_use_action(who, act)`（技能本身是否解锁/够气/无CD）与 `can_lock`（当前是否处于选招时间窗）。
+   * 当 `usable == true` 且 `can_lock == false`（即 0.8s 亮招结算动画期间），按钮虽然 `disabled = true` 拦截点击，但其 `disabled` 样式盒**必须保持与 `normal` 相同的鲜亮彩色样式**，只有 `usable == false` 的技能才显示深岩灰底色 (`DISABLED_BG`)。
+6. **全屏三渲二特效舞台 (`CelStageCanvas`) 边界铁律**：
+   * `BattleFx.CelStageCanvas` 挂载于 `FxLayer` 下，利用 `_draw()` 渲染全屏漫画放射速度线、Impact Frame 顿帧闪光、六边金青折射护盾波、吸收引力黑洞涡旋与粗黑描边刀光。
+   * 特效绘制高度限制在上方舞台区（`y = 0 .. 1320`），**绝不遮挡底部技能操作盘**。
+7. **消灭重复文字与重叠胶囊飘字铁律**：
+   * 角色状态栏（HUD）左侧放置三渲二熊头像 (`avatar_bear_me.png` / `avatar_bear_opp.png`)，血槽与盾槽并排紧凑展示，数值标签（`me_hp / me_qi / me_shield`）只写纯比值 `"3/4"`，**严禁**写成 `"血 ... 血 3/4"`。
+   * 回合结算时，**只保留正中偏上 `MobaBanner` + 舞台中央三渲二漫画拟声大字 (`_spawn_comic_callout`) + 右下角微缩打字机记招器 (`BattleTicker`)**，严禁在上下 HUD 卡牌上再叠黑底胶囊飘字。
+8. **音频 100% 必响三保险机制（严禁开启 QOA 压缩）**：
+   * `assets/audio/*.wav.import` 必须保持 `compress/mode=0`（无损 16-bit PCM），**严禁**设为 `compress/mode=2`（QOA 压缩会破坏 `bgm_battle.wav` 的循环点 `loop_end`）。
+   * `BattleFx.load_wav_safe()` 优先通过 `FileAccess.get_file_as_bytes()` 直接构造未压缩 `FORMAT_16_BITS` 的 `AudioStreamWAV`，并内置 `_synth_fallback_wav()` 内存级 PCM 合成器兜底。
 
-| 路径 | 尺寸 | 用途说明 |
+---
+
+## 二、 1080×1920 竖屏纵向分区坐标表
+
+| 纵向区间 (`y`) | 区域名称 | 关键节点名 | 视觉与交互说明 |
+| :--- | :--- | :--- | :--- |
+| `0 .. 1920` (底层) | **三渲二夕阳天台舞台背景** | `StageBgTex`, `StageTint` | `assets/ui/stage_bg_cel.png` 全屏铺底 + `0.18` 暗角衬托前景 |
+| `20 .. 88` | **顶部比分与菜单栏** | `InfoLabel`, `MenuBtn` | 30px 粗黑描边白字显示回合与比分；右上唯一「菜单」按钮（已隐藏 `QualitySettings` 常驻浮动齿轮） |
+| `96 .. 224` | **对手街机状态栏 (HUD)** | `OppHudCard` / `_you_panel` | 左侧赤焰熊头像 `avatar_bear_opp.png` + 右侧血槽/盾槽同排 + 元气槽 |
+| `236 .. 348` | **MOBA 居中偏上博弈横幅** | `MobaBanner` | 宽 `920×112`，展示格挡成功/被挡/破防封盾/吸收得手/劝降等主反馈 |
+| `348 .. 1060` | **全屏三渲二交锋舞台区** | `CelStageCanvas`, `MeDuelCard`, `OppDuelCard` | 双侧三渲二亮招卡 (`340×168`) + 全屏放射速度线 + 六边圣盾特写 (`vfx_shield_cutin.png`) + 黑洞特写 (`vfx_vortex_cutin.png`) + 漫画拟声大字 |
+| `1060 .. 1208` (靠右) | **右下贴边微缩打字机记招器** | `BattleTicker` | 宽 `400×148`，靠右对齐 (`ALIGNMENT_END`)，半透明磨砂暗底 (`alpha=0.62`)，最多留 5 行，结算后从下往上推并打字机逐字显形 |
+| `1218 .. 1280` | **炉石式烧绳子 + 拍点锚点** | `BurningRopeBar` | 横贯全屏 (`1020×62`)，内嵌 `一拍`、`二拍`、`封盘` 三枚立体锚点与旋转燃烧火花头 `RopeSpark` (`rope_spark.png`) |
+| `1292 .. 1420` | **我方街机状态栏 (HUD)** | `MeHudCard` / `_me_panel` | 左侧金罡熊头像 `avatar_bear_me.png` + 右侧血槽/盾槽 + 元气槽 |
+| `1432 .. 1668` | **进阶技能战术盘 (4×2)** | `SkillGrid` (`Action5..12`) | 每格高 `112px`，左图标 + 居中 34px 黑边白字 + 右上耗气胶囊 + 底部黑底状态条 |
+| `1680 .. 1832` | **黄金拇指三大主键** | `PrimaryRow` (`Action4,0,1`) | 每键高 `152px`，【防御】【攒气】【包子（连点升阶单包/双包/三包）】 |
+
+---
+
+## 三、 UI 与特效贴图资产清单 (`assets/ui/`)
+
+| 文件名 | 规格 | 用途说明 |
 | :--- | :--- | :--- |
-| `assets/ui/icon_zan.png` | `64×64` | 【攒气】按钮图标 |
-| `assets/ui/icon_bao1.png` / `bao2.png` / `bao3.png` | `64×64` | 【包子 / 双包 / 三包】连点按钮动态切换图标 |
-| `assets/ui/icon_fang.png` / `strong_fang.png` | `64×64` | 【防御 / 强防】按钮图标 |
-| `assets/ui/icon_xiao_yang.png` / `da_yang.png` | `64×64` | 【小羊 / 大羊】破防技图标 |
-| `assets/ui/icon_ji_qi.png` / `hui_fu.png` | `64×64` | 【集气 / 回复】增益技图标 |
-| `assets/ui/icon_xi_shou.png` / `bao_qi.png` / `zhong_ji.png` | `64×64` | 【吸收 / 爆气 / 终极】博弈与大招图标 |
-| `assets/ui/icon_quan_jiang.png` | `64×64` | 【劝降】隐藏技图标 |
-| `assets/ui/state_cd_overlay.png` | `128×64` | 技能冷却中（CD）斜纹暗色遮罩 |
-| `assets/ui/state_locked_overlay.png` | `128×64` | 技能未解锁暗色边框遮罩 |
-| `assets/ui/state_sealed_overlay.png` | `128×64` | 护盾被封锁（封盾）红紫交叉锁链遮罩 |
-| `assets/ui/state_selected_glow.png` | `128×64` | 本回合已选中技能的金色高亮外框 |
-| `assets/ui/moba_banner_bg.png` | `340×48` | 中央偏上 MOBA 反馈横幅底图 |
-| `assets/ui/ticker_bg.png` | `210×92` | 右下 5 轮打字机战报底图 |
-| `assets/ui/skill_ui_sheet_concept.jpg` | 原图 | AI 生成的高清卡通熊武术技能与四态 UI 概念设计大图 |
-| `assets/ui/sliced_concept/concept_*.png` | `96×96` | 从 AI 概念大图切出的 16 张高清圆角图标（若喜欢插画风，可直接重命名覆盖上方 `icon_*.png`） |
-
-> **如何切换为 AI 插画版图标**：只需将 `assets/ui/sliced_concept/concept_<name>.png` 复制并覆盖到 `assets/ui/icon_<name>.png`，无需修改任何 GDScript 代码。
+| `stage_bg_cel.png` | `1080×1920` | 竖屏 1080P 三渲二夕阳校园天台对决舞台背景（含漫画集中线与中央法阵） |
+| `avatar_bear_me.png` | `220×128` | 我方「金罡武道熊」三渲二头像徽章 |
+| `avatar_bear_opp.png` | `220×128` | 对手「赤焰狂暴熊」三渲二头像徽章 |
+| `vfx_shield_cutin.png` | `360×220` | 格挡成功 / 强防弹反时的三渲二天青六边圣盾爆裂特写卡 |
+| `vfx_vortex_cutin.png` | `360×220` | 吸收技能触发时的三渲二紫黑引力黑洞闪电特写卡 |
+| `rope_spark.png` | `96×96` | 炉石式烧绳倒计时导火索前端旋转燃烧火花贴图 |
+| `icon_*.png` (14 张) | `128×128` | 14 个动作的高对比三渲二粗黑描边技能徽章（置于按钮左侧独立槽） |
+| `state_locked_overlay.png` | `256×128` | 未解锁状态暗斜纹边框遮罩（中心留空，不挡字） |
+| `state_cd_overlay.png` | `256×128` | 冷却中状态冰蓝斜纹边框遮罩（中心留空，不挡字） |
+| `state_sealed_overlay.png` | `256×128` | 封盾状态四角紫红锁链遮罩（中心留空，不挡字） |
+| `state_selected_glow.png` | `256×128` | 已锁定技能的亮金双层漫画发光外框 |
 
 ---
 
-## 3. 音频资产目录 (`assets/audio/`) 与重新生成方式
+## 四、 本地验证与回归自检命令
 
-所有 21 个音频文件由 `tests/gen_sfx.py` 纯标准库生成，并通过 `BattleFx.load_wav_safe()` 支持裸 PCM WAV 免 import 加载：
+在 Windows 终端项目根目录下运行：
+```powershell
+# 1. 重新生成并峰值归一化全套 21 个 WAV 音效与 BGM（可选，工程内已预生成）
+python tests/gen_sfx.py
 
-* **重新生成或调参命令**：`python tests/gen_sfx.py`
-* **文件列表**：
-  * 开场与 BGM：`game_start.wav`, `bgm_battle.wav`
-  * UI 交互：`ui_select.wav`, `ui_deny.wav`, `clap.wav`, `ding.wav`
-  * 攻防与博弈反馈：`block_success.wav`（格挡成功正反馈）, `blocked_rebound.wav`（被格挡反弹受挫）, `seal.wav`（封盾锁链）, `hit.wav`, `block.wav`
-  * 技能专属：`zan.wav`, `bao1.wav`, `bao2.wav`, `bao3.wav`, `strong_fang.wav`, `xiao_yang.wav`, `da_yang.wav`, `ji_qi.wav`, `xi_shou_ok.wav`, `xi_shou_fail.wav`, `bao_qi.wav`, `hui_fu.wav`, `zhong_ji.wav`, `quan_jiang.wav`
+# 2. 运行 Python 规则全矩阵回归（123 项断言）
+python tests/test_rules_v2.py
+
+# 3. 运行 Godot 4.7.2 全量 8 项 headless 自检（含 1080x1920 视口、双层 11 键、2 字硬约束、CelStageCanvas、BurningRopeBar）
+.\tools\run_checks.ps1
+```

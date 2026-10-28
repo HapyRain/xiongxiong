@@ -260,6 +260,7 @@ func _check_screen() -> void:
 			_exp("main: 对手真实血气盾 HUD", _find_named(cs, "opp_hp") != null and _find_named(cs, "opp_qi") != null and _find_named(cs, "opp_shield") != null)
 			_exp("main: 我方真实血气盾 HUD", _find_named(cs, "me_hp") != null and _find_named(cs, "me_qi") != null and _find_named(cs, "me_shield") != null)
 			_exp("main: MOBA 反馈横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
+			_exp("main: 1080P 三渲二全屏特效画布与炉石烧绳条就位", _find_named(cs, "CelStageCanvas") != null and _find_named(cs, "BurningRopeBar") != null and _find_named(cs, "StageBgTex") != null)
 			_exp("main: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 			_exp("main: 无【占位】残留", not flat.contains("【占位】"))
 			_exp("main: 技能按钮主文案严格为 2 个汉字", _all_action_buttons_two_chars(cs))
@@ -275,6 +276,7 @@ func _check_screen() -> void:
 				_exp("net_battle: lesson 含攒气", _has_button_prefix(cs, "攒气"))
 				_exp("net_battle: lesson 技能按钮主文案严格 2 字", _all_action_buttons_two_chars(cs))
 				_exp("net_battle: MOBA 横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
+				_exp("net_battle: 1080P 三渲二全屏特效画布与炉石烧绳条就位", _find_named(cs, "CelStageCanvas") != null and _find_named(cs, "BurningRopeBar") != null and _find_named(cs, "StageBgTex") != null)
 				_exp("net_battle: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 				_exp("net_battle: lesson 无【占位】残留", not flat.contains("【占位】"))
 			else:

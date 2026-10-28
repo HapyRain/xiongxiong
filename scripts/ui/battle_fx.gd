@@ -1,15 +1,15 @@
 ## battle_fx.gd
-## 血/气/盾图标、全技能专属粒子动效、中央出招卡对撞演出、MOBA 级非对称博弈横幅、右下 5 轮打字机上推战报、全套音效与渐进式紧绷感 BGM。
+## 1080P (1080×1920) 全屏三渲二 (3D-to-2D Cel-Shaded) 特效导演系统、炉石式烧绳倒计时、右下微缩打字机记招器与双保险音频引擎。
 ## 纯 UI 表现层，不碰 rules/* 结算逻辑。
 class_name BattleFx
 extends RefCounted
 
-const COLOR_HP := Color(0.937, 0.267, 0.267)       # #EF4444 鲜红血点
-const COLOR_HP_EMPTY := Color(0.886, 0.910, 0.941) # #E2E8F0
-const COLOR_QI := Color(0.961, 0.620, 0.043)       # #F59E0B 元气琥珀金气珠
-const COLOR_QI_EMPTY := Color(0.886, 0.910, 0.941) # #E2E8F0
+const COLOR_HP := Color(0.937, 0.267, 0.267)       # #EF4444 鲜红血槽
+const COLOR_HP_EMPTY := Color(0.145, 0.192, 0.282) # #253148 深灰空槽
+const COLOR_QI := Color(0.961, 0.620, 0.043)       # #F59E0B 元气琥珀金
+const COLOR_QI_EMPTY := Color(0.145, 0.192, 0.282)
 const COLOR_SHIELD := Color(0.055, 0.647, 0.914)   # #0EA5E9 天青蓝护盾
-const COLOR_SHIELD_EMPTY := Color(0.886, 0.910, 0.941)
+const COLOR_SHIELD_EMPTY := Color(0.145, 0.192, 0.282)
 const COLOR_HIT := Color(0.937, 0.267, 0.267)
 const COLOR_BLOCK := Color(0.055, 0.647, 0.914)
 const COLOR_WIN := Color(0.063, 0.725, 0.506)
@@ -19,32 +19,181 @@ const COLOR_DRAW := Color(0.478, 0.525, 0.604)
 static var _wav_cache: Dictionary = {}
 
 
-# ══════════════════════ 1. 音频引擎（20 音效 + 随回合推进紧绷感 BGM） ══════════════════════
+# ══════════════════════ 0. 全屏三渲二特效画布 (CelStageCanvas) ══════════════════════
 
-## 兼容已 import 的 AudioStream 与未 import 的裸 16-bit PCM WAV 文件（44100Hz 单声道）
+class CelStageCanvas extends Control:
+	var speed_lines_alpha: float = 0.0
+	var speed_lines_col: Color = Color(1.0, 0.85, 0.25)
+	var impact_flash_alpha: float = 0.0
+	var impact_flash_col: Color = Color.WHITE
+	var rings: Array = []        # [{pos, r, max_r, col, width, alpha, hex}]
+	var slashes: Array = []      # [{a, b, col, width, alpha}]
+	var vortex_alpha: float = 0.0
+	var vortex_pos: Vector2 = Vector2(540, 620)
+	var vortex_rot: float = 0.0
+	var vortex_scale: float = 1.0
+	var vortex_col: Color = Color(0.62, 0.32, 1.0)
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_preset(Control.PRESET_FULL_RECT)
+
+	func _process(delta: float) -> void:
+		var dirty := false
+		if speed_lines_alpha > 0.005:
+			speed_lines_alpha = maxf(0.0, speed_lines_alpha - delta * 2.2)
+			dirty = true
+		if impact_flash_alpha > 0.005:
+			impact_flash_alpha = maxf(0.0, impact_flash_alpha - delta * 6.5)
+			dirty = true
+		if vortex_alpha > 0.005:
+			vortex_rot += delta * 9.5
+			vortex_alpha = maxf(0.0, vortex_alpha - delta * 1.65)
+			dirty = true
+		for i in range(rings.size() - 1, -1, -1):
+			var d: Dictionary = rings[i]
+			d["r"] = float(d["r"]) + (float(d["max_r"]) - float(d["r"])) * minf(1.0, delta * 9.0)
+			d["alpha"] = float(d["alpha"]) - delta * 2.4
+			if float(d["alpha"]) <= 0.02:
+				rings.remove_at(i)
+			else:
+				rings[i] = d
+			dirty = true
+		for i in range(slashes.size() - 1, -1, -1):
+			var s: Dictionary = slashes[i]
+			s["alpha"] = float(s["alpha"]) - delta * 3.2
+			if float(s["alpha"]) <= 0.02:
+				slashes.remove_at(i)
+			else:
+				slashes[i] = s
+			dirty = true
+		if dirty:
+			queue_redraw()
+
+	func trigger_speed_lines(col: Color, intensity: float = 0.92) -> void:
+		speed_lines_col = col
+		speed_lines_alpha = clampf(intensity, 0.0, 1.0)
+		queue_redraw()
+
+	func trigger_impact_flash(col: Color, alpha: float = 0.55) -> void:
+		impact_flash_col = col
+		impact_flash_alpha = clampf(alpha, 0.0, 0.85)
+		queue_redraw()
+
+	func add_cel_ring(pos: Vector2, start_r: float, max_r: float, col: Color, width: float = 14.0, is_hex: bool = false) -> void:
+		rings.append({
+			"pos": pos, "r": start_r, "max_r": max_r,
+			"col": col, "width": width, "alpha": 1.0, "hex": is_hex,
+		})
+		queue_redraw()
+
+	func add_cel_slash(a: Vector2, b: Vector2, col: Color, width: float = 22.0) -> void:
+		slashes.append({"a": a, "b": b, "col": col, "width": width, "alpha": 1.0})
+		queue_redraw()
+
+	func trigger_vortex(pos: Vector2, col: Color, sc: float = 1.0) -> void:
+		vortex_pos = pos
+		vortex_col = col
+		vortex_scale = sc
+		vortex_alpha = 1.0
+		queue_redraw()
+
+	func _draw() -> void:
+		var sz := size if size.x > 100 else Vector2(1080, 1920)
+		var stage_h := minf(sz.y, 1320.0)
+		var center := Vector2(sz.x * 0.5, stage_h * 0.52)
+
+		# 1. Impact Frame 瞬态高对比闪光（仅覆盖上方特效舞台区 y=0..stage_h，绝不干扰底部技能盘）
+		if impact_flash_alpha > 0.01:
+			draw_rect(Rect2(0, 0, sz.x, stage_h), Color(impact_flash_col.r, impact_flash_col.g, impact_flash_col.b, impact_flash_alpha * 0.45), true)
+
+		# 2. 全屏三渲二放射漫画速度线（围绕上方舞台四周向中心刺入）
+		if speed_lines_alpha > 0.01:
+			var n_spikes := 44
+			for i in n_spikes:
+				var ang := TAU * float(i) / float(n_spikes)
+				var outer_r := 760.0
+				var inner_r := 280.0 + float((i * 37) % 140)
+				var half_w := 0.022 if (i % 2 == 0) else 0.012
+				var p0 := center + Vector2(cos(ang - half_w), sin(ang - half_w)) * outer_r
+				var p1 := center + Vector2(cos(ang + half_w), sin(ang + half_w)) * outer_r
+				var tip := center + Vector2(cos(ang), sin(ang)) * inner_r
+				p0.y = clampf(p0.y, 0.0, stage_h)
+				p1.y = clampf(p1.y, 0.0, stage_h)
+				tip.y = clampf(tip.y, 0.0, stage_h)
+				var ink_c := Color(0.04, 0.06, 0.11, speed_lines_alpha * 0.78)
+				var fill_c := Color(speed_lines_col.r, speed_lines_col.g, speed_lines_col.b, speed_lines_alpha * 0.85)
+				draw_colored_polygon(PackedVector2Array([p0, p1, tip]), ink_c if (i % 3 == 0) else fill_c)
+
+		# 3. 吸收黑洞三渲二螺旋引力场
+		if vortex_alpha > 0.01:
+			var vr := 220.0 * vortex_scale
+			draw_circle(vortex_pos, vr * 0.85, Color(0.04, 0.02, 0.10, vortex_alpha * 0.88))
+			draw_arc(vortex_pos, vr * 0.88, 0.0, TAU, 48, Color(0.04, 0.06, 0.11, vortex_alpha), 14.0)
+			draw_arc(vortex_pos, vr * 0.82, 0.0, TAU, 48, Color(vortex_col.r, vortex_col.g, vortex_col.b, vortex_alpha), 8.0)
+			for arm in 6:
+				var base_a := vortex_rot + float(arm) * TAU / 6.0
+				var pts := PackedVector2Array()
+				for step in 12:
+					var t := float(step) / 11.0
+					var rr := lerpf(24.0, vr * 1.15, t)
+					var aa := base_a + t * 2.4
+					pts.append(vortex_pos + Vector2(cos(aa), sin(aa)) * rr)
+				draw_polyline(pts, Color(0.04, 0.06, 0.11, vortex_alpha * 0.95), 14.0)
+				draw_polyline(pts, Color(vortex_col.lightened(0.35).r, vortex_col.lightened(0.35).g, vortex_col.lightened(0.35).b, vortex_alpha), 7.0)
+
+		# 4. 三渲二粗黑描边扩环与六边圣盾波
+		for d: Dictionary in rings:
+			var pos: Vector2 = d["pos"]
+			var r: float = float(d["r"])
+			var a: float = clampf(float(d["alpha"]), 0.0, 1.0)
+			var col: Color = d["col"]
+			var w: float = float(d["width"])
+			var is_hex: bool = bool(d["hex"])
+			var ink := Color(0.04, 0.06, 0.11, a * 0.95)
+			var fg := Color(col.r, col.g, col.b, a)
+			if is_hex:
+				var hex_pts := PackedVector2Array()
+				for k in 7:
+					var ang := float(k) * TAU / 6.0 - PI / 6.0
+					hex_pts.append(pos + Vector2(cos(ang), sin(ang)) * r)
+				draw_polyline(hex_pts, ink, w + 10.0)
+				draw_polyline(hex_pts, fg, w)
+			else:
+				draw_arc(pos, r, 0.0, TAU, 56, ink, w + 10.0)
+				draw_arc(pos, r, 0.0, TAU, 56, fg, w)
+
+		# 5. 三渲二漫画刀光 / 裂痕斩击线
+		for s: Dictionary in slashes:
+			var pa: Vector2 = s["a"]
+			var pb: Vector2 = s["b"]
+			var a2: float = clampf(float(s["alpha"]), 0.0, 1.0)
+			var col2: Color = s["col"]
+			var w2: float = float(s["width"]) * a2
+			var dir := (pb - pa).normalized()
+			var nrm := Vector2(-dir.y, dir.x) * w2
+			var mid := (pa + pb) * 0.5
+			var poly := PackedVector2Array([pa, mid + nrm, pb, mid - nrm])
+			draw_colored_polygon(poly, Color(0.04, 0.06, 0.11, a2))
+			var poly_in := PackedVector2Array([pa, mid + nrm * 0.55, pb, mid - nrm * 0.55])
+			draw_colored_polygon(poly_in, Color(col2.r, col2.g, col2.b, a2))
+
+
+# ══════════════════════ 1. 音频引擎（三层兜底：裸 WAV 字节 -> ResourceLoader -> 内存级 PCM 合成器） ══════════════════════
+
+## 优先直接读取裸 WAV 的 16-bit PCM 字节（彻底绕开 Godot 4.7 默认 compress/mode=2 QOA 压缩导致的循环失效或杂音），
+## 若无裸文件则走 ResourceLoader，若仍缺失则由 _synth_fallback_wav 在内存中实时合成 16-bit PCM，100% 保证全套音效与 BGM 必响！
 static func load_wav_safe(file_name: String, loop: bool = false) -> AudioStream:
 	var cache_key := file_name + ("|loop" if loop else "")
 	if _wav_cache.has(cache_key):
 		return _wav_cache[cache_key]
 	var res_path := "res://assets/audio/" + file_name
-	if ResourceLoader.exists(res_path):
-		var loaded := load(res_path)
-		if loaded is AudioStreamWAV:
-			var dup := (loaded as AudioStreamWAV).duplicate() as AudioStreamWAV
-			if loop:
-				dup.loop_mode = AudioStreamWAV.LOOP_FORWARD
-				dup.loop_begin = 0
-				dup.loop_end = int(dup.data.size() / 2)
-			_wav_cache[cache_key] = dup
-			return dup
-		elif loaded is AudioStream:
-			_wav_cache[cache_key] = loaded
-			return loaded
+
+	# 路径 1：直接读磁盘裸 WAV PCM 数据（不受 .import QOA 压缩影响，100% 还原峰值音量与无缝循环）
 	if FileAccess.file_exists(res_path):
 		var bytes := FileAccess.get_file_as_bytes(res_path)
 		if bytes.size() > 44:
 			var data_offset := 44
-			# 标准 RIFF WAVE data chunk 查找，兼容扩展头
 			for pos in range(12, mini(bytes.size() - 8, 128)):
 				if bytes[pos] == 0x64 and bytes[pos + 1] == 0x61 and bytes[pos + 2] == 0x74 and bytes[pos + 3] == 0x61:
 					data_offset = pos + 8
@@ -61,12 +210,70 @@ static func load_wav_safe(file_name: String, loop: bool = false) -> AudioStream:
 				wav.loop_end = int(pcm.size() / 2)
 			_wav_cache[cache_key] = wav
 			return wav
-	return null
+
+	# 路径 2：导出包 (.pck/.apk) 内通过 ResourceLoader 加载
+	if ResourceLoader.exists(res_path):
+		var loaded := load(res_path)
+		if loaded is AudioStreamWAV:
+			var dup := (loaded as AudioStreamWAV).duplicate() as AudioStreamWAV
+			if loop:
+				dup.loop_mode = AudioStreamWAV.LOOP_FORWARD
+				dup.loop_begin = 0
+				if dup.format == AudioStreamWAV.FORMAT_16_BITS and dup.data.size() > 0:
+					dup.loop_end = int(dup.data.size() / 2)
+			_wav_cache[cache_key] = dup
+			return dup
+		elif loaded is AudioStream:
+			_wav_cache[cache_key] = loaded
+			return loaded
+
+	# 路径 3：内存级 GDScript PCM 合成兜底（哪怕本地漏拷音频目录也必响！）
+	var fallback := _synth_fallback_wav(file_name, loop)
+	_wav_cache[cache_key] = fallback
+	return fallback
+
+
+static func _synth_fallback_wav(file_name: String, loop: bool) -> AudioStreamWAV:
+	var sr := 22050
+	var dur := 2.4 if loop else 0.24
+	var n := int(sr * dur)
+	var pcm := PackedByteArray()
+	pcm.resize(n * 2)
+	var base_f := 440.0
+	if file_name.begins_with("clap"):
+		base_f = 920.0
+	elif file_name.begins_with("block_success") or file_name.begins_with("strong_fang"):
+		base_f = 880.0
+	elif file_name.begins_with("blocked"):
+		base_f = 180.0
+	elif file_name.begins_with("ui_deny") or file_name.begins_with("xi_shou_fail"):
+		base_f = 150.0
+	elif file_name.begins_with("zhong_ji") or file_name.begins_with("da_yang"):
+		base_f = 130.0
+	elif file_name.begins_with("zan") or file_name.begins_with("ji_qi") or file_name.begins_with("hui_fu"):
+		base_f = 660.0
+	for i in n:
+		var t := float(i) / float(sr)
+		var env := 1.0 if loop else exp(-t * 10.0)
+		var f := base_f * (1.0 + 0.35 * sin(t * 14.0)) if not loop else (110.0 if int(t * 4.0) % 2 == 0 else 165.0)
+		var v := sin(TAU * f * t) * 0.65 + sin(TAU * f * 2.0 * t) * 0.25
+		var s16 := clampi(int(v * env * 26000.0), -32767, 32767)
+		pcm.encode_s16(i * 2, s16)
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = sr
+	wav.stereo = false
+	wav.data = pcm
+	if loop:
+		wav.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		wav.loop_begin = 0
+		wav.loop_end = n
+	return wav
 
 
 static func setup_audio_bank(host: Node) -> Dictionary:
 	var sfx_players: Array[AudioStreamPlayer] = []
-	for _i in 6:
+	for _i in 8:
 		var p := AudioStreamPlayer.new()
 		p.bus = "Master"
 		host.add_child(p)
@@ -75,7 +282,7 @@ static func setup_audio_bank(host: Node) -> Dictionary:
 	var bgm_player := AudioStreamPlayer.new()
 	bgm_player.name = "BgmPlayer"
 	bgm_player.bus = "Master"
-	bgm_player.volume_db = -12.0
+	bgm_player.volume_db = -3.5
 	bgm_player.set_meta("active", false)
 	bgm_player.finished.connect(func():
 		if is_instance_valid(bgm_player) and bool(bgm_player.get_meta("active", false)):
@@ -108,19 +315,22 @@ static func play_named_sfx(bank: Dictionary, key: String, vol_db: float = 0.0, p
 	var streams: Dictionary = bank.get("streams", {})
 	var stream: AudioStream = streams.get(key, null)
 	if stream == null:
+		stream = load_wav_safe(key + ".wav", false)
+		streams[key] = stream
+	if stream == null:
 		return
 	var players: Array = bank.get("players", [])
 	for p: AudioStreamPlayer in players:
 		if not p.playing:
 			p.stream = stream
-			p.volume_db = vol_db
+			p.volume_db = clampf(vol_db + 2.0, -8.0, 6.0)
 			p.pitch_scale = pitch
 			p.play()
 			return
 	if not players.is_empty():
 		var p0: AudioStreamPlayer = players[0]
 		p0.stream = stream
-		p0.volume_db = vol_db
+		p0.volume_db = clampf(vol_db + 2.0, -8.0, 6.0)
 		p0.pitch_scale = pitch
 		p0.play()
 
@@ -136,7 +346,7 @@ static func start_bgm(bank: Dictionary) -> void:
 	bgm.set_meta("active", true)
 	bgm.stream = st
 	bgm.pitch_scale = 1.0
-	bgm.volume_db = -12.0
+	bgm.volume_db = -3.5
 	if not bgm.playing:
 		bgm.play()
 
@@ -158,20 +368,20 @@ static func update_bgm_tension(bank: Dictionary, s: BattleState) -> void:
 	if bgm == null or not is_instance_valid(bgm):
 		return
 	var rno := maxi(1, int(s.round))
-	var pitch := 1.0 + clampf(float(rno - 1) * 0.008, 0.0, 0.22)
-	var vol := -12.0 + clampf(float(rno - 1) * 0.16, 0.0, 4.0)
+	var pitch := 1.0 + clampf(float(rno - 1) * 0.009, 0.0, 0.24)
+	var vol := -3.5 + clampf(float(rno - 1) * 0.14, 0.0, 3.5)
 	if int(s.hp[0]) == 1 or int(s.hp[1]) == 1:
-		pitch += 0.05
-		vol += 1.2
+		pitch += 0.06
+		vol += 1.0
 	if s.score_to_win() > 1 and (int(s.score[0]) >= s.score_to_win() - 2 or int(s.score[1]) >= s.score_to_win() - 2):
 		pitch += 0.04
-	bgm.pitch_scale = clampf(pitch, 1.0, 1.30)
-	bgm.volume_db = clampf(vol, -12.0, -6.5)
+	bgm.pitch_scale = clampf(pitch, 1.0, 1.32)
+	bgm.volume_db = clampf(vol, -3.5, 0.8)
 
 
-# ══════════════════════ 2. 血/气/盾图标行 ══════════════════════
+# ══════════════════════ 2. 1080P 街机格斗血/气/盾组件（彻底砍掉重复文字） ══════════════════════
 
-static func make_pip_row(max_n: int, filled: int, color: Color, empty_color: Color, pip_size: Vector2 = Vector2(14, 14), gap: int = 4) -> HBoxContainer:
+static func make_pip_row(max_n: int, filled: int, color: Color, empty_color: Color, pip_size: Vector2 = Vector2(36, 26), gap: int = 8) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", gap)
 	row.name = "PipRow"
@@ -197,12 +407,10 @@ static func _make_pip(on: bool, color: Color, empty_color: Color, pip_size: Vect
 static func _pip_style(on: bool, color: Color, empty_color: Color, pip_size: Vector2) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = color if on else empty_color
-	if on:
-		sb.border_color = color.darkened(0.22)
-	else:
-		sb.border_color = empty_color.darkened(0.14)
-	sb.set_border_width_all(1)
-	var r := int(round(minf(pip_size.x, pip_size.y) * 0.35))
+	sb.border_color = UiTheme.INK
+	sb.set_border_width_all(3)
+	sb.border_width_bottom = 5 if on else 3
+	var r := int(round(minf(pip_size.x, pip_size.y) * 0.32))
 	sb.set_corner_radius_all(r)
 	sb.anti_aliasing = true
 	return sb
@@ -219,7 +427,7 @@ static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_col
 		holder.set_meta("on", on)
 		var pip_size: Vector2 = holder.custom_minimum_size
 		if pip_size.x <= 0:
-			pip_size = Vector2(14, 14)
+			pip_size = Vector2(36, 26)
 		var key := "%s|%s|%s|%s" % [
 			str(on), color.to_html(), empty_color.to_html(), str(pip_size)]
 		if str(holder.get_meta("pip_key", "")) == key:
@@ -229,33 +437,32 @@ static func update_pips(row: HBoxContainer, filled: int, color: Color, empty_col
 
 
 static func make_hp_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_HP, COLOR_HP_EMPTY, Vector2(16, 14), 4)
+	return make_pip_row(max_n, filled, COLOR_HP, COLOR_HP_EMPTY, Vector2(54, 28), 8)
 
 
 static func make_qi_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_QI, COLOR_QI_EMPTY, Vector2(12, 12), 3)
+	return make_pip_row(max_n, filled, COLOR_QI, COLOR_QI_EMPTY, Vector2(28, 22), 5)
 
 
 static func make_shield_row(max_n: int, filled: int) -> HBoxContainer:
-	return make_pip_row(max_n, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY, Vector2(14, 14), 4)
+	return make_pip_row(max_n, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY, Vector2(36, 26), 6)
 
 
 static func make_stat_line(title: String, row: HBoxContainer, value_lab: Label) -> HBoxContainer:
 	var line := HBoxContainer.new()
-	line.add_theme_constant_override("separation", 6)
+	line.add_theme_constant_override("separation", 10)
 	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var t := Label.new()
-	t.text = title
-	t.custom_minimum_size.x = 20
-	t.add_theme_font_size_override("font_size", 12)
-	t.add_theme_color_override("font_color", UiTheme.INK_SOFT)
+	var t := UiTheme.ink_label(title, 22, Color(0.82, 0.88, 0.96), 4, UiTheme.INK)
+	t.custom_minimum_size.x = 34
 	line.add_child(t)
 	if row != null:
 		line.add_child(row)
 	if value_lab != null:
-		value_lab.add_theme_font_size_override("font_size", 12)
-		value_lab.add_theme_color_override("font_color", UiTheme.INK)
+		value_lab.add_theme_font_size_override("font_size", 22)
+		value_lab.add_theme_color_override("font_color", Color.WHITE)
+		value_lab.add_theme_constant_override("outline_size", 4)
+		value_lab.add_theme_color_override("font_outline_color", UiTheme.INK)
 		value_lab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		value_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		line.add_child(value_lab)
@@ -274,29 +481,29 @@ static func update_shield_row(row: HBoxContainer, filled: int) -> void:
 	update_pips(row, filled, COLOR_SHIELD, COLOR_SHIELD_EMPTY)
 
 
-# ══════════════════════ 3. MOBA 级中央偏上反馈横幅 + 右下 5 轮打字机上推战报 ══════════════════════
+# ══════════════════════ 3. MOBA 级中央偏上反馈横幅 + 炉石烧绳条 + 右下微缩 5 轮打字机战报 ══════════════════════
 
 static func make_moba_banner() -> PanelContainer:
 	var banner := PanelContainer.new()
 	banner.name = "MobaBanner"
-	banner.custom_minimum_size = Vector2(336, 44)
+	banner.custom_minimum_size = Vector2(920, 112)
 	banner.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.059, 0.090, 0.165, 0.95)
+	sb.bg_color = Color(0.039, 0.059, 0.114, 0.94)
 	sb.border_color = UiTheme.ACCENT
-	sb.set_border_width_all(2)
-	sb.border_width_left = 6
-	sb.border_width_right = 6
-	sb.set_corner_radius_all(12)
-	sb.shadow_color = Color(0, 0, 0, 0.18)
-	sb.shadow_size = 3
-	sb.shadow_offset = Vector2(0, 2)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 14
-	sb.content_margin_top = 4
-	sb.content_margin_bottom = 4
+	sb.set_border_width_all(5)
+	sb.border_width_left = 18
+	sb.border_width_right = 18
+	sb.set_corner_radius_all(26)
+	sb.shadow_color = Color(0, 0, 0, 0.45)
+	sb.shadow_size = 10
+	sb.shadow_offset = Vector2(0, 6)
+	sb.content_margin_left = 28
+	sb.content_margin_right = 28
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
 	banner.add_theme_stylebox_override("panel", sb)
 
 	var bg_tex := TextureRect.new()
@@ -312,16 +519,16 @@ static func make_moba_banner() -> PanelContainer:
 	var v := VBoxContainer.new()
 	v.name = "Box"
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_theme_constant_override("separation", 1)
+	v.add_theme_constant_override("separation", 4)
 	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	banner.add_child(v)
 
-	var title := UiTheme.ink_label("⚡ 点击「攒气」开始对决 ⚡", 15, Color(1.0, 0.94, 0.70))
+	var title := UiTheme.ink_label("⚡ 点击「攒气」开始对决 ⚡", 36, Color(1.0, 0.94, 0.65), 8, UiTheme.INK)
 	title.name = "BannerTitle"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
 
-	var sub := UiTheme.ink_label("两拍同步读招 · 预判对手行动", 11, Color(0.82, 0.88, 0.95))
+	var sub := UiTheme.ink_label("两拍同步读招 · 预判对手行动", 23, Color(0.86, 0.92, 0.98), 4, UiTheme.INK)
 	sub.name = "BannerSub"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(sub)
@@ -336,7 +543,7 @@ static func show_moba_banner(banner: PanelContainer, title_text: String, sub_tex
 	var sub := banner.find_child("BannerSub", true, false) as Label
 	if title != null:
 		title.text = title_text
-		title.add_theme_color_override("font_color", accent.lightened(0.45))
+		title.add_theme_color_override("font_color", accent.lightened(0.42))
 	if sub != null:
 		sub.text = sub_text
 		sub.visible = sub_text != ""
@@ -348,52 +555,182 @@ static func show_moba_banner(banner: PanelContainer, title_text: String, sub_tex
 
 	if pulse:
 		banner.pivot_offset = banner.size * 0.5
-		banner.scale = Vector2(1.34, 1.34)
+		banner.scale = Vector2(1.28, 1.28)
 		var tw := banner.create_tween()
-		tw.tween_property(banner, "scale", Vector2(0.96, 0.96), 0.12).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tw.tween_property(banner, "scale", Vector2.ONE, 0.10)
+		tw.tween_property(banner, "scale", Vector2(0.96, 0.96), 0.11).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.tween_property(banner, "scale", Vector2.ONE, 0.09)
 
 
-## 创建位于右中下区域的「5 轮打字机上推战报栏」（一屏最多记 5 次，从下往上推）
+## 创建《炉石传说》式烧绳子 + 三段拍点锚点导轨（横贯舞台底部与我方 HUD 分界线，绝不悬空消失）
+static func make_burning_rope_bar() -> PanelContainer:
+	var bar := PanelContainer.new()
+	bar.name = "BurningRopeBar"
+	bar.custom_minimum_size = Vector2(1020, 62)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.047, 0.071, 0.133, 0.88)
+	sb.border_color = UiTheme.INK
+	sb.set_border_width_all(4)
+	sb.set_corner_radius_all(20)
+	sb.content_margin_left = 18
+	sb.content_margin_right = 18
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	bar.add_theme_stylebox_override("panel", sb)
+
+	var track := Control.new()
+	track.name = "RopeTrack"
+	track.custom_minimum_size = Vector2(980, 44)
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(track)
+
+	# 底层麻绳暗槽
+	var groove := ColorRect.new()
+	groove.name = "RopeGroove"
+	groove.color = Color(0.14, 0.18, 0.26, 0.95)
+	groove.position = Vector2(0, 14)
+	groove.size = Vector2(980, 16)
+	groove.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(groove)
+
+	# 燃烧中的导火索本体（从右向左烧短，或随剩余比例收缩）
+	var rope_fill := ColorRect.new()
+	rope_fill.name = "RopeFill"
+	rope_fill.color = Color(0.96, 0.65, 0.12)
+	rope_fill.position = Vector2(0, 14)
+	rope_fill.size = Vector2(980, 16)
+	rope_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(rope_fill)
+
+	# 三枚拍点锚点徽章（一拍 / 二拍 / 封盘）
+	var anchors: Array[PanelContainer] = []
+	var anchor_titles := ["一拍", "二拍", "封盘"]
+	for i in 3:
+		var anc := PanelContainer.new()
+		anc.name = "BeatAnchor%d" % i
+		anc.custom_minimum_size = Vector2(92, 38)
+		anc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var asb := StyleBoxFlat.new()
+		asb.bg_color = Color(0.12, 0.16, 0.25, 0.96)
+		asb.border_color = UiTheme.INK
+		asb.set_border_width_all(3)
+		asb.set_corner_radius_all(14)
+		asb.content_margin_left = 10
+		asb.content_margin_right = 10
+		asb.content_margin_top = 2
+		asb.content_margin_bottom = 2
+		anc.add_theme_stylebox_override("panel", asb)
+		var alab := UiTheme.ink_label(anchor_titles[i], 20, Color.WHITE, 4, UiTheme.INK)
+		alab.name = "AnchorLab"
+		alab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		anc.add_child(alab)
+		track.add_child(anc)
+		anchors.append(anc)
+
+	# 烧绳火花头（RopeSpark）
+	var spark := TextureRect.new()
+	spark.name = "RopeSpark"
+	spark.texture = UiTheme.load_ui_texture("rope_spark.png")
+	spark.custom_minimum_size = Vector2(64, 64)
+	spark.size = Vector2(64, 64)
+	spark.pivot_offset = Vector2(32, 32)
+	spark.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	spark.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	spark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(spark)
+
+	bar.set_meta("track", track)
+	bar.set_meta("groove", groove)
+	bar.set_meta("fill", rope_fill)
+	bar.set_meta("anchors", anchors)
+	bar.set_meta("spark", spark)
+	return bar
+
+
+static func update_burning_rope_bar(bar: PanelContainer, win: float, left: float, round_no: int, is_open: bool) -> void:
+	if bar == null or not is_instance_valid(bar):
+		return
+	var track := bar.get_meta("track", null) as Control
+	var groove := bar.get_meta("groove", null) as ColorRect
+	var fill := bar.get_meta("fill", null) as ColorRect
+	var anchors: Array = bar.get_meta("anchors", [])
+	var spark := bar.get_meta("spark", null) as TextureRect
+	if track == null or fill == null or groove == null:
+		return
+
+	var w := track.size.x if track.size.x > 100.0 else 980.0
+	groove.size = Vector2(w, 16)
+	var elapsed := clampf(win - left, 0.0, maxf(win, 0.01))
+	var remain_ratio := clampf(left / maxf(win, 0.01), 0.0, 1.0) if is_open else 0.0
+	var elapsed_ratio := 1.0 - remain_ratio
+
+	# 炉石烧绳感：导火索从右往左烧短（或燃烧头在 remain_ratio * w 处剧烈闪烁旋转）
+	var burn_x := w * remain_ratio
+	fill.position = Vector2(0, 14)
+	fill.size = Vector2(burn_x, 16)
+	if remain_ratio <= 0.25:
+		fill.color = UiTheme.DANGER
+	elif remain_ratio <= 0.55:
+		fill.color = UiTheme.ACCENT
+	else:
+		fill.color = UiTheme.SHIELD
+
+	var clap2_ratio := clampf(BattleTempo.clap2_at(round_no) / maxf(win, 0.01), 0.25, 0.78)
+	var anchor_xs := [10.0, w * (1.0 - clap2_ratio) - 46.0, w - 102.0]
+	var anchor_active := [
+		is_open and elapsed_ratio >= 0.01,
+		is_open and elapsed_ratio >= clap2_ratio,
+		not is_open or remain_ratio <= 0.08,
+	]
+	var anchor_cols := [UiTheme.SHIELD, UiTheme.ACCENT, UiTheme.DANGER]
+	for i in mini(3, anchors.size()):
+		var anc: PanelContainer = anchors[i]
+		anc.position = Vector2(anchor_xs[i], 3)
+		var asb := anc.get_theme_stylebox("panel").duplicate() as StyleBoxFlat
+		if asb != null:
+			asb.bg_color = anchor_cols[i] if anchor_active[i] else Color(0.12, 0.16, 0.25, 0.96)
+			anc.add_theme_stylebox_override("panel", asb)
+
+	if spark != null:
+		spark.visible = is_open and remain_ratio > 0.01
+		spark.position = Vector2(clampf(burn_x - 32.0, -16.0, w - 32.0), -10.0)
+		spark.rotation += 0.22
+		var pulse_s := 1.25 if remain_ratio < 0.30 else 1.0
+		spark.scale = Vector2(pulse_s, pulse_s)
+
+
+## 创建位于舞台右下角的微缩半透明「5 轮打字机上推战报栏」（一屏最多记 5 次，低调不抢戏）
 static func make_battle_ticker() -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.name = "BattleTicker"
-	panel.custom_minimum_size = Vector2(216, 82)
+	panel.custom_minimum_size = Vector2(400, 148)
 	panel.size_flags_horizontal = Control.SIZE_SHRINK_END
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.059, 0.090, 0.165, 0.92)
-	sb.border_color = UiTheme.SHIELD.lightened(0.15)
-	sb.set_border_width_all(1)
-	sb.border_width_left = 4
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 8
-	sb.content_margin_right = 8
-	sb.content_margin_top = 4
-	sb.content_margin_bottom = 4
+	sb.bg_color = Color(0.035, 0.051, 0.094, 0.62)
+	sb.border_color = Color(0.28, 0.36, 0.48, 0.65)
+	sb.set_border_width_all(2)
+	sb.border_width_right = 6
+	sb.set_corner_radius_all(16)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
 	panel.add_theme_stylebox_override("panel", sb)
-
-	var bg_tex := TextureRect.new()
-	bg_tex.name = "TickerTex"
-	bg_tex.texture = UiTheme.load_ui_texture("ticker_bg.png")
-	bg_tex.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg_tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	bg_tex.stretch_mode = TextureRect.STRETCH_SCALE
-	bg_tex.modulate = Color(1, 1, 1, 0.28)
-	bg_tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	panel.add_child(bg_tex)
 
 	var box := VBoxContainer.new()
 	box.name = "TickerLines"
 	box.alignment = BoxContainer.ALIGNMENT_END
-	box.add_theme_constant_override("separation", 1)
+	box.add_theme_constant_override("separation", 2)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(box)
 
 	panel.set_meta("history", [])
 	for i in 5:
-		var lab := UiTheme.ink_label("", 10, Color(0.92, 0.95, 1.0))
+		var lab := UiTheme.ink_label("", 20, Color(0.92, 0.95, 1.0), 4, UiTheme.INK)
 		lab.name = "Line%d" % i
 		lab.clip_text = true
 		lab.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -415,7 +752,7 @@ static func push_ticker_line(ticker: PanelContainer, line_text: String) -> void:
 	if box == null:
 		return
 	var n := hist.size()
-	var alphas := [0.42, 0.54, 0.68, 0.82, 1.0]
+	var alphas := [0.36, 0.50, 0.64, 0.78, 1.0]
 	for i in 5:
 		var lab := box.get_child(i) as Label
 		if lab == null:
@@ -428,13 +765,13 @@ static func push_ticker_line(ticker: PanelContainer, line_text: String) -> void:
 			lab.text = str(hist[hist_idx])
 			var is_newest := (hist_idx == n - 1)
 			var a: float = alphas[i]
-			lab.modulate = Color(1.0, 0.94, 0.65, 1.0) if is_newest else Color(0.85, 0.90, 0.96, a)
+			lab.modulate = Color(1.0, 0.94, 0.60, 1.0) if is_newest else Color(0.84, 0.90, 0.98, a)
 			if is_newest:
 				lab.visible_ratio = 0.0
 				var tw := lab.create_tween()
-				tw.tween_property(lab, "visible_ratio", 1.0, 0.30)
+				tw.tween_property(lab, "visible_ratio", 1.0, 0.28)
 
-	box.position.y = 10.0
+	box.position.y = 20.0
 	var tw_push := ticker.create_tween()
 	tw_push.tween_property(box, "position:y", 0.0, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
@@ -452,44 +789,47 @@ static func clear_ticker(ticker: PanelContainer) -> void:
 			lab.text = ""
 
 
-## 创建带实时技能图标与两字大名的中央对撞出招卡
+## 创建 1080P 三渲二漫画风中央对撞出招卡
 static func make_duel_card(who_title: String, border_col: Color) -> PanelContainer:
 	var p := PanelContainer.new()
-	p.custom_minimum_size = Vector2(132, 64)
-	p.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, border_col, 2))
+	p.custom_minimum_size = Vector2(340, 168)
+	var sb := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.92), 26, UiTheme.INK, 5)
+	sb.border_width_bottom = 12
+	p.add_theme_stylebox_override("panel", sb)
+
 	var v := VBoxContainer.new()
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_theme_constant_override("separation", 2)
+	v.add_theme_constant_override("separation", 6)
 	p.add_child(v)
 
 	var head := HBoxContainer.new()
 	head.alignment = BoxContainer.ALIGNMENT_CENTER
-	head.add_theme_constant_override("separation", 4)
+	head.add_theme_constant_override("separation", 10)
 	v.add_child(head)
 
-	var t := UiTheme.ink_label(who_title, 11, UiTheme.INK_SOFT)
+	var t := UiTheme.ink_label(who_title, 24, Color(0.78, 0.85, 0.95), 4, UiTheme.INK)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	head.add_child(t)
 
-	var to_lab := UiTheme.ink_label("⏱超时", 10, UiTheme.DANGER)
+	var to_lab := UiTheme.ink_label("超时", 20, UiTheme.DANGER, 4, UiTheme.INK)
 	to_lab.name = "TimeoutBadge"
 	to_lab.visible = false
 	head.add_child(to_lab)
 
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 6)
+	row.add_theme_constant_override("separation", 14)
 	v.add_child(row)
 
 	var icon := TextureRect.new()
 	icon.name = "DuelIcon"
-	icon.custom_minimum_size = Vector2(24, 24)
+	icon.custom_minimum_size = Vector2(68, 68)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.visible = false
 	row.add_child(icon)
 
-	var act_lab := UiTheme.ink_label("待命", 21, border_col.darkened(0.1))
+	var act_lab := UiTheme.ink_label("待命", 50, Color.WHITE, 10, UiTheme.INK)
 	act_lab.name = "DuelText"
 	act_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	row.add_child(act_lab)
@@ -507,28 +847,44 @@ static func update_duel_card(card: PanelContainer, act: int, placeholder_text: S
 	var icon := card.get_meta("duel_icon", null) as TextureRect
 	var lab := card.get_meta("duel_text", null) as Label
 	var to_lab := card.get_meta("duel_timeout", null) as Label
-	var base_border: Color = card.get_meta("base_border", UiTheme.LINE)
+	var base_border: Color = card.get_meta("base_border", UiTheme.ACCENT)
 	if to_lab != null:
 		to_lab.visible = is_timeout
 	if act >= 0:
 		var col := UiTheme.action_color(act)
-		card.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, col, 2))
+		var sb := UiTheme.card_style( col.darkened(0.28), 26, UiTheme.INK, 5)
+		sb.border_width_bottom = 12
+		card.add_theme_stylebox_override("panel", sb)
 		if lab != null:
 			lab.text = GameRules.action_short_name(act)
-			lab.add_theme_color_override("font_color", col.darkened(0.12))
+			lab.add_theme_color_override("font_color", Color.WHITE)
 		if icon != null:
 			icon.texture = UiTheme.load_ui_texture(UiTheme.action_icon_name(act))
 			icon.visible = icon.texture != null
 	else:
-		card.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 12, base_border.lightened(0.25), 2))
+		var sb2 := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.86), 26, base_border.darkened(0.15), 4)
+		sb2.border_width_bottom = 10
+		card.add_theme_stylebox_override("panel", sb2)
 		if lab != null:
 			lab.text = placeholder_text
-			lab.add_theme_color_override("font_color", UiTheme.INK_FAINT)
+			lab.add_theme_color_override("font_color", Color(0.68, 0.76, 0.88))
 		if icon != null:
 			icon.visible = false
 
 
-# ══════════════════════ 4. 全技能专属演出与非对称格挡/吸收导演系统 ══════════════════════
+# ══════════════════════ 4. 1080P 全屏三渲二交锋导演系统（零冗余飘字，全舞台漫画冲击） ══════════════════════
+
+static func ensure_cel_canvas(fx_host: Control) -> CelStageCanvas:
+	if fx_host == null:
+		return null
+	var c := fx_host.get_node_or_null("CelStageCanvas") as CelStageCanvas
+	if c == null:
+		c = CelStageCanvas.new()
+		c.name = "CelStageCanvas"
+		fx_host.add_child(c)
+		fx_host.move_child(c, 0)
+	return c
+
 
 static func play_clash_director(
 	fx_host: Control,
@@ -558,13 +914,15 @@ static func play_clash_director(
 	if opp_duel_card != null:
 		update_duel_card(opp_duel_card, op_act, "待选", op_to)
 
+	var cel := ensure_cel_canvas(fx_host)
+
 	if opening:
-		play_named_sfx(audio_bank, "game_start", -1.0)
+		play_named_sfx(audio_bank, "game_start", 0.0)
 		show_moba_banner(moba_banner, "⚡ 对决开始 · 双方气 +1 ⚡", "第 1 回合开局亮相 · 准备第 2 回合交锋", UiTheme.ACCENT, true)
 		push_ticker_line(ticker, "R01 开局亮相 ▸ 双方气+1")
-		if fx_host != null:
-			_aura_rise(fx_host, me_card, UiTheme.ACCENT, "+1 气 ⚡")
-			_aura_rise(fx_host, opp_card, UiTheme.ACCENT, "+1 气 ⚡")
+		if cel != null:
+			cel.trigger_speed_lines(UiTheme.ACCENT, 0.72)
+			cel.add_cel_ring(Vector2(540, 620), 60.0, 480.0, UiTheme.ACCENT, 16.0, false)
 		return
 
 	var hit: Array = result_dict.get("hit", [false, false])
@@ -583,15 +941,13 @@ static func play_clash_director(
 
 	var my_name := GameRules.action_short_name(my_act)
 	var op_name := GameRules.action_short_name(op_act)
-	var rno := int(result_dict.get("round", s.round if s != null else 2))
-	rno = maxi(1, rno)
+	var rno := maxi(1, int(result_dict.get("round", s.round if s != null else 2)))
 
-	# 中央双出招卡物理碰撞动效
 	_animate_duel_cards_clash(me_duel_card, opp_duel_card, my_blk, op_blk, my_hit, op_hit)
 
-	# 1. 劝降特例
+	# 1. 劝降终结演出
 	if qj >= 0:
-		play_named_sfx(audio_bank, "quan_jiang", 0.0)
+		play_named_sfx(audio_bank, "quan_jiang", 1.5)
 		var qj_win := (qj == me)
 		show_moba_banner(
 			moba_banner,
@@ -600,122 +956,151 @@ static func play_clash_director(
 			UiTheme.ACCENT if qj_win else UiTheme.DANGER,
 			true
 		)
-		push_ticker_line(ticker, "R%02d 【劝降】触发 ▸ %s直接获胜" % [rno, "我" if qj_win else "对手"])
+		push_ticker_line(ticker, "R%02d 劝降触发 ▸ %s直接获胜" % [rno, "我" if qj_win else "对手"])
+		if cel != null:
+			cel.trigger_impact_flash(UiTheme.ACCENT, 0.75)
+			cel.trigger_speed_lines(UiTheme.ACCENT, 1.0)
+			cel.add_cel_ring(Vector2(540, 620), 80.0, 620.0, UiTheme.ACCENT, 24.0, true)
 		if fx_host != null:
-			_float_banner(fx_host, me_card if qj_win else opp_card, "👑 劝降秒杀！", UiTheme.ACCENT, 26)
+			_spawn_comic_callout(fx_host, Vector2(540, 620), "劝降秒杀！！", UiTheme.ACCENT, 76)
 		return
 
-	# 2. 施法音效与基础弹道/增益动效（考虑吸收偷取归属与格挡反弹）
+	# 2. 全舞台技能施法音效与三渲二弹道演出
 	var from_me: Control = me_duel_card if me_duel_card != null else me_card
 	var from_opp: Control = opp_duel_card if opp_duel_card != null else opp_card
-	_play_skill_cast_vfx_and_sfx(fx_host, my_act, op_act, from_me, from_opp, op_blk, my_blk, audio_bank)
+	_play_skill_cast_vfx_and_sfx(fx_host, cel, my_act, op_act, from_me, from_opp, me_card, opp_card, op_blk, my_blk, audio_bank)
 
-	# 3. 判定核心博弈结果（吸收 / 封盾 / 格挡非对称反馈 / 穿防重击 / 互抵）
+	# 3. 判定核心博弈结果（只保留正中偏上 MOBA 横幅 + 舞台中心三渲二漫画拟声大字 + 右下微缩记招器，彻底消灭上下重叠的胶囊飘字！）
 	var banner_title := "⚔️ 【%s】 对决 【%s】" % [my_name, op_name]
 	var banner_sub := "双方交锋完成"
 	var banner_col := UiTheme.ACCENT
 	var ticker_tag := "平分秋色"
+	var stage_center := Vector2(540, 640)
 
 	# 3A. 吸收博弈分支
 	if my_act == GameRules.Action.XI_SHOU or op_act == GameRules.Action.XI_SHOU:
 		if my_act == GameRules.Action.XI_SHOU and op_act == GameRules.Action.XI_SHOU:
-			play_named_sfx(audio_bank, "ui_deny", -2.0)
+			play_named_sfx(audio_bank, "ui_deny", 0.0)
 			banner_title = "💨 双吸落空 · 徒耗元气"
 			banner_sub = "双方同时使用吸收，各自白花 1 气"
 			banner_col = UiTheme.SPECIAL
 			ticker_tag = "双吸落空"
+			if cel != null:
+				cel.trigger_vortex(stage_center, UiTheme.INK_FAINT, 0.65)
 		elif my_act == GameRules.Action.XI_SHOU:
 			if GameRules.is_gain(op_act):
-				play_named_sfx(audio_bank, "xi_shou_ok", 0.0)
+				play_named_sfx(audio_bank, "xi_shou_ok", 1.5)
 				banner_title = "🌀 吸收成功 · 巧取对手【%s】！" % op_name
 				banner_sub = "对手本轮增益作废，全数归入我方囊中！"
 				banner_col = UiTheme.SPECIAL
-				ticker_tag = "我偷取[%s]" % op_name
+				ticker_tag = "偷取[%s]" % op_name
+				if cel != null:
+					cel.trigger_impact_flash(UiTheme.SPECIAL, 0.55)
+					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.95)
+					cel.trigger_vortex(stage_center, UiTheme.SPECIAL, 1.15)
 				if fx_host != null:
-					_play_center_vortex(fx_host, from_me, UiTheme.SPECIAL, false)
+					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center, UiTheme.SPECIAL)
 					_siphon_orbs(fx_host, opp_card, me_card, UiTheme.SPECIAL)
-					_float_banner(fx_host, me_card, "✨ 吸收成功！偷取【%s】" % op_name, UiTheme.SPECIAL, 20)
-					_float_banner(fx_host, opp_card, "💸 增益被偷空！", UiTheme.INK_SOFT, 17)
+					_spawn_comic_callout(fx_host, stage_center + Vector2(0, -110), "吸收得手！偷【%s】！" % op_name, UiTheme.SPECIAL, 62)
 			elif GameRules.is_attack(op_act):
-				play_named_sfx(audio_bank, "xi_shou_fail", 0.0)
+				play_named_sfx(audio_bank, "xi_shou_fail", 1.5)
 				banner_title = "💔 吸收反噬 · 被【%s】打断！" % op_name
 				banner_sub = "预判失误撞上对手攻击，我方掉 1 血"
 				banner_col = UiTheme.DANGER
-				ticker_tag = "我吸收受击-1血"
+				ticker_tag = "吸收反噬-1血"
+				if cel != null:
+					cel.trigger_impact_flash(UiTheme.DANGER, 0.65)
+					cel.trigger_speed_lines(UiTheme.DANGER, 0.95)
+					cel.trigger_vortex(stage_center, UiTheme.DANGER, 0.85)
+					cel.add_cel_slash(stage_center + Vector2(-240, -180), stage_center + Vector2(240, 180), UiTheme.DANGER, 34.0)
+					cel.add_cel_slash(stage_center + Vector2(240, -180), stage_center + Vector2(-240, 180), UiTheme.DANGER, 34.0)
 				if fx_host != null:
-					_play_center_vortex(fx_host, from_me, UiTheme.DANGER, true)
 					play_hurt(fx_host, me_card)
-					_float_banner(fx_host, me_card, "💔 吸收受击 -1血！", UiTheme.DANGER, 20)
-					_float_banner(fx_host, opp_card, "🎯 抓破吸收！", UiTheme.WAVE, 18)
+					_spawn_comic_callout(fx_host, stage_center, "吸收反噬 -1血！！", UiTheme.DANGER, 64)
 			else:
-				play_named_sfx(audio_bank, "ui_deny", -2.0)
+				play_named_sfx(audio_bank, "ui_deny", 0.0)
 				banner_title = "💨 吸收落空 · 对手出【%s】" % op_name
 				banner_sub = "对手未产生可偷增益，白花 1 气"
-				banner_col = UiTheme.INK_SOFT
-				ticker_tag = "我吸收落空"
+				banner_col = UiTheme.INK_FAINT
+				ticker_tag = "吸收落空"
 				if fx_host != null:
-					_float_banner(fx_host, me_card, "💨 吸收落空", UiTheme.INK_SOFT, 16)
+					_spawn_comic_callout(fx_host, stage_center, "吸收落空…", UiTheme.INK_FAINT, 52)
 		else:
 			if GameRules.is_gain(my_act):
-				play_named_sfx(audio_bank, "xi_shou_ok", -1.0)
+				play_named_sfx(audio_bank, "xi_shou_ok", 1.0)
 				banner_title = "⚠️ 增益被偷 · 对手吸收了【%s】！" % my_name
 				banner_sub = "我方本轮【%s】收益被对手夺走！" % my_name
 				banner_col = UiTheme.DANGER
-				ticker_tag = "对手偷走[%s]" % my_name
+				ticker_tag = "被偷[%s]" % my_name
+				if cel != null:
+					cel.trigger_impact_flash(UiTheme.SPECIAL, 0.50)
+					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.90)
+					cel.trigger_vortex(stage_center, UiTheme.SPECIAL, 1.10)
 				if fx_host != null:
-					_play_center_vortex(fx_host, from_opp, UiTheme.SPECIAL, false)
+					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center, UiTheme.SPECIAL)
 					_siphon_orbs(fx_host, me_card, opp_card, UiTheme.SPECIAL)
-					_float_banner(fx_host, opp_card, "🌀 吸收得手！", UiTheme.SPECIAL, 19)
-					_float_banner(fx_host, me_card, "💸 【%s】被吸走！" % my_name, UiTheme.DANGER, 19)
+					_spawn_comic_callout(fx_host, stage_center, "【%s】被吸走！！" % my_name, UiTheme.DANGER, 60)
 			elif GameRules.is_attack(my_act):
-				play_named_sfx(audio_bank, "xi_shou_fail", 0.0)
+				play_named_sfx(audio_bank, "xi_shou_fail", 1.5)
 				banner_title = "🎯 识破吸收 · 【%s】重创对手！" % my_name
 				banner_sub = "对手妄图吸收被我方直接打断，对手 -1 血！"
 				banner_col = UiTheme.OK_GREEN
-				ticker_tag = "打断吸收 敌-1血"
+				ticker_tag = "破对手吸收-1血"
+				if cel != null:
+					cel.trigger_impact_flash(UiTheme.ACCENT, 0.65)
+					cel.trigger_speed_lines(UiTheme.ACCENT, 0.95)
+					cel.add_cel_slash(stage_center + Vector2(-260, 160), stage_center + Vector2(260, -160), UiTheme.ACCENT, 36.0)
 				if fx_host != null:
-					_play_center_vortex(fx_host, from_opp, UiTheme.DANGER, true)
 					play_hit(fx_host, opp_card)
-					_float_banner(fx_host, me_card, "🎯 抓破吸收！", UiTheme.OK_GREEN, 20)
-					_float_banner(fx_host, opp_card, "💔 吸收反噬 -1血！", UiTheme.DANGER, 19)
+					_spawn_comic_callout(fx_host, stage_center, "抓破吸收！对手-1血！", UiTheme.ACCENT, 64)
 			else:
 				banner_title = "🛡️ 稳健识破 · 对手吸收落空！"
 				banner_sub = "对手白耗 1 气，未偷到任何收益"
 				banner_col = UiTheme.SHIELD
 				ticker_tag = "对手吸收落空"
 				if fx_host != null:
-					_float_banner(fx_host, opp_card, "💨 吸收落空", UiTheme.INK_SOFT, 16)
+					_spawn_comic_callout(fx_host, stage_center, "对手吸收落空！", UiTheme.SHIELD, 54)
 
 	# 3B. 小羊破防封盾分支
 	elif my_seal or op_seal:
-		play_named_sfx(audio_bank, "seal", 0.0)
+		play_named_sfx(audio_bank, "seal", 1.5)
 		if op_seal:
 			banner_title = "⛓️ 破防封盾 · 锁死对手护盾！"
 			banner_sub = "对手下回合禁用「防御」与「爆气」！"
 			banner_col = UiTheme.ACCENT
-			ticker_tag = "对手被封盾"
+			ticker_tag = "封对手护盾"
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.ACCENT, 0.60)
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.92)
+				var oc := opp_card.get_global_rect().get_center() if opp_card != null else Vector2(540, 260)
+				cel.add_cel_slash(oc + Vector2(-260, -80), oc + Vector2(260, 80), UiTheme.SPECIAL, 24.0)
+				cel.add_cel_slash(oc + Vector2(260, -80), oc + Vector2(-260, 80), UiTheme.SPECIAL, 24.0)
 			if fx_host != null:
 				_play_seal_chains(fx_host, opp_card)
-				_float_banner(fx_host, me_card, "🐏 小羊破防！", UiTheme.ACCENT, 20)
-				_float_banner(fx_host, opp_card, "⛓️ 护盾被封 1 回合！", UiTheme.DANGER, 20)
+				_spawn_comic_callout(fx_host, stage_center, "破防！封锁护盾！！", UiTheme.ACCENT, 66)
 		else:
-			banner_title = "🚫 护盾被封 · 小心下回合！"
+			banner_title = "⚠️ 护盾被封 · 小心下回合！"
 			banner_sub = "我方被小羊破防，下回合禁用「防御」与「爆气」"
 			banner_col = UiTheme.DANGER
 			ticker_tag = "我被封盾"
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.DANGER, 0.60)
+				cel.trigger_speed_lines(UiTheme.DANGER, 0.92)
+				var mc := me_card.get_global_rect().get_center() if me_card != null else Vector2(540, 1200)
+				cel.add_cel_slash(mc + Vector2(-260, -80), mc + Vector2(260, 80), UiTheme.DANGER, 24.0)
+				cel.add_cel_slash(mc + Vector2(260, -80), mc + Vector2(-260, 80), UiTheme.DANGER, 24.0)
 			if fx_host != null:
 				_play_seal_chains(fx_host, me_card)
-				_float_banner(fx_host, me_card, "⛓️ 护盾被封 1 回合！", UiTheme.DANGER, 20)
-				_float_banner(fx_host, opp_card, "🐏 破防成功！", UiTheme.WAVE, 18)
+				_spawn_comic_callout(fx_host, stage_center, "护盾被封 1 回合！！", UiTheme.DANGER, 64)
 
-	# 3C. 格挡成功 vs 被格挡（非对称强反馈）
+	# 3C. 格挡成功 vs 被格挡（全屏三渲二非对称强反馈）
 	elif my_blk or op_blk:
 		if my_blk:
-			play_named_sfx(audio_bank, "block_success", 0.0)
+			play_named_sfx(audio_bank, "block_success", 2.0)
 			var is_sf := (my_act == GameRules.Action.STRONG_FANG)
 			var is_bao_blk := GameRules.is_bao(my_act)
 			if is_sf:
-				banner_title = "⚡ 强防壁垒 · 挡下【%s】！" % op_name
+				banner_title = "⚡ 强防壁垒 · 完美弹反【%s】！" % op_name
 			elif is_bao_blk:
 				banner_title = "🔥 火力格挡 · 【%s】硬接【%s】！" % [my_name, op_name]
 			else:
@@ -724,102 +1109,129 @@ static func play_clash_director(
 			if is_sf and op_act == GameRules.Action.ZHONG_JI:
 				banner_sub = "强防挡下终极技，但我方护盾已全部震碎！"
 			banner_col = UiTheme.SHIELD
-			ticker_tag = "我格挡[%s]" % op_name
+			ticker_tag = "格挡[%s]" % op_name
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.SHIELD, 0.65)
+				cel.trigger_speed_lines(UiTheme.SHIELD, 0.96)
+				cel.add_cel_ring(stage_center + Vector2(-120, 40), 40.0, 380.0, UiTheme.SHIELD, 22.0, true)
+				cel.add_cel_ring(stage_center + Vector2(-120, 40), 80.0, 480.0, UiTheme.ACCENT, 14.0, true)
 			if fx_host != null:
-				_play_block_positive(fx_host, me_card, "⚡ 强防弹反！" if is_sf else "🛡️ 格挡成功！")
-				_play_blocked_rebound(fx_host, opp_card, "💥 攻击被挡！")
-				if me_duel_card != null:
-					_float_banner(fx_host, me_duel_card, "🛡️ 格挡成功", UiTheme.SHIELD, 15)
-				if opp_duel_card != null:
-					_float_banner(fx_host, opp_duel_card, "💥 被格挡", Color(0.90, 0.40, 0.15), 15)
+				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(-90, -20), UiTheme.SHIELD)
+				_play_block_positive(fx_host, me_card)
+				_play_blocked_rebound(fx_host, opp_card)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(-80, -110), "⚡ 强防弹反！！" if is_sf else "🛡️ 完美格挡！！", UiTheme.SHIELD, 68)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(140, 120), "💥 攻势被挡！", Color(1.0, 0.55, 0.20), 46)
 		if op_blk:
-			play_named_sfx(audio_bank, "blocked_rebound", 0.0)
+			play_named_sfx(audio_bank, "blocked_rebound", 2.0)
 			var op_sf := (op_act == GameRules.Action.STRONG_FANG)
 			banner_title = "💥 攻势受挫 · 【%s】被对手挡下！" % my_name
 			banner_sub = ("对手开启【强防】弹开了你的进攻" if op_sf else "对手提前预判格挡，未能造成伤害")
-			banner_col = Color(0.95, 0.52, 0.18)
-			ticker_tag = "[%s]被对手格挡" % my_name
+			banner_col = Color(0.96, 0.52, 0.18)
+			ticker_tag = "[%s]被挡" % my_name
+			if cel != null:
+				cel.trigger_impact_flash(Color(0.95, 0.45, 0.15), 0.55)
+				cel.trigger_speed_lines(UiTheme.SHIELD, 0.88)
+				cel.add_cel_ring(stage_center + Vector2(120, -40), 40.0, 360.0, UiTheme.SHIELD, 20.0, true)
 			if fx_host != null:
-				_play_blocked_rebound(fx_host, me_card, "💥 攻击被挡！")
-				_play_block_positive(fx_host, opp_card, "⚡ 强防弹反！" if op_sf else "🛡️ 格挡成功！")
-				if me_duel_card != null:
-					_float_banner(fx_host, me_duel_card, "💥 被格挡", Color(0.90, 0.40, 0.15), 15)
-				if opp_duel_card != null:
-					_float_banner(fx_host, opp_duel_card, "🛡️ 格挡成功", UiTheme.SHIELD, 15)
+				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(90, -20), UiTheme.SHIELD)
+				_play_blocked_rebound(fx_host, me_card)
+				_play_block_positive(fx_host, opp_card)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(-90, 100), "💥 攻击被挡！！", Color(1.0, 0.50, 0.18), 64)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(120, -110), "🛡️ 对手格挡！", UiTheme.SHIELD, 48)
 
 	# 3D. 命中扣血分支（终极 / 大羊 / 包子 / 裸防受击）
 	elif my_hit or op_hit:
 		if op_hit and my_hit:
-			play_named_sfx(audio_bank, "zhong_ji", 0.0)
+			play_named_sfx(audio_bank, "zhong_ji", 2.0)
 			banner_title = "☄️ 双终极对轰 · 两败俱伤！"
 			banner_sub = "双方同时命中终极技，各掉 2 血！"
 			banner_col = UiTheme.SPECIAL
-			ticker_tag = "双终极互轰-2血"
+			ticker_tag = "双终极互轰-2"
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.SPECIAL, 0.80)
+				cel.trigger_speed_lines(UiTheme.SPECIAL, 1.0)
+				cel.add_cel_ring(stage_center, 60.0, 640.0, UiTheme.SPECIAL, 28.0, false)
 			if fx_host != null:
 				play_hit(fx_host, me_card)
 				play_hit(fx_host, opp_card)
-				_float_banner(fx_host, me_card, "🩸 重创 -2血！", UiTheme.DANGER, 22)
-				_float_banner(fx_host, opp_card, "🩸 重创 -2血！", UiTheme.DANGER, 22)
+				_spawn_comic_callout(fx_host, stage_center, "双终极对轰 -2血！！", UiTheme.SPECIAL, 68)
 		elif op_hit:
 			var dmg: int = absi(int(hp_d[op]))
-			play_named_sfx(audio_bank, "zhong_ji" if dmg >= 2 else "hit", 0.0)
+			play_named_sfx(audio_bank, "zhong_ji" if dmg >= 2 else "hit", 2.0)
 			banner_title = ("☄️ 终极必杀 · 轰穿对手 -%d血！" if dmg >= 2 else "🔥 精准命中 · 【%s】打掉对手 1 血！") % (dmg if dmg >= 2 else my_name)
 			banner_sub = "我方进攻直接奏效，压制对手血线！"
 			banner_col = UiTheme.OK_GREEN if dmg == 1 else UiTheme.SPECIAL
-			ticker_tag = "命中对手 -%d血" % dmg
+			ticker_tag = "命中对手-%d血" % dmg
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.SPECIAL if dmg >= 2 else UiTheme.WAVE, 0.72)
+				cel.trigger_speed_lines(UiTheme.SPECIAL if dmg >= 2 else UiTheme.ACCENT, 0.98)
+				cel.add_cel_slash(stage_center + Vector2(-340, 220), stage_center + Vector2(340, -220), UiTheme.ACCENT, 42.0)
+				cel.add_cel_ring(stage_center, 50.0, 520.0, UiTheme.WAVE, 22.0, false)
 			if fx_host != null:
 				play_hit(fx_host, opp_card)
-				_float_banner(fx_host, me_card, "🔥 破防命中！", UiTheme.ACCENT, 19)
-				_float_banner(fx_host, opp_card, "🩸 受击 -%d血！" % dmg, UiTheme.DANGER, 22)
+				_spawn_comic_callout(fx_host, stage_center, ("雷霆必杀 -%d血！！" % dmg) if dmg >= 2 else "破防命中 -1血！！", UiTheme.ACCENT, 68)
 		else:
 			var my_dmg: int = absi(int(hp_d[me]))
-			play_named_sfx(audio_bank, "zhong_ji" if my_dmg >= 2 else "hit", 0.0)
+			play_named_sfx(audio_bank, "zhong_ji" if my_dmg >= 2 else "hit", 2.0)
 			banner_title = "⚠️ 遭受重击 · 被【%s】打掉 %d 血！" % [op_name, my_dmg]
 			banner_sub = "注意对手气量与破防技冷却！"
 			banner_col = UiTheme.DANGER
-			ticker_tag = "我受击 -%d血" % my_dmg
+			ticker_tag = "我受击-%d血" % my_dmg
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.DANGER, 0.72)
+				cel.trigger_speed_lines(UiTheme.DANGER, 0.96)
+				cel.add_cel_slash(stage_center + Vector2(-320, -200), stage_center + Vector2(320, 200), UiTheme.DANGER, 40.0)
 			if fx_host != null:
 				play_hurt(fx_host, me_card)
-				_float_banner(fx_host, me_card, "🩸 受击 -%d血！" % my_dmg, UiTheme.DANGER, 22)
-				_float_banner(fx_host, opp_card, "💥 命中得手！", UiTheme.WAVE, 18)
+				_spawn_comic_callout(fx_host, stage_center, "遭受重击 -%d血！！" % my_dmg, UiTheme.DANGER, 66)
 
 	# 3E. 包子互拼削盾 / 招式互抵 / 双方攒气回血
 	else:
 		var my_sh_d := int(sh_d[me])
 		var op_sh_d := int(sh_d[op])
 		if op_sh_d < 0 and GameRules.is_bao(my_act):
-			play_named_sfx(audio_bank, "hit", -2.0)
-			banner_title = "💥 火力压制 · 削减对手 %d 盾！" % abs(op_sh_d)
-			banner_sub = "包子对拼占优，击碎对手护盾"
+			play_named_sfx(audio_bank, "hit", 0.5)
+			banner_title = "💥 火力压制 · 震碎对手 %d 盾！" % absi(op_sh_d)
+			banner_sub = "包子对拼占优，大幅削减对手护盾"
 			banner_col = UiTheme.WAVE
-			ticker_tag = "破对手%d盾" % abs(op_sh_d)
+			ticker_tag = "碎对手%d盾" % absi(op_sh_d)
+			if cel != null:
+				cel.trigger_speed_lines(UiTheme.WAVE, 0.80)
+				cel.add_cel_ring(stage_center, 40.0, 420.0, UiTheme.WAVE, 18.0, true)
 			if fx_host != null:
-				_float_banner(fx_host, opp_card, "🛡️ 护盾 %d" % op_sh_d, UiTheme.DANGER, 18)
+				_spawn_comic_callout(fx_host, stage_center, "轰碎对手 %d 盾！！" % absi(op_sh_d), UiTheme.WAVE, 58)
 		elif my_sh_d < 0 and GameRules.is_bao(op_act):
-			play_named_sfx(audio_bank, "hit", -2.0)
-			banner_title = "⚠️ 对拼劣势 · 我方损失 %d 盾" % abs(my_sh_d)
+			play_named_sfx(audio_bank, "hit", 0.5)
+			banner_title = "⚠️ 对拼劣势 · 我方损失 %d 盾" % absi(my_sh_d)
 			banner_sub = "对手包子连数更高，注意补盾"
 			banner_col = UiTheme.ACCENT
-			ticker_tag = "我损%d盾" % abs(my_sh_d)
+			ticker_tag = "我损%d盾" % absi(my_sh_d)
+			if cel != null:
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.75)
 			if fx_host != null:
-				_float_banner(fx_host, me_card, "🛡️ 护盾 %d" % my_sh_d, UiTheme.DANGER, 18)
+				_spawn_comic_callout(fx_host, stage_center, "护盾受损 %d 盾！" % my_sh_d, UiTheme.ACCENT, 56)
 		elif GameRules.is_attack(my_act) and my_act == op_act:
-			play_named_sfx(audio_bank, "block", 0.0)
+			play_named_sfx(audio_bank, "block", 1.5)
 			banner_title = "⚔️ 招式互抵 · 【%s】正面相撞！" % my_name
 			banner_sub = "双方同招对撞，攻势相互抵消"
 			banner_col = UiTheme.ACCENT
 			ticker_tag = "同招[%s]互抵" % my_name
+			if cel != null:
+				cel.trigger_impact_flash(UiTheme.ACCENT, 0.50)
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.85)
+				cel.add_cel_ring(stage_center, 40.0, 460.0, UiTheme.ACCENT, 20.0, false)
 			if fx_host != null:
-				_float_banner(fx_host, me_card, "⚔️ 招式抵消", UiTheme.ACCENT, 18)
-				_float_banner(fx_host, opp_card, "⚔️ 招式抵消", UiTheme.ACCENT, 18)
+				_spawn_comic_callout(fx_host, stage_center, "⚔️ 正面拼招抵消！！", UiTheme.ACCENT, 58)
 		else:
 			banner_title = "✨ 蓄势运营 · 我【%s】 vs 对手【%s】" % [my_name, op_name]
 			banner_sub = "双方调息蓄力，准备下一拍博弈"
 			banner_col = UiTheme.GAIN
-			ticker_tag = "双方蓄力运营"
+			ticker_tag = "蓄力运营"
+			if cel != null:
+				cel.add_cel_ring(stage_center, 50.0, 360.0, UiTheme.GAIN, 12.0, false)
 
 	show_moba_banner(moba_banner, banner_title, banner_sub, banner_col, true)
-	push_ticker_line(ticker, "R%02d 我[%s] 对[%s] ▸ %s" % [rno, my_name, op_name, ticker_tag])
+	push_ticker_line(ticker, "R%02d 我:%s 对手:%s ▸ %s" % [rno, my_name, op_name, ticker_tag])
 
 
 ## 中央两张亮招卡物理对撞与格挡反弹动效
@@ -835,75 +1247,98 @@ static func _animate_duel_cards_clash(
 		me_duel.pivot_offset = me_duel.size * 0.5
 		var tw_m := me_duel.create_tween()
 		if op_blk:
-			# 我方攻击被对手挡下：向中心冲撞后猛烈弹回并后仰
-			tw_m.tween_property(me_duel, "scale", Vector2(0.86, 0.86), 0.06)
-			tw_m.parallel().tween_property(me_duel, "rotation", -0.16, 0.08)
-			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
-			tw_m.parallel().tween_property(me_duel, "rotation", 0.0, 0.16)
+			tw_m.tween_property(me_duel, "scale", Vector2(0.82, 0.82), 0.06)
+			tw_m.parallel().tween_property(me_duel, "rotation", -0.20, 0.08)
+			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+			tw_m.parallel().tween_property(me_duel, "rotation", 0.0, 0.18)
 		elif my_blk:
-			# 我方格挡成功：稳健撑开护盾放大
-			tw_m.tween_property(me_duel, "scale", Vector2(1.20, 1.20), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_m.tween_property(me_duel, "scale", Vector2(1.26, 1.26), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.18)
 		elif my_hit:
-			tw_m.tween_property(me_duel, "scale", Vector2(0.84, 0.84), 0.08)
-			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.14)
+			tw_m.tween_property(me_duel, "scale", Vector2(0.80, 0.80), 0.08)
+			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.16)
 		else:
-			tw_m.tween_property(me_duel, "scale", Vector2(1.12, 1.12), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_m.tween_property(me_duel, "scale", Vector2(1.16, 1.16), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.14)
 
 	if opp_duel != null and is_instance_valid(opp_duel):
 		opp_duel.pivot_offset = opp_duel.size * 0.5
 		var tw_o := opp_duel.create_tween()
 		if my_blk:
-			# 对手攻击被我方挡下：弹回后仰
-			tw_o.tween_property(opp_duel, "scale", Vector2(0.86, 0.86), 0.06)
-			tw_o.parallel().tween_property(opp_duel, "rotation", 0.16, 0.08)
-			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
-			tw_o.parallel().tween_property(opp_duel, "rotation", 0.0, 0.16)
+			tw_o.tween_property(opp_duel, "scale", Vector2(0.82, 0.82), 0.06)
+			tw_o.parallel().tween_property(opp_duel, "rotation", 0.20, 0.08)
+			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+			tw_o.parallel().tween_property(opp_duel, "rotation", 0.0, 0.18)
 		elif op_blk:
-			tw_o.tween_property(opp_duel, "scale", Vector2(1.20, 1.20), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_o.tween_property(opp_duel, "scale", Vector2(1.26, 1.26), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.18)
 		elif op_hit:
-			tw_o.tween_property(opp_duel, "scale", Vector2(0.84, 0.84), 0.08)
-			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.14)
+			tw_o.tween_property(opp_duel, "scale", Vector2(0.80, 0.80), 0.08)
+			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.16)
 		else:
-			tw_o.tween_property(opp_duel, "scale", Vector2(1.12, 1.12), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_o.tween_property(opp_duel, "scale", Vector2(1.16, 1.16), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.14)
 
 
-static func _play_center_vortex(host: Control, anchor: Control, col: Color, implode: bool) -> void:
-	if host == null or anchor == null:
+## 弹出三渲二特写插画切入卡（格挡六边圣盾特写 / 吸收黑洞特写）
+static func _spawn_cutin_card(host: Control, tex_name: String, pos: Vector2, col: Color) -> void:
+	if host == null:
 		return
-	var tex := UiTheme.load_ui_texture("icon_xi_shou.png")
-	var vtx := TextureRect.new()
-	vtx.texture = tex
-	vtx.size = Vector2(56, 56)
-	vtx.pivot_offset = Vector2(28, 28)
-	vtx.modulate = col.lightened(0.25)
-	vtx.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	host.add_child(vtx)
-	var c := anchor.get_global_rect().get_center()
-	vtx.global_position = c - Vector2(28, 28)
-	var tw := host.create_tween().set_parallel(true)
-	tw.tween_property(vtx, "rotation", TAU * (1.5 if not implode else -1.5), 0.36)
-	if implode:
-		vtx.scale = Vector2(1.5, 1.5)
-		tw.tween_property(vtx, "scale", Vector2(0.1, 0.1), 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
-	else:
-		vtx.scale = Vector2(0.3, 0.3)
-		tw.tween_property(vtx, "scale", Vector2(1.4, 1.4), 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(vtx, "modulate:a", 0.0, 0.36)
-	tw.chain().tween_callback(func():
-		if is_instance_valid(vtx):
-			vtx.queue_free())
+	var tex := UiTheme.load_ui_texture(tex_name)
+	if tex == null:
+		return
+	var tr := TextureRect.new()
+	tr.texture = tex
+	tr.size = Vector2(420, 256)
+	tr.pivot_offset = Vector2(210, 128)
+	tr.global_position = pos - Vector2(210, 128)
+	tr.scale = Vector2(0.25, 0.25)
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(tr)
+	var tw := host.create_tween()
+	tw.tween_property(tr, "scale", Vector2(1.12, 1.12), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(tr, "scale", Vector2(1.0, 1.0), 0.12)
+	tw.tween_interval(0.22)
+	tw.tween_property(tr, "modulate:a", 0.0, 0.22)
+	tw.parallel().tween_property(tr, "scale", Vector2(1.35, 1.35), 0.22)
+	tw.tween_callback(func():
+		if is_instance_valid(tr):
+			tr.queue_free())
+
+
+## 舞台中央三渲二漫画拟声大字（粗黑描边 + 弹性冲击缩放，替代旧版琐碎黑胶囊）
+static func _spawn_comic_callout(host: Control, pos: Vector2, text: String, col: Color, fsize: int = 62) -> void:
+	if host == null:
+		return
+	var lab := UiTheme.ink_label(text, fsize, col.lightened(0.25), 14, UiTheme.INK)
+	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(lab)
+	lab.reset_size()
+	lab.pivot_offset = lab.size * 0.5
+	lab.global_position = pos - lab.size * 0.5
+	lab.scale = Vector2(0.2, 0.2)
+	lab.rotation = randf_range(-0.08, 0.08)
+	var tw := host.create_tween()
+	tw.tween_property(lab, "scale", Vector2(1.18, 1.18), 0.13).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lab, "scale", Vector2(1.0, 1.0), 0.09)
+	tw.tween_interval(0.32)
+	tw.tween_property(lab, "global_position:y", lab.global_position.y - 60.0, 0.24)
+	tw.parallel().tween_property(lab, "modulate:a", 0.0, 0.24)
+	tw.tween_callback(func():
+		if is_instance_valid(lab):
+			lab.queue_free())
 
 
 static func _play_skill_cast_vfx_and_sfx(
 	fx_host: Control,
+	cel: CelStageCanvas,
 	my_act: int,
 	op_act: int,
-	me_card: Control,
-	opp_card: Control,
+	me_duel: Control,
+	opp_duel: Control,
+	me_hud: Control,
+	opp_hud: Control,
 	op_blk: bool,
 	my_blk: bool,
 	audio_bank: Dictionary
@@ -911,63 +1346,71 @@ static func _play_skill_cast_vfx_and_sfx(
 	for act in [my_act, op_act]:
 		match act:
 			GameRules.Action.BAO3:
-				play_named_sfx(audio_bank, "bao3", -2.0)
+				play_named_sfx(audio_bank, "bao3", 1.5)
 			GameRules.Action.BAO2:
-				play_named_sfx(audio_bank, "bao2", -2.0)
+				play_named_sfx(audio_bank, "bao2", 1.0)
 			GameRules.Action.BAO1:
-				play_named_sfx(audio_bank, "bao1", -3.0)
+				play_named_sfx(audio_bank, "bao1", 0.5)
 			GameRules.Action.STRONG_FANG:
-				play_named_sfx(audio_bank, "strong_fang", -2.0)
+				play_named_sfx(audio_bank, "strong_fang", 1.0)
 			GameRules.Action.XIAO_YANG:
-				play_named_sfx(audio_bank, "xiao_yang", -2.0)
+				play_named_sfx(audio_bank, "xiao_yang", 1.0)
 			GameRules.Action.DA_YANG:
-				play_named_sfx(audio_bank, "da_yang", -1.0)
+				play_named_sfx(audio_bank, "da_yang", 1.5)
 			GameRules.Action.JI_QI:
-				play_named_sfx(audio_bank, "ji_qi", -2.0)
+				play_named_sfx(audio_bank, "ji_qi", 1.0)
 			GameRules.Action.BAO_QI:
-				play_named_sfx(audio_bank, "bao_qi", -2.0)
+				play_named_sfx(audio_bank, "bao_qi", 1.0)
 			GameRules.Action.HUI_FU:
-				play_named_sfx(audio_bank, "hui_fu", -1.0)
+				play_named_sfx(audio_bank, "hui_fu", 1.0)
 			GameRules.Action.ZAN:
-				play_named_sfx(audio_bank, "zan", -4.0)
+				play_named_sfx(audio_bank, "zan", 0.0)
 
 	if fx_host == null:
 		return
 
 	var my_stolen := (op_act == GameRules.Action.XI_SHOU and GameRules.is_gain(my_act))
 	var op_stolen := (my_act == GameRules.Action.XI_SHOU and GameRules.is_gain(op_act))
-	_spawn_single_side_skill_vfx(fx_host, my_act, me_card, opp_card, true, op_blk, my_stolen)
-	_spawn_single_side_skill_vfx(fx_host, op_act, opp_card, me_card, false, my_blk, op_stolen)
+	_spawn_single_side_skill_vfx(fx_host, cel, my_act, me_duel, opp_duel, me_hud, opp_hud, true, op_blk, my_stolen)
+	_spawn_single_side_skill_vfx(fx_host, cel, op_act, opp_duel, me_duel, opp_hud, me_hud, false, my_blk, op_stolen)
 
 
 static func _spawn_single_side_skill_vfx(
 	host: Control,
+	cel: CelStageCanvas,
 	act: int,
 	from_card: Control,
 	to_card: Control,
+	from_hud: Control,
+	to_hud: Control,
 	friendly: bool,
 	was_blocked: bool,
 	was_stolen: bool = false
 ) -> void:
 	if host == null or from_card == null or to_card == null:
 		return
-	var gain_target: Control = to_card if was_stolen else from_card
+	var gain_hud: Control = to_hud if was_stolen else from_hud
+	var gain_center := gain_hud.get_global_rect().get_center() if gain_hud != null else from_card.get_global_rect().get_center()
 	match act:
 		GameRules.Action.ZAN:
-			_aura_rise(host, gain_target, UiTheme.ACCENT, "+1气 +1盾")
+			if cel != null:
+				cel.add_cel_ring(gain_center, 30.0, 220.0, UiTheme.ACCENT, 12.0, false)
 		GameRules.Action.JI_QI:
-			_aura_rise(host, gain_target, UiTheme.GAIN, "⚡ 集气 +3气！")
+			if cel != null:
+				cel.add_cel_ring(gain_center, 40.0, 320.0, UiTheme.GAIN, 16.0, false)
+				cel.trigger_speed_lines(UiTheme.GAIN, 0.55)
 		GameRules.Action.HUI_FU:
-			_aura_rise(host, gain_target, UiTheme.OK_GREEN, "💚 回复 +1血！")
+			if cel != null:
+				cel.add_cel_ring(gain_center, 40.0, 340.0, UiTheme.OK_GREEN, 18.0, false)
 		GameRules.Action.BAO_QI:
-			_ring(host, gain_target, UiTheme.SPECIAL)
-			_aura_rise(host, gain_target, UiTheme.SPECIAL, "🛡️ 爆气满盾！")
+			if cel != null:
+				cel.add_cel_ring(gain_center, 40.0, 360.0, UiTheme.SPECIAL, 20.0, true)
 		GameRules.Action.BAO1, GameRules.Action.BAO2, GameRules.Action.BAO3:
 			var n := GameRules.bao_count(act)
 			for k in n:
-				host.get_tree().create_timer(k * 0.07).timeout.connect(func():
+				host.get_tree().create_timer(k * 0.065).timeout.connect(func():
 					if is_instance_valid(host) and is_instance_valid(from_card) and is_instance_valid(to_card):
-						_fire_bao_orb(host, from_card, to_card, friendly, was_blocked))
+						_fire_bao_orb(host, from_card, to_card, friendly, was_blocked, n))
 		GameRules.Action.XIAO_YANG:
 			_fire_ram_wave(host, from_card, to_card, Color(1.0, 0.55, 0.15), false, was_blocked)
 		GameRules.Action.DA_YANG:
@@ -976,50 +1419,67 @@ static func _spawn_single_side_skill_vfx(
 			_play_ultimate_beam(host, from_card, to_card, was_blocked)
 
 
-static func _fire_bao_orb(host: Control, from_c: Control, to_c: Control, friendly: bool, bounce: bool) -> void:
+static func _fire_bao_orb(host: Control, from_c: Control, to_c: Control, friendly: bool, bounce: bool, combo_n: int = 1) -> void:
+	var d_sz := 72 + combo_n * 22
 	var orb := Panel.new()
-	orb.size = Vector2(22, 22)
+	orb.size = Vector2(d_sz, d_sz)
+	orb.pivot_offset = orb.size * 0.5
 	orb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var col := UiTheme.WAVE if friendly else Color(1.0, 0.42, 0.18)
-	orb.add_theme_stylebox_override("panel", _pip_style(true, col, col, Vector2(22, 22)))
+	var col := UiTheme.WAVE if friendly else Color(1.0, 0.42, 0.15)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1.0, 0.92, 0.35)
+	sb.border_color = UiTheme.INK
+	sb.set_border_width_all(8)
+	sb.set_corner_radius_all(d_sz / 2)
+	sb.shadow_color = col
+	sb.shadow_size = 18
+	orb.add_theme_stylebox_override("panel", sb)
 	host.add_child(orb)
+
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
 	orb.global_position = a - orb.size * 0.5
 	var tw := host.create_tween()
-	tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.20).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	if bounce:
-		var deflect := b + Vector2(randf_range(-70, 70), 45 if friendly else -45)
+		var deflect := b + Vector2(randf_range(-240, 240), 140 if friendly else -140)
 		tw.tween_property(orb, "global_position", deflect, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(orb, "scale", Vector2(0.4, 0.4), 0.16)
 		tw.parallel().tween_property(orb, "modulate", Color(0.7, 0.7, 0.7, 0.0), 0.16)
 	else:
-		tw.tween_property(orb, "scale", Vector2(1.7, 1.7), 0.06)
-		tw.parallel().tween_property(orb, "modulate", Color(1, 1, 1, 0), 0.06)
+		tw.tween_property(orb, "scale", Vector2(2.2, 2.2), 0.08)
+		tw.parallel().tween_property(orb, "modulate", Color(1, 1, 1, 0), 0.08)
 	tw.tween_callback(func():
 		if is_instance_valid(orb):
 			orb.queue_free())
 
 
 static func _fire_ram_wave(host: Control, from_c: Control, to_c: Control, col: Color, heavy: bool, bounce: bool = false) -> void:
-	var wave := ColorRect.new()
-	wave.color = col
-	wave.size = Vector2(56 if heavy else 38, 16 if heavy else 12)
+	var wave := Panel.new()
+	wave.size = Vector2(260 if heavy else 190, 68 if heavy else 48)
 	wave.pivot_offset = wave.size * 0.5
 	wave.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = col
+	sb.border_color = UiTheme.INK
+	sb.set_border_width_all(7)
+	sb.set_corner_radius_all(24)
+	wave.add_theme_stylebox_override("panel", sb)
 	host.add_child(wave)
+
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
 	wave.global_position = a - wave.size * 0.5
 	var tw := host.create_tween()
-	tw.tween_property(wave, "global_position", b - wave.size * 0.5, 0.20).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+	tw.tween_property(wave, "global_position", b - wave.size * 0.5, 0.19).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
 	if bounce:
-		var deflect := b + Vector2(randf_range(-85, 85), 35)
+		var deflect := b + Vector2(randf_range(-260, 260), 120)
 		tw.tween_property(wave, "global_position", deflect, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(wave, "rotation", 0.65, 0.16)
+		tw.parallel().tween_property(wave, "rotation", 0.75, 0.16)
 		tw.parallel().tween_property(wave, "modulate", Color(0.65, 0.68, 0.75, 0.0), 0.16)
 	else:
-		tw.tween_property(wave, "scale", Vector2(1.8, 1.8), 0.08)
-		tw.parallel().tween_property(wave, "modulate", Color(1, 1, 1, 0), 0.08)
+		tw.tween_property(wave, "scale", Vector2(2.1, 2.1), 0.09)
+		tw.parallel().tween_property(wave, "modulate", Color(1, 1, 1, 0), 0.09)
 	tw.tween_callback(func():
 		if is_instance_valid(wave):
 			wave.queue_free())
@@ -1028,29 +1488,31 @@ static func _fire_ram_wave(host: Control, from_c: Control, to_c: Control, col: C
 static func _play_ultimate_beam(host: Control, from_c: Control, to_c: Control, was_blocked: bool = false) -> void:
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
-	var min_y := minf(a.y, b.y)
-	var h := maxf(80.0, absf(b.y - a.y))
-	if was_blocked:
-		h *= 0.68
-	var beam := ColorRect.new()
-	beam.color = Color(0.65, 0.35, 1.0, 0.88)
-	beam.size = Vector2(36, h)
+	var min_y := 80.0
+	var h := 1160.0 if not was_blocked else 640.0
+	var beam := Panel.new()
+	beam.size = Vector2(220, h)
 	beam.pivot_offset = beam.size * 0.5
-	beam.global_position = Vector2(b.x - 18, min_y)
+	beam.global_position = Vector2(b.x - 110, min_y)
 	beam.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.58, 0.28, 0.98, 0.92)
+	sb.border_color = UiTheme.INK
+	sb.set_border_width_all(8)
+	beam.add_theme_stylebox_override("panel", sb)
 	host.add_child(beam)
 
 	var core := ColorRect.new()
-	core.color = Color(1.0, 0.95, 0.45, 0.96)
-	core.size = Vector2(14, h)
-	core.position = Vector2(11, 0)
+	core.color = Color(1.0, 0.95, 0.42, 0.98)
+	core.size = Vector2(92, h - 16)
+	core.position = Vector2(64, 8)
 	core.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	beam.add_child(core)
 
 	var tw := host.create_tween()
-	tw.tween_property(beam, "scale:x", 1.8, 0.10)
-	tw.tween_property(beam, "scale:x", 0.1, 0.26)
-	tw.parallel().tween_property(beam, "modulate", Color(1, 1, 1, 0), 0.26)
+	tw.tween_property(beam, "scale:x", 1.85, 0.10)
+	tw.tween_property(beam, "scale:x", 0.08, 0.28)
+	tw.parallel().tween_property(beam, "modulate", Color(1, 1, 1, 0), 0.28)
 	tw.tween_callback(func():
 		if is_instance_valid(beam):
 			beam.queue_free())
@@ -1061,17 +1523,24 @@ static func _siphon_orbs(host: Control, victim_c: Control, absorber_c: Control, 
 		return
 	var a := victim_c.get_global_rect().get_center()
 	var b := absorber_c.get_global_rect().get_center()
-	for i in 6:
-		var orb := ColorRect.new()
-		orb.color = col.lightened(0.2)
-		orb.size = Vector2(10, 10)
+	var stage_mid := Vector2(540, 640)
+	for i in 10:
+		var orb := Panel.new()
+		orb.size = Vector2(44, 44)
 		orb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = col.lightened(0.32)
+		sb.border_color = UiTheme.INK
+		sb.set_border_width_all(5)
+		sb.set_corner_radius_all(22)
+		orb.add_theme_stylebox_override("panel", sb)
 		host.add_child(orb)
-		var off := Vector2(randf_range(-28, 28), randf_range(-16, 16))
+		var off := Vector2(randf_range(-140, 140), randf_range(-60, 60))
 		orb.global_position = a + off
 		var tw := host.create_tween()
-		tw.tween_interval(i * 0.035)
-		tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.26).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		tw.tween_interval(i * 0.03)
+		tw.tween_property(orb, "global_position", stage_mid - orb.size * 0.5 + off * 0.3, 0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 		tw.tween_callback(func():
 			if is_instance_valid(orb):
 				orb.queue_free())
@@ -1082,74 +1551,29 @@ static func _play_seal_chains(host: Control, target: Control) -> void:
 		return
 	_flash_rect(host, target, Color(0.55, 0.15, 0.75, 0.55))
 	_shake(target)
-	_burst(host, target, Color(0.85, 0.20, 0.45), 12)
+	_burst(host, target, Color(0.95, 0.25, 0.50), 18)
 
 
-static func _play_block_positive(host: Control, target: Control, text: String) -> void:
+static func _play_block_positive(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
-	_flash_rect(host, target, Color(0.10, 0.78, 0.98, 0.50))
+	_flash_rect(host, target, Color(0.10, 0.78, 0.98, 0.52))
 	_ring(host, target, UiTheme.SHIELD)
-	_burst(host, target, Color(0.98, 0.84, 0.25), 8)
-	_float_banner(host, target, text, UiTheme.SHIELD.darkened(0.15), 21)
+	_burst(host, target, Color(1.0, 0.88, 0.25), 18)
 
 
-static func _play_blocked_rebound(host: Control, target: Control, text: String) -> void:
+static func _play_blocked_rebound(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
-	_flash_rect(host, target, Color(0.45, 0.48, 0.55, 0.45))
+	_flash_rect(host, target, Color(0.45, 0.48, 0.55, 0.50))
 	var base := target.position
-	var recoil_y := 10.0 if target.global_position.y > 350.0 else -10.0
+	var recoil_y := 28.0 if target.global_position.y > 700.0 else -28.0
 	var tw := target.create_tween()
 	tw.tween_property(target, "position", base + Vector2(0, recoil_y), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(target, "position", base + Vector2(-4, 0), 0.05)
-	tw.tween_property(target, "position", base + Vector2(4, 0), 0.05)
+	tw.tween_property(target, "position", base + Vector2(-12, 0), 0.05)
+	tw.tween_property(target, "position", base + Vector2(12, 0), 0.05)
 	tw.tween_property(target, "position", base, 0.08)
-	_burst(host, target, Color(0.65, 0.68, 0.74), 8)
-	_float_banner(host, target, text, Color(0.88, 0.42, 0.15), 19)
-
-
-static func _aura_rise(host: Control, target: Control, col: Color, label_txt: String) -> void:
-	if host == null or target == null:
-		return
-	_flash_rect(host, target, Color(col.r, col.g, col.b, 0.32))
-	_float_banner(host, target, label_txt, col.darkened(0.1), 16)
-
-
-static func _float_banner(host: Control, target: Control, text: String, col: Color, fsize: int = 18) -> void:
-	if host == null or target == null:
-		return
-	var pill := PanelContainer.new()
-	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.06, 0.09, 0.16, 0.90)
-	sb.border_color = col.lightened(0.25)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(10)
-	sb.content_margin_left = 10
-	sb.content_margin_right = 10
-	sb.content_margin_top = 3
-	sb.content_margin_bottom = 3
-	pill.add_theme_stylebox_override("panel", sb)
-
-	var lab := UiTheme.ink_label(text, fsize, Color.WHITE)
-	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	pill.add_child(lab)
-	host.add_child(pill)
-	pill.reset_size()
-	var c := target.get_global_rect().get_center()
-	pill.global_position = c - pill.size * 0.5
-	pill.scale = Vector2(0.5, 0.5)
-	pill.pivot_offset = pill.size * 0.5
-
-	var tw := host.create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(pill, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(pill, "global_position:y", pill.global_position.y - 34.0, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.chain().tween_property(pill, "modulate", Color(1, 1, 1, 0), 0.22)
-	tw.chain().tween_callback(func():
-		if is_instance_valid(pill):
-			pill.queue_free())
+	_burst(host, target, Color(0.75, 0.78, 0.84), 14)
 
 
 static func play_reject_feedback(btn: Control) -> void:
@@ -1157,9 +1581,9 @@ static func play_reject_feedback(btn: Control) -> void:
 		return
 	var base_x := btn.position.x
 	var tw := btn.create_tween()
-	tw.tween_property(btn, "position:x", base_x - 5.0, 0.04)
-	tw.tween_property(btn, "position:x", base_x + 5.0, 0.04)
-	tw.tween_property(btn, "position:x", base_x - 3.0, 0.04)
+	tw.tween_property(btn, "position:x", base_x - 12.0, 0.04)
+	tw.tween_property(btn, "position:x", base_x + 12.0, 0.04)
+	tw.tween_property(btn, "position:x", base_x - 8.0, 0.04)
 	tw.tween_property(btn, "position:x", base_x, 0.04)
 
 
@@ -1216,7 +1640,7 @@ static func _wait_stable_rect(tree: SceneTree, target: Control, root: Control, c
 		if not is_instance_valid(root) or not is_instance_valid(target):
 			return
 		var r := target.get_global_rect()
-		if r.position.length() < 1.0 and r.size.y < 200 and tries < 12:
+		if r.position.length() < 1.0 and r.size.y < 300 and tries < 12:
 			prev = r
 			continue
 		if r.size.x < 4 or r.size.y < 4:
@@ -1251,15 +1675,15 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 			if is_instance_valid(root) and is_instance_valid(target):
 				_build_spot_geometry(root, target, caption, animate))
 		return
-	var hole := r.grow(10)
+	var hole := r.grow(18)
 
-	var vs := Vector2(390, 820)
+	var vs := Vector2(1080, 1920)
 	if root.get_viewport() != null and root.get_viewport().get_visible_rect().size.x > 0:
 		vs = root.get_viewport().get_visible_rect().size
 	var vw := maxf(root.size.x, vs.x)
 	var vh := maxf(root.size.y, vs.y)
 
-	var dim_color := Color(0.05, 0.07, 0.12, 0.0 if animate else 0.65)
+	var dim_color := Color(0.03, 0.05, 0.10, 0.0 if animate else 0.68)
 	var d0 := _add_dim(root, Rect2(0, 0, vw, maxf(0, hole.position.y)), dim_color)
 	var d1 := _add_dim(root, Rect2(0, hole.end.y, vw, maxf(0, vh - hole.end.y)), dim_color)
 	var d2 := _add_dim(root, Rect2(0, hole.position.y, maxf(0, hole.position.x), hole.size.y), dim_color)
@@ -1268,10 +1692,10 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		var tw_dim := root.create_tween().set_parallel(true)
 		for d in [d0, d1, d2, d3]:
 			if d != null:
-				tw_dim.tween_property(d, "color", Color(0.05, 0.07, 0.12, 0.65), 0.22)
+				tw_dim.tween_property(d, "color", Color(0.03, 0.05, 0.10, 0.68), 0.22)
 
-	var border := 3.0
-	var gold := Color(1.0, 0.78, 0.18, 0.98)
+	var border := 6.0
+	var gold := Color(1.0, 0.82, 0.18, 0.98)
 	var edges: Array[ColorRect] = []
 	edges.append(_edge_rect(hole.position - Vector2(border, border), Vector2(hole.size.x + border * 2, border), gold))
 	edges.append(_edge_rect(Vector2(hole.position.x - border, hole.end.y), Vector2(hole.size.x + border * 2, border), gold))
@@ -1323,16 +1747,13 @@ static func _build_spot_geometry(root: Control, target: Control, caption: String
 		tw_b.tween_property(target, "scale", Vector2(1.0, 1.0), 0.18)
 
 	if caption != "":
-		var lab := Label.new()
-		lab.text = caption
-		lab.add_theme_font_size_override("font_size", 17)
-		lab.add_theme_color_override("font_color", Color(1, 0.96, 0.86))
+		var lab := UiTheme.ink_label(caption, 38, Color(1, 0.96, 0.82), 8, UiTheme.INK)
 		lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		lab.modulate = Color(1, 1, 1, 1 if not animate else 0)
 		root.add_child(lab)
 		lab.reset_size()
-		lab.position = Vector2((vw - lab.size.x) * 0.5, hole.position.y - 48)
+		lab.position = Vector2((vw - lab.size.x) * 0.5, hole.position.y - 96)
 		if animate:
 			var tw2 := root.create_tween()
 			tw2.tween_property(lab, "modulate", Color(1, 1, 1, 1), 0.25)
@@ -1362,9 +1783,6 @@ static func _add_dim(root: Control, rect: Rect2, color: Color) -> ColorRect:
 static func hide_focus_spotlight(layer: Control) -> void:
 	if layer == null or not is_instance_valid(layer):
 		return
-	# 显式解绑挂在目标按钮上的连接（不依赖 is_connected 的匹配语义，行为确定）。
-	# 每次 show 都绑上一个新的 layer，这里主动 disconnect，
-	# 避免随每个小局 / 每次「再来一局」在按钮上累积连接。
 	if layer.has_meta("spot_target"):
 		var target := layer.get_meta("spot_target") as Control
 		if target != null and is_instance_valid(target):
@@ -1408,14 +1826,14 @@ static func press_feedback(btn: BaseButton, kind: String = "default") -> void:
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.11)
 		"menu":
 			var base := btn.position
-			tw.tween_property(btn, "position", base + Vector2(4, 0), 0.06)
+			tw.tween_property(btn, "position", base + Vector2(8, 0), 0.06)
 			tw.tween_property(btn, "position", base, 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 			_tint_flash(btn, Color(0.45, 0.45, 0.48), 0.14)
 		"danger":
 			_tint_flash(btn, Color(0.9, 0.25, 0.22), 0.22)
 			var bpos := btn.position
-			tw.tween_property(btn, "position", bpos + Vector2(-3, 0), 0.04)
-			tw.tween_property(btn, "position", bpos + Vector2(3, 0), 0.05)
+			tw.tween_property(btn, "position", bpos + Vector2(-8, 0), 0.04)
+			tw.tween_property(btn, "position", bpos + Vector2(8, 0), 0.05)
 			tw.tween_property(btn, "position", bpos, 0.06)
 			tw.tween_property(btn, "scale", Vector2(0.96, 0.96), 0.05)
 			tw.tween_property(btn, "scale", Vector2.ONE, 0.1)
@@ -1452,7 +1870,7 @@ static func play_hit(host: Control, target: Control) -> void:
 		return
 	_flash_rect(host, target, COLOR_HIT)
 	_shake(target)
-	_burst(host, target, COLOR_HIT, 12)
+	_burst(host, target, COLOR_HIT, 16)
 
 
 static func play_block(host: Control, target: Control) -> void:
@@ -1465,7 +1883,7 @@ static func play_block(host: Control, target: Control) -> void:
 static func play_hurt(host: Control, target: Control) -> void:
 	if host == null or target == null:
 		return
-	_flash_rect(host, target, Color(1, 0.35, 0.35, 0.55))
+	_flash_rect(host, target, Color(1, 0.25, 0.25, 0.58))
 	_shake(target)
 
 
@@ -1474,15 +1892,15 @@ static func play_result(host: Control, winner: int, center: Control = null) -> v
 		return
 	var anchor: Control = center if center != null else host
 	var color := COLOR_WIN if winner == 0 else (COLOR_LOSE if winner == 1 else COLOR_DRAW)
-	var text := "胜利！" if winner == 0 else ("失败" if winner == 1 else "平局")
+	var text := "胜利！！" if winner == 0 else ("惜败" if winner == 1 else "平局")
 	_pop_label(host, anchor, text, color)
-	_confetti(host, 28 if winner == 0 else 12)
+	_confetti(host, 42 if winner == 0 else 18)
 
 
 static func play_projectile(host: Control, from: Control, to: Control, friendly: bool) -> void:
 	if host == null or from == null or to == null:
 		return
-	_fire_bao_orb(host, from, to, friendly, false)
+	_fire_bao_orb(host, from, to, friendly, false, 1)
 
 
 static func _flash_rect(host: Control, target: Control, color: Color) -> void:
@@ -1493,7 +1911,7 @@ static func _flash_rect(host: Control, target: Control, color: Color) -> void:
 	flash.position = Vector2.ZERO
 	target.add_child(flash)
 	var tw := host.create_tween()
-	tw.tween_property(flash, "color", Color(color.r, color.g, color.b, 0.0), 0.32)
+	tw.tween_property(flash, "color", Color(color.r, color.g, color.b, 0.0), 0.30)
 	tw.tween_callback(func():
 		if is_instance_valid(flash):
 			flash.queue_free())
@@ -1504,9 +1922,9 @@ static func _shake(target: Control) -> void:
 		return
 	var base := target.position
 	var tw := target.create_tween()
-	for i in 5:
-		var off := Vector2(randf_range(-6, 6), randf_range(-4, 4))
-		tw.tween_property(target, "position", base + off, 0.035)
+	for i in 6:
+		var off := Vector2(randf_range(-16, 16), randf_range(-10, 10))
+		tw.tween_property(target, "position", base + off, 0.032)
 	tw.tween_property(target, "position", base, 0.05)
 
 
@@ -1515,12 +1933,12 @@ static func _burst(host: Control, target: Control, color: Color, n: int) -> void
 	for i in n:
 		var p := ColorRect.new()
 		p.color = color
-		p.size = Vector2(7, 7)
+		p.size = Vector2(16, 16)
 		p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		host.add_child(p)
 		p.global_position = c - p.size * 0.5
 		var ang := TAU * float(i) / float(n)
-		var dist := randf_range(32, 68)
+		var dist := randf_range(90, 220)
 		var tw := host.create_tween()
 		tw.set_parallel(true)
 		tw.tween_property(p, "global_position", c + Vector2(cos(ang), sin(ang)) * dist - p.size * 0.5, 0.28)
@@ -1531,28 +1949,14 @@ static func _burst(host: Control, target: Control, color: Color, n: int) -> void
 
 
 static func _ring(host: Control, target: Control, color: Color) -> void:
+	var cel := ensure_cel_canvas(host)
 	var c := target.get_global_rect().get_center()
-	var ring := ColorRect.new()
-	ring.color = Color(color.r, color.g, color.b, 0.48)
-	ring.size = Vector2(10, 10)
-	ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	host.add_child(ring)
-	ring.global_position = c - ring.size * 0.5
-	var tw := host.create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(ring, "size", Vector2(88, 88), 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(ring, "global_position", c - Vector2(44, 44), 0.30)
-	tw.tween_property(ring, "modulate", Color(1, 1, 1, 0), 0.30)
-	tw.chain().tween_callback(func():
-		if is_instance_valid(ring):
-			ring.queue_free())
+	if cel != null:
+		cel.add_cel_ring(c, 30.0, 260.0, color, 16.0, true)
 
 
 static func _pop_label(host: Control, anchor: Control, text: String, color: Color) -> void:
-	var lab := Label.new()
-	lab.text = text
-	lab.add_theme_font_size_override("font_size", 48)
-	lab.add_theme_color_override("font_color", color)
+	var lab := UiTheme.ink_label(text, 96, color, 16, UiTheme.INK)
 	lab.modulate = Color(1, 1, 1, 0)
 	host.add_child(lab)
 	lab.reset_size()
@@ -1561,7 +1965,7 @@ static func _pop_label(host: Control, anchor: Control, text: String, color: Colo
 	var tw := host.create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(lab, "modulate", Color(1, 1, 1, 1), 0.12)
-	tw.tween_property(lab, "scale", Vector2(1.15, 1.15), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lab, "scale", Vector2(1.18, 1.18), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.chain().tween_interval(0.55)
 	tw.chain().tween_property(lab, "modulate", Color(1, 1, 1, 0), 0.28)
 	tw.chain().tween_callback(func():
@@ -1574,16 +1978,16 @@ static func _confetti(host: Control, n: int) -> void:
 	for i in n:
 		var p := ColorRect.new()
 		p.color = colors[i % colors.size()]
-		p.size = Vector2(randf_range(6, 12), randf_range(8, 16))
+		p.size = Vector2(randf_range(16, 28), randf_range(20, 38))
 		p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		host.add_child(p)
-		var x := randf_range(20, host.size.x - 40) if host.size.x > 80 else randf_range(20, 360)
-		p.position = Vector2(x, -20 - randf_range(0, 80))
-		var rot := randf_range(-2.5, 2.5)
-		var fall := host.size.y + 60 if host.size.y > 80 else 900.0
+		var x := randf_range(40, host.size.x - 80) if host.size.x > 200 else randf_range(40, 1000)
+		p.position = Vector2(x, -40 - randf_range(0, 160))
+		var rot := randf_range(-3.0, 3.0)
+		var fall := host.size.y + 120 if host.size.y > 200 else 2000.0
 		var tw := host.create_tween()
 		tw.set_parallel(true)
-		tw.tween_property(p, "position", Vector2(x + randf_range(-40, 40), fall), randf_range(1.0, 1.8)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_property(p, "position", Vector2(x + randf_range(-90, 90), fall), randf_range(1.0, 1.8)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		tw.tween_property(p, "rotation", rot, 1.4)
 		tw.chain().tween_callback(func():
 			if is_instance_valid(p):

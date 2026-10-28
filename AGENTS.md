@@ -39,7 +39,7 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，155 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：8/8 全绿，断言合计 784 条**（2026-10-27，全量 review 修复批次后：网络身份/重放闸/双镜像对称/UI 信号卫生 + 初版全功能）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 155 条、每小局判分/12 分终场/平局保底/快照防篡改。
+**当前基线：8/8 全绿**（2026-10-28 v3 1080P 三渲二合入后复验；较上一基线新增 `run_ui_check` 的 1080P 舞台断言 2 条）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 155 条、每小局判分/12 分终场/平局保底/快照防篡改。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -50,7 +50,7 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 1. **`scripts/rules/*` 结算语义禁止口头改。** 改规则必须先变更记录走冻结流程。
 2. **`tests/test_rules_v2.py` 是 `scripts/rules/resolve.gd` 的逐行镜像**（不是包装调用）。改了 resolve 必须同步改这个 Python 文件，否则两套结算表会静默分叉。
 3. **房主权威**：`PeerManager`（autoload `Net`）里客户端只 apply 房主下发的结算，**绝不本地调 `GameResolve`**。
-4. **竖版是契约**：`project.godot` 的 390×820 / `orientation=1` 与 `export_presets.cfg` 的 `screen/orientation=1` 必须同时成立，`run_nav_check` 会静态校验这两处。
+4. **竖版是契约**：`project.godot` 的 1080×1920（v3 起；竖版不变）/ `orientation=1` 与 `export_presets.cfg` 的 `screen/orientation=1` 必须同时成立，`run_nav_check` 会静态校验这两处。
 5. **headless 下 `static func` 不能直接写 autoload 名**（如 `Net`），编译期解析不到。要像 `scripts/ui/ui_nav.gd` 那样运行时取：`Engine.get_main_loop().root.get_node_or_null("Net")`。
 6. **新增 `class_name` 后必须重建 class cache**：`& $g --headless --path . --import`，否则其它脚本报"标识符未声明"。`.godot/global_script_class_cache.cfg` 即该索引（`.godot/` 已被 `.gitignore` 忽略）。
 7. **提交只管锁定，结算等拍2**：`submit_action()` 在 3000d5e 之后只写入 `_locks`/`_pending_actions`，真正揭示必须调 `reveal_phase()`（或走 `request_timeout_default()`）。headless 测试里提交完要手动 `reveal_phase()` + `_pump()` 才会结算（`run_nav_check.gd` 已按此写法，`run_roundloop_check.gd` 用控制器驱动）。
@@ -116,7 +116,9 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 - **提交用显式路径**（`git add -- <文件>`），不要 `git add -A`：`build/xiongxiong-debug.apk` 是 73MB 跟踪文件、`docs/ENVIRONMENT.md` 已 ignore、环境修复批次可能还没提交。
 - DSH 沙箱默认禁止写 `.git/`：`git add/commit` 报 `Unable to create '.git/index.lock': Permission denied` 时，用一次性 `danger-full-access` 提权执行同一条命令，或请用户在外部终端提交。
 
-## 当前状态（2026-10-27）
+## 当前状态（2026-10-28）
+
+- **v3「1080P 三渲二」已合入（`other/v3.0` 模型产出，review 后并入）**：视口 390×820→**1080×1920**（竖版不变）；`CelStageCanvas` 全屏三渲二特效 + 炉石烧绳 `BurningRopeBar` + 漫画拟声大字替代胶囊飘字 + 三层音频兜底（裸 WAV→ResourceLoader→PCM 合成）；全 UI 字号/描边按 1080P 重排。**注意：`stage_bg_cel.png` / `avatar_bear_*.png` / `vfx_*_cutin.png` / `rope_spark.png` 是程序化占位图**（原交付包声称自带但缺失），后续美术同名替换即可。已修其遗留问题：`battle_fx.gd` 的 `//` 语法编译错、战报「敌」文案违规、`quality_settings` 原子写/`fps_cap` 键回退。契约文档：`docs/UI-VFX-SFX-HANDOFF.md`（其中"26 张贴图内置"表述不实，勿信）。
 
 - **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（157 条）；**8 个自检 791 条断言全绿**。
 - **UI 已重构（`16b3df3`）**：竖屏**双层技能盘**——底部 3 主键【防御】【攒气】【包子】（包子连点 `BAO1→BAO2→BAO3→循环`，受当前气约束）+ 课间模式 2×4 进阶槽 8 格（按 1–8 分解锁）；classic 模式只显 3 主键。技能名统一 **2 字别名**（`GameRules.action_short_name`，硬约束 `length()==2`），耗气/CD/解锁门槛走独立角标子节点，**不往 `Button.text` 里拼接**；「元气潮玩对决风」色板（`scripts/ui/ui_theme.gd`）。全界面已**无 `【占位】` 残留**，单机/联机均为真实血气盾 HUD（`me_*` / `opp_*`）。

@@ -42,7 +42,7 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 - **断线封存走真实路径**：掉线先封存保住完整快照（rules+session、双方都收到），再转人机接管保持可玩
 - **房主权威**：只接受唯一对端的数据包；客户端不能替房主出招、不能宣布胜负、不能改快照
 - **网络质量判定**：丢包窗口 2.5×心跳间隔；延迟/抖动连续 2 次超标才降级（局域网不再误报「网络不佳」）
-- 竖版 UI（390×820），两页首页（单人 / 联机），设置面板
+- 竖版 UI（1080×1920，v3 三渲二升级起），两页首页（单人 / 联机），设置面板
 - 中文 Noto 字体打包；血气盾图标行；亮招卡片、命中/格挡/受击/胜负特效
 - 开局聚光灯引导点「攒」
 - Android 权限 / MulticastLock / 多网卡 IP / create_host 绑定回退
@@ -61,6 +61,17 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 | 再来一局面板残留/无特效 | 双方 `rematch_answered` 收遮罩；特效层置顶 |
 | 聚光灯挖空在左上角 | 等两帧布局稳定 + `item_rect_changed` 自愈 |
 | 设置 ✕ / 点外关闭 / 确认框看不清 | ✕ 在标题行右侧；点遮罩关闭；UiTheme Label 默认深字 |
+
+**2026-10-28（v3 1080P 三渲二合入）**
+
+| 问题 | 修法 |
+|---|---|
+| v3 交付包 `other/v3.0` review 并入 | 15 文件 + 68 资源并入；`scripts/rules/*` 与 Python 镜像零改动 |
+| 视口契约 390×820 → 1080×1920 | `project.godot` + `run_nav_check` 同步（竖版 orientation=1 不变） |
+| `battle_fx.gd` 编译错（Python 语法 `//`） | 改 `/`；8 自检全绿 |
+| 交付包声称的 6 张贴图实际缺失 | 程序化占位图补上（`stage_bg_cel` / `avatar_bear_*` / `vfx_*_cutin` / `rope_spark`），美术同名替换即可 |
+| 战报文案「敌」违反「我/对手」规范 | 统一改「对手」 |
+| `quality_settings` 原子写/`fps_cap` 键被回退 | 恢复 tmp+rename 原子写与 `fps_cap` 键 |
 
 **2026-10-17（`c106e21`）**
 

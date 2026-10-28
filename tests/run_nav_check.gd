@@ -72,7 +72,7 @@ func _check_project_portrait() -> void:
 		return
 	var w := int(cfg.get_value("display", "window/size/viewport_width", 0))
 	var h := int(cfg.get_value("display", "window/size/viewport_height", 0))
-	_exp("viewport portrait 390x820", w == 390 and h == 820 and h > w)
+	_exp("viewport portrait 1080x1920 (1080P)", w == 1080 and h == 1920 and h > w)
 	var ori := int(cfg.get_value("display", "window/handheld/orientation", -1))
 	_exp("handheld orientation portrait", ori == 1)
 	var main_scene := str(cfg.get_value("application", "run/main_scene", ""))
@@ -179,8 +179,8 @@ func _check_solo_select() -> void:
 	_exp("solo_select back route → menu",
 		str(UiNav.BACK_ROUTES.get("res://scenes/solo_select.tscn", "")) == UiNav.MENU_SCENE)
 	var content := solo.get_node_or_null("Margin/Content") as Control
-	_exp("solo_select 竖版单屏不滚动（内容最小高 ≤ 820）",
-		content != null and content.get_combined_minimum_size().y <= 820.0)
+	_exp("solo_select 竖版单屏不滚动（内容最小高 ≤ 1920）",
+		content != null and content.get_combined_minimum_size().y <= 1920.0)
 	root.remove_child(solo)
 	solo.free()
 
@@ -227,7 +227,7 @@ func _check_lobby_prepare() -> void:
 		root.add_child(_ll_search)
 		if not _ll_search.is_node_ready():
 			_ll_search.notification(Node.NOTIFICATION_READY)
-		_ll_search.size = Vector2(390, 820)
+		_ll_search.size = Vector2(1080, 1920)
 		_ll_search.call("_set_state", "list", "测试")
 		for i in 3:
 			_ll_search.call("_on_room_found", {
@@ -247,15 +247,15 @@ func _check_lobby_prepare() -> void:
 		root.add_child(_ll_wait)
 		if not _ll_wait.is_node_ready():
 			_ll_wait.notification(Node.NOTIFICATION_READY)
-		_ll_wait.size = Vector2(390, 820)
+		_ll_wait.size = Vector2(1080, 1920)
 
 
 ## 等 3 帧让容器排版落地，再量真实占位高。
 func _check_lobby_fit() -> void:
-	_exp("lobby_search 满 3 行仍单屏不滚动（真实排版高 ≤ 820）",
-		_ll_search != null and _content_used_height(_ll_search) <= 820.0)
-	_exp("lobby_wait 单屏不滚动（真实排版高 ≤ 820）",
-		_ll_wait != null and _content_used_height(_ll_wait) <= 820.0)
+	_exp("lobby_search 满 3 行仍单屏不滚动（真实排版高 ≤ 1920）",
+		_ll_search != null and _content_used_height(_ll_search) <= 1920.0)
+	_exp("lobby_wait 单屏不滚动（真实排版高 ≤ 1920）",
+		_ll_wait != null and _content_used_height(_ll_wait) <= 1920.0)
 	if _ll_search != null:
 		_ll_search.free()
 		_ll_search = null

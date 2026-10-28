@@ -1,6 +1,5 @@
 ## settings_panel.gd
-## 竖版设置 + 菜单入口：画质档位 / 返回菜单 / 退出游戏。
-## 由 QualitySettings 注入的右上角齿轮打开；也可独立进场景。
+## 1080P (1080×1920) 竖版设置 + 菜单入口：画质档位 / 返回菜单 / 退出游戏。
 extends Control
 
 var _tier_btns: Array[Button] = []
@@ -20,13 +19,10 @@ var _confirm_mode: String = ""
 
 func _ready() -> void:
 	name = "SettingsPanelOverlay"
-	# 判重靠 group：本面板随后会被搬进 SettingsPanelLayer/，按 root 固定路径查不到
 	add_to_group(UiNav.SETTINGS_GROUP)
 	UiTheme.apply_to_tree(get_tree())
-	# 抬到亮招层(10)之上，避免每回合结算盖住设置
 	var parent := get_parent()
 	if parent != null and not parent is CanvasLayer:
-		# 复用已有层：多条关闭路径只 free 面板本体，层会留在 root，反复打开会越堆越多
 		var layer: CanvasLayer = null
 		var existing_layer := parent.get_node_or_null("SettingsPanelLayer")
 		if existing_layer is CanvasLayer:
@@ -64,116 +60,88 @@ func _bind_press_anims() -> void:
 
 func _build_ui() -> void:
 	var dim := ColorRect.new()
-	dim.color = Color(0.08, 0.07, 0.06, 0.55)
+	dim.color = Color(0.04, 0.06, 0.12, 0.65)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	dim.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-			queue_free()
+			_close_panel()
 		elif ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
-			queue_free())
+			_close_panel())
 	add_child(dim)
 
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_CENTER)
 	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-	panel.custom_minimum_size = Vector2(320, 0)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.99, 0.97, 0.94, 0.98)
-	sb.border_color = Color(0.16, 0.16, 0.16)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(14)
-	sb.content_margin_left = 18
-	sb.content_margin_right = 18
-	sb.content_margin_top = 14
-	sb.content_margin_bottom = 14
+	panel.custom_minimum_size = Vector2(820, 0)
+	var sb := UiTheme.card_style(UiTheme.BG_CARD, 28, UiTheme.INK, 5)
+	sb.content_margin_left = 36
+	sb.content_margin_right = 36
+	sb.content_margin_top = 28
+	sb.content_margin_bottom = 28
 	panel.add_theme_stylebox_override("panel", sb)
 	add_child(panel)
 
-	# ✕ 挂到 box 标题行右上；PanelContainer 会铺满子节点，不能对容器内控件 set_anchors
-	_close_btn = Button.new()
-	_close_btn.text = "✕"
-	_close_btn.custom_minimum_size = Vector2(40, 36)
+	_close_btn = UiTheme.make_btn("✕", UiTheme.BG_PANEL, UiTheme.INK, 34, 80)
+	_close_btn.custom_minimum_size = Vector2(88, 80)
 	_close_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
-	_close_btn.add_theme_font_size_override("font_size", 16)
 	_close_btn.pressed.connect(_close_panel)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", 22)
 	panel.add_child(box)
 
 	var title_row := HBoxContainer.new()
-	title_row.add_theme_constant_override("separation", 8)
+	title_row.add_theme_constant_override("separation", 16)
 	box.add_child(title_row)
 
-	var title := Label.new()
-	title.text = "设置 / 菜单"
+	var title := UiTheme.ink_label("设置 / 菜单", 46, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title.add_theme_font_size_override("font_size", 22)
-	title.add_theme_color_override("font_color", UiTheme.INK)
 	title_row.add_child(title)
 	title_row.add_child(_close_btn)
 
-	_fps_label = Label.new()
+	_fps_label = UiTheme.ink_label("", 32, UiTheme.INK_SOFT)
 	_fps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_fps_label.add_theme_font_size_override("font_size", 15)
-	_fps_label.add_theme_color_override("font_color", Color(0.35, 0.33, 0.3))
 	box.add_child(_fps_label)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
+	row.add_theme_constant_override("separation", 20)
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_child(row)
 
 	for i: int in 3:
-		var b := Button.new()
-		b.text = QualitySettings.TIER_NAMES[i]
-		b.custom_minimum_size = Vector2(72, 44)
+		var b := UiTheme.make_btn(QualitySettings.TIER_NAMES[i], UiTheme.BG_PANEL, UiTheme.INK, 38, 96)
+		b.custom_minimum_size = Vector2(180, 96)
 		b.toggle_mode = true
-		b.add_theme_font_size_override("font_size", 20)
 		b.pressed.connect(_on_tier_pressed.bind(i))
 		row.add_child(b)
 		_tier_btns.append(b)
-	# 注：动效在 _bind_press_anims 统一绑定
 
-	_info_label = Label.new()
+	_info_label = UiTheme.ink_label("", 26, UiTheme.INK_SOFT)
 	_info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_info_label.add_theme_font_size_override("font_size", 13)
-	_info_label.add_theme_color_override("font_color", Color(0.35, 0.33, 0.3))
 	box.add_child(_info_label)
 
 	var btn_col := VBoxContainer.new()
-	btn_col.add_theme_constant_override("separation", 8)
+	btn_col.add_theme_constant_override("separation", 18)
 	box.add_child(btn_col)
 
-	_auto_btn = Button.new()
-	_auto_btn.text = "恢复自动"
-	_auto_btn.custom_minimum_size = Vector2(0, 44)
-	_auto_btn.add_theme_font_size_override("font_size", 15)
+	_auto_btn = UiTheme.make_btn("恢复自动", UiTheme.SHIELD, Color.WHITE, 34, 102)
 	_auto_btn.pressed.connect(_on_auto_pressed)
 	btn_col.add_child(_auto_btn)
 
-	_menu_btn = Button.new()
-	_menu_btn.text = "返回菜单"
-	_menu_btn.custom_minimum_size = Vector2(0, 48)
-	_menu_btn.add_theme_font_size_override("font_size", 17)
+	_menu_btn = UiTheme.make_btn("返回菜单", UiTheme.ACCENT, Color.WHITE, 36, 108)
 	_menu_btn.pressed.connect(_on_menu_pressed)
 	btn_col.add_child(_menu_btn)
 
-	_quit_btn = Button.new()
-	_quit_btn.text = "退出游戏"
-	_quit_btn.custom_minimum_size = Vector2(0, 44)
-	_quit_btn.add_theme_font_size_override("font_size", 15)
-	_quit_btn.add_theme_color_override("font_color", Color(0.75, 0.18, 0.16))
+	_quit_btn = UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 34, 102)
 	_quit_btn.pressed.connect(_on_quit_pressed)
 	btn_col.add_child(_quit_btn)
 
 
 func _close_panel() -> void:
-	# 一并清掉外层 CanvasLayer，避免防重入名仍在
 	var p := get_parent()
 	if p is CanvasLayer:
 		p.queue_free()
@@ -190,7 +158,7 @@ func _build_confirm() -> void:
 	add_child(_confirm_layer)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.5)
+	dim.color = Color(0.04, 0.06, 0.12, 0.62)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_confirm_layer.add_child(dim)
 
@@ -199,52 +167,42 @@ func _build_confirm() -> void:
 	_confirm_layer.add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(300, 0)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.99, 0.97, 0.94)
-	sb.border_color = Color(0.16, 0.16, 0.16)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(12)
-	sb.content_margin_left = 16
-	sb.content_margin_right = 16
-	sb.content_margin_top = 12
-	sb.content_margin_bottom = 12
+	panel.custom_minimum_size = Vector2(760, 0)
+	var sb := UiTheme.card_style(UiTheme.BG_CARD, 26, UiTheme.INK, 5)
+	sb.content_margin_left = 32
+	sb.content_margin_right = 32
+	sb.content_margin_top = 24
+	sb.content_margin_bottom = 24
 	panel.add_theme_stylebox_override("panel", sb)
 	center.add_child(panel)
 
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 10)
+	v.add_theme_constant_override("separation", 22)
 	panel.add_child(v)
 
-	_confirm_title = Label.new()
+	_confirm_title = UiTheme.ink_label("", 42, UiTheme.INK)
 	_confirm_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_confirm_title.add_theme_font_size_override("font_size", 18)
-	_confirm_title.add_theme_color_override("font_color", UiTheme.INK)
 	v.add_child(_confirm_title)
 
-	_confirm_body = Label.new()
+	_confirm_body = UiTheme.ink_label("", 30, UiTheme.INK_SOFT)
 	_confirm_body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_confirm_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_confirm_body.custom_minimum_size = Vector2(260, 48)
-	_confirm_body.add_theme_font_size_override("font_size", 15)
-	_confirm_body.add_theme_color_override("font_color", UiTheme.INK_SOFT)
-	_confirm_body.add_theme_constant_override("line_spacing", 4)
+	_confirm_body.custom_minimum_size = Vector2(660, 100)
+	_confirm_body.add_theme_constant_override("line_spacing", 8)
 	v.add_child(_confirm_body)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
+	row.add_theme_constant_override("separation", 28)
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.add_child(row)
 
-	_confirm_yes = Button.new()
-	_confirm_yes.text = "确定"
-	_confirm_yes.custom_minimum_size = Vector2(110, 44)
+	_confirm_yes = UiTheme.make_btn("确定", UiTheme.DANGER, Color.WHITE, 34, 96)
+	_confirm_yes.custom_minimum_size = Vector2(260, 96)
 	_confirm_yes.pressed.connect(_on_confirm_yes)
 	row.add_child(_confirm_yes)
 
-	_confirm_no = Button.new()
-	_confirm_no.text = "取消"
-	_confirm_no.custom_minimum_size = Vector2(110, 44)
+	_confirm_no = UiTheme.make_btn("取消", UiTheme.BG_PANEL, UiTheme.INK, 34, 96)
+	_confirm_no.custom_minimum_size = Vector2(260, 96)
 	_confirm_no.pressed.connect(_on_confirm_no)
 	row.add_child(_confirm_no)
 
@@ -260,7 +218,6 @@ func _on_confirm_yes() -> void:
 	var mode := _confirm_mode
 	_confirm_layer.visible = false
 	_confirm_mode = ""
-	# 确认后立刻关掉本面板，避免常驻
 	match mode:
 		"menu":
 			UiNav.return_to_menu(get_tree())
@@ -268,7 +225,6 @@ func _on_confirm_yes() -> void:
 			UiNav.quit_game(get_tree())
 		_:
 			pass
-	# return_to_menu/quit 会 cleanup；本地也兜底关一次
 	if is_instance_valid(self):
 		_close_panel()
 
@@ -280,8 +236,7 @@ func _on_confirm_no() -> void:
 
 func _on_menu_pressed() -> void:
 	if not UiNav.is_in_battle_scene(get_tree()):
-		# 已在主菜单：直接关面板即可
-		queue_free()
+		_close_panel()
 		return
 	_show_confirm("menu", "返回菜单", UiNav.leave_confirm_text())
 
@@ -303,7 +258,17 @@ func _on_auto_pressed() -> void:
 func _refresh() -> void:
 	var t: int = QualitySettings.tier
 	for i: int in _tier_btns.size():
-		_tier_btns[i].button_pressed = (i == t)
+		var on := (i == t)
+		_tier_btns[i].button_pressed = on
+		var bg := UiTheme.SHIELD if on else UiTheme.BG_PANEL
+		var fg := Color.WHITE if on else UiTheme.INK
+		_tier_btns[i].add_theme_color_override("font_color", fg)
+		_tier_btns[i].add_theme_color_override("font_hover_color", fg)
+		_tier_btns[i].add_theme_color_override("font_pressed_color", fg)
+		_tier_btns[i].add_theme_constant_override("outline_size", 6 if on else 0)
+		_tier_btns[i].add_theme_color_override("font_outline_color", UiTheme.INK)
+		_tier_btns[i].add_theme_stylebox_override("normal", UiTheme.button_style(bg, 20, UiTheme.INK, 4, 6))
+		_tier_btns[i].add_theme_stylebox_override("pressed", UiTheme.button_style(bg, 20, UiTheme.INK, 4, 6))
 
 	var snap := FpsGuard.snapshot()
 	_fps_label.text = "实际 FPS %d / 上限 %d" % [int(snap["fps"]), int(snap["max_fps"])]
@@ -320,7 +285,6 @@ func _refresh() -> void:
 		str(probe.get("gpu_name", "未知 GPU")),
 	]
 
-	# 对局中才需要「返回菜单」；主菜单里改成提示关闭
 	if _menu_btn != null:
 		if UiNav.is_in_battle_scene(get_tree()):
 			_menu_btn.text = "返回菜单"

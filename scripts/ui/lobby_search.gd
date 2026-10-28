@@ -1,5 +1,5 @@
 ## lobby_search.gd
-## 搜索房间：搜索中 / 列表 / 空态 / 失败（未连热点、无房间、超时）+ 加入。
+## 1080P (1080×1920) 搜索房间：搜索中 / 列表 / 空态 / 失败 + 加入。单屏 1080×1920 不滚动。
 extends Control
 
 const SEARCH_PATH := "res://scenes/lobby_search.tscn"
@@ -7,7 +7,6 @@ const WAIT_SCENE := "res://scenes/lobby_wait.tscn"
 const NET_ENTRY_META := "xiongxiong_net_entry"
 const DISCOVER_SEC := 5.0
 const JOIN_TIMEOUT_SEC := 10.0
-## 单屏不滚动：列表最多显示 3 个房间，其余只报数量
 const MAX_ROWS := 3
 
 var _net: PeerManager
@@ -44,52 +43,53 @@ func _build_ui() -> void:
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+	UiTheme.add_stage_background(self, 0.35)
 
-	var title := UiTheme.ink_label("搜索房间", 24, UiTheme.INK)
+	var title := UiTheme.ink_label("搜索房间", 56, Color(1.0, 0.94, 0.70), 10, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	title.offset_top = 44
+	title.offset_top = 80
 	title.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	add_child(title)
 
 	var margin := MarginContainer.new()
 	margin.name = "Margin"
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 16)
-	margin.add_theme_constant_override("margin_right", 16)
-	margin.add_theme_constant_override("margin_top", 88)
-	margin.add_theme_constant_override("margin_bottom", 16)
+	margin.add_theme_constant_override("margin_left", 44)
+	margin.add_theme_constant_override("margin_right", 44)
+	margin.add_theme_constant_override("margin_top", 180)
+	margin.add_theme_constant_override("margin_bottom", 36)
 	add_child(margin)
 
 	var v := VBoxContainer.new()
 	v.name = "Content"
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 22)
 	margin.add_child(v)
 
-	_banner = UiTheme.banner_card("📡 局域网雷达", "自动扫描同一 Wi-Fi / 热点下的对战房间", UiTheme.SHIELD, 88)
+	_banner = UiTheme.banner_card("局域网雷达", "自动扫描同一 Wi-Fi / 热点下的对战房间", UiTheme.SHIELD, 180)
 	v.add_child(_banner)
 
-	_state_label = UiTheme.ink_label("正在搜索局域网房间…", 15, UiTheme.INK_SOFT)
+	_state_label = UiTheme.ink_label("正在搜索局域网房间…", 30, Color.WHITE, 5, UiTheme.INK)
 	_state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_state_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_state_label)
 
 	_list = VBoxContainer.new()
-	_list.add_theme_constant_override("separation", 8)
+	_list.add_theme_constant_override("separation", 16)
 	v.add_child(_list)
 
-	_status = UiTheme.ink_label("", 13, UiTheme.INK_FAINT)
+	_status = UiTheme.ink_label("", 26, Color(0.92, 0.96, 1.0), 4, UiTheme.INK)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status.custom_minimum_size.y = 36
+	_status.custom_minimum_size.y = 64
 	v.add_child(_status)
 
-	var rescan := UiTheme.make_btn("重新搜索", UiTheme.WAVE, Color.WHITE, 16, 48)
+	var rescan := UiTheme.make_btn("重新搜索", UiTheme.WAVE, Color.WHITE, 36, 112)
 	rescan.pressed.connect(_start_search)
 	BattleFx.bind_press(rescan, "bo")
 	v.add_child(rescan)
 
-	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 15, 42)
+	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 34, 98)
 	back.pressed.connect(_back)
 	v.add_child(back)
 
@@ -185,7 +185,7 @@ func _render_rooms() -> void:
 		_more_label.queue_free()
 		_more_label = null
 	if keys.size() > MAX_ROWS:
-		_more_label = UiTheme.ink_label("还有 %d 个房间" % (keys.size() - MAX_ROWS), 12, UiTheme.INK_FAINT)
+		_more_label = UiTheme.ink_label("还有 %d 个房间" % (keys.size() - MAX_ROWS), 24, Color.WHITE, 4, UiTheme.INK)
 		_more_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_list.add_child(_more_label)
 
@@ -207,17 +207,17 @@ func _room_row(key: String, info: Dictionary) -> Control:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", UiTheme.card_style())
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
+	row.add_theme_constant_override("separation", 20)
 	panel.add_child(row)
 
-	var text := UiTheme.ink_label(_room_text(info), 14, UiTheme.INK)
+	var text := UiTheme.ink_label(_room_text(info), 28, UiTheme.INK)
 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	row.add_child(text)
 	panel.set_meta("text_label", text)
 
-	var join := UiTheme.make_btn("加入", UiTheme.SHIELD, Color.WHITE, 15, 42)
-	join.custom_minimum_size.x = 92
+	var join := UiTheme.make_btn("加入", UiTheme.SHIELD, Color.WHITE, 32, 92)
+	join.custom_minimum_size.x = 200
 	join.pressed.connect(func(): _on_join(_rooms.get(key, info)))
 	row.add_child(join)
 	return panel

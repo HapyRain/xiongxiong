@@ -1,6 +1,5 @@
 ## menu.gd
-## Splash overlay（开屏欢迎页）→ 主菜单（单人 / 联机 / 设置 / 退出）→ 联机入口（作为房主 / 搜索房间）。
-## 房间/等待页在 lobby_*.tscn；本文件只做入口与跳转。
+## 1080P (1080×1920) Splash overlay（开屏欢迎页）→ 主菜单（单人 / 联机 / 设置 / 退出）→ 联机入口（作为房主 / 搜索房间）。
 extends Control
 
 const MENU_SCENE := "res://scenes/menu.tscn"
@@ -8,9 +7,7 @@ const SOLO_SCENE := "res://scenes/solo_select.tscn"
 const CREATE_SCENE := "res://scenes/lobby_create.tscn"
 const SEARCH_SCENE := "res://scenes/lobby_search.tscn"
 const SETTINGS_SCENE := "res://scenes/settings_panel.tscn"
-## 回入口：设置后 menu._ready 直接打开联机页（离开房间 → 回「作为房主/搜索」）。
 const NET_ENTRY_META := "xiongxiong_net_entry"
-## Splash 只在本次进程首次进菜单时显示；从对局/等待页回来不再弹。
 const SPLASH_SEEN_META := "xiongxiong_splash_seen"
 
 var _page_home: Control
@@ -56,6 +53,7 @@ func _build_ui() -> void:
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+	UiTheme.add_stage_background(self, 0.35)
 
 	_page_home = _build_home_page()
 	_page_net = _build_net_page()
@@ -65,36 +63,34 @@ func _build_ui() -> void:
 	_build_splash()
 
 
-# ---------- 通用 ----------
-
 func _title(text: String, size: int, color: Color, top: float) -> Label:
-	var lab := UiTheme.ink_label(text, size, color)
+	var lab := UiTheme.ink_label(text, size, color, 10, UiTheme.INK)
 	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lab.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	lab.offset_top = top
-	lab.offset_bottom = top + size + 16
+	lab.offset_bottom = top + size + 32
 	lab.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	lab.add_theme_font_override("font", UiTheme.default_font())
 	return lab
 
 
 func _section(text: String) -> Label:
-	return UiTheme.ink_label(text, 16, UiTheme.INK_SOFT)
+	return UiTheme.ink_label(text, 32, Color(0.92, 0.96, 1.0), 6, UiTheme.INK)
 
 
 func _mode_card(title: String, accent: Color, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = title
-	b.custom_minimum_size = Vector2(0, 84)
+	b.custom_minimum_size = Vector2(0, 176)
 	b.add_theme_font_override("font", UiTheme.default_font())
-	b.add_theme_font_size_override("font_size", 22)
+	b.add_theme_font_size_override("font_size", 48)
 	b.add_theme_color_override("font_color", Color.WHITE)
 	b.add_theme_color_override("font_hover_color", Color.WHITE)
 	b.add_theme_color_override("font_pressed_color", Color.WHITE)
-	var border_col := accent.darkened(0.25)
-	b.add_theme_stylebox_override("normal", UiTheme.button_style(accent, 18, border_col, 2))
-	b.add_theme_stylebox_override("hover", UiTheme.button_style(accent.lightened(0.08), 18, border_col, 2))
-	b.add_theme_stylebox_override("pressed", UiTheme.button_style(accent.darkened(0.10), 18, border_col, 2))
+	b.add_theme_constant_override("outline_size", 10)
+	b.add_theme_color_override("font_outline_color", UiTheme.INK)
+	b.add_theme_stylebox_override("normal", UiTheme.button_style(accent, 32, UiTheme.INK, 5, 12))
+	b.add_theme_stylebox_override("hover", UiTheme.button_style(accent.lightened(0.08), 32, UiTheme.INK, 5, 12))
+	b.add_theme_stylebox_override("pressed", UiTheme.button_style(accent.darkened(0.10), 32, UiTheme.INK, 5, 4))
 	b.pressed.connect(cb)
 	BattleFx.bind_press(b, "zan" if accent == UiTheme.ACCENT else "fang")
 	return b
@@ -116,27 +112,28 @@ func _build_splash() -> void:
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_splash.add_child(bg)
+	UiTheme.add_stage_background(_splash, 0.25)
 
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_splash.add_child(center)
 
 	var v := VBoxContainer.new()
-	v.custom_minimum_size = Vector2(310, 0)
-	v.add_theme_constant_override("separation", 16)
+	v.custom_minimum_size = Vector2(820, 0)
+	v.add_theme_constant_override("separation", 36)
 	center.add_child(v)
 
-	var title := UiTheme.ink_label("拍拍熊熊", 36, UiTheme.INK)
+	var title := UiTheme.ink_label("拍拍熊熊", 88, Color(1.0, 0.94, 0.70), 14, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
-	v.add_child(UiTheme.banner_card("🐾 课间对决 · 致敬童年", "攒气 · 防御 · 包子 · 破防\n两拍定胜负，读招见真章", UiTheme.ACCENT, 148))
+	v.add_child(UiTheme.banner_card("课间对决 · 致敬童年", "攒气 · 防御 · 包子 · 破防\n两拍定胜负，读招见真章", UiTheme.ACCENT, 300))
 
-	_splash_status = UiTheme.ink_label("", 13, UiTheme.INK_SOFT)
+	_splash_status = UiTheme.ink_label("", 28, Color.WHITE, 5, UiTheme.INK)
 	_splash_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_splash_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_splash_status)
 
-	_splash_enter = UiTheme.make_btn("进入游戏", UiTheme.ACCENT, Color.WHITE, 20, 56)
+	_splash_enter = UiTheme.make_btn("进入游戏", UiTheme.ACCENT, Color.WHITE, 44, 128)
 	_splash_enter.pressed.connect(_on_splash_button)
 	BattleFx.bind_press(_splash_enter, "zan")
 	v.add_child(_splash_enter)
@@ -174,32 +171,32 @@ func _build_home_page() -> Control:
 	page.name = "PageHome"
 	page.set_anchors_preset(Control.PRESET_FULL_RECT)
 
-	page.add_child(_title("拍拍熊熊", 36, UiTheme.INK, 72))
-	page.add_child(_title("1v1 竖屏同步读招对决 · 致敬童年", 14, UiTheme.INK_SOFT, 124))
+	page.add_child(_title("拍拍熊熊", 86, Color(1.0, 0.94, 0.70), 160))
+	page.add_child(_title("1080P 三渲二同步读招对决 · 致敬童年", 30, Color(0.90, 0.95, 1.0), 280))
 
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_CENTER)
 	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	box.grow_vertical = Control.GROW_DIRECTION_BOTH
-	box.custom_minimum_size = Vector2(300, 0)
-	box.add_theme_constant_override("separation", 16)
+	box.custom_minimum_size = Vector2(780, 0)
+	box.add_theme_constant_override("separation", 34)
 	page.add_child(box)
 
 	box.add_child(_mode_card("单人模式", UiTheme.ACCENT, _on_single))
 	box.add_child(_mode_card("联机对战", UiTheme.SHIELD, func(): _show_page(true)))
 
-	var settings := UiTheme.make_btn("设置", UiTheme.BG_CARD, UiTheme.INK, 16, 48)
+	var settings := UiTheme.make_btn("设置", UiTheme.BG_CARD, UiTheme.INK, 36, 112)
 	settings.pressed.connect(_on_settings)
 	box.add_child(settings)
 
-	var quit := UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 15, 46)
+	var quit := UiTheme.make_btn("退出游戏", UiTheme.DANGER, Color.WHITE, 34, 106)
 	quit.pressed.connect(_on_quit)
 	box.add_child(quit)
 
-	_home_status = UiTheme.ink_label("", 13, UiTheme.DANGER)
+	_home_status = UiTheme.ink_label("", 28, UiTheme.DANGER, 5, Color.WHITE)
 	_home_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_home_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_home_status.custom_minimum_size.y = 36
+	_home_status.custom_minimum_size.y = 72
 	box.add_child(_home_status)
 
 	return page
@@ -212,45 +209,45 @@ func _build_net_page() -> Control:
 	page.name = "PageNet"
 	page.set_anchors_preset(Control.PRESET_FULL_RECT)
 
-	page.add_child(_title("联机对战", 24, UiTheme.INK, 48))
+	page.add_child(_title("联机对战", 60, Color(1.0, 0.94, 0.70), 110))
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 20)
-	margin.add_theme_constant_override("margin_right", 20)
-	margin.add_theme_constant_override("margin_top", 96)
-	margin.add_theme_constant_override("margin_bottom", 16)
+	margin.add_theme_constant_override("margin_left", 56)
+	margin.add_theme_constant_override("margin_right", 56)
+	margin.add_theme_constant_override("margin_top", 230)
+	margin.add_theme_constant_override("margin_bottom", 48)
 	page.add_child(margin)
 
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 14)
+	v.add_theme_constant_override("separation", 28)
 	margin.add_child(v)
 
 	var info := PanelContainer.new()
-	info.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 14, UiTheme.SHIELD))
+	info.add_theme_stylebox_override("panel", UiTheme.card_style(UiTheme.BG_CARD, 26, UiTheme.INK, 4))
 	v.add_child(info)
-	_host_info = UiTheme.ink_label("请双方连接同一 Wi-Fi，或一人开热点另一人加入\n再创建 / 搜索房间", 13, UiTheme.INK_SOFT)
+	_host_info = UiTheme.ink_label("请双方连接同一 Wi-Fi，或一人开热点另一人加入\n再创建 / 搜索房间", 28, UiTheme.INK_SOFT)
 	_host_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info.add_child(_host_info)
 
 	v.add_child(_section("创建房间"))
-	var host_btn := UiTheme.make_btn("作为房主", UiTheme.ACCENT, Color.WHITE, 18, 56)
+	var host_btn := UiTheme.make_btn("作为房主", UiTheme.ACCENT, Color.WHITE, 40, 128)
 	host_btn.pressed.connect(_on_host_entry)
 	BattleFx.bind_press(host_btn, "zan")
 	v.add_child(host_btn)
 
 	v.add_child(_section("加入房间"))
-	var search_btn := UiTheme.make_btn("搜索房间", UiTheme.WAVE, Color.WHITE, 18, 56)
+	var search_btn := UiTheme.make_btn("搜索房间", UiTheme.WAVE, Color.WHITE, 40, 128)
 	search_btn.pressed.connect(_on_search_entry)
 	BattleFx.bind_press(search_btn, "bo")
 	v.add_child(search_btn)
 
-	_status = UiTheme.ink_label("请选择操作", 13, UiTheme.INK_SOFT)
+	_status = UiTheme.ink_label("请选择操作", 28, Color.WHITE, 5, UiTheme.INK)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status.custom_minimum_size.y = 40
+	_status.custom_minimum_size.y = 84
 	v.add_child(_status)
 
-	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 15, 44)
+	var back := UiTheme.make_btn("返回", UiTheme.BG_CARD, UiTheme.INK, 34, 104)
 	back.pressed.connect(func(): _show_page(false))
 	v.add_child(back)
 
@@ -277,8 +274,6 @@ func _refresh_status() -> void:
 	else:
 		_host_info.text = "已连接 Wi-Fi 局域网\n双方同一网络后即可创建 / 搜索"
 
-
-# ---------- 动作 ----------
 
 func _on_single() -> void:
 	if not ResourceLoader.exists(SOLO_SCENE):

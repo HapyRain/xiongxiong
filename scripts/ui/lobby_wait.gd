@@ -1,5 +1,5 @@
 ## lobby_wait.gd
-## 等待页：双座位 + 准备 + 5s 倒计时 + 离开；房主收到加入请求弹单确认框。
+## 1080P (1080×1920) 等待页：双座位 + 准备 + 5s 倒计时 + 离开；房主收到加入请求弹单确认框。
 extends Control
 
 const WAIT_PATH := "res://scenes/lobby_wait.tscn"
@@ -53,37 +53,38 @@ func _build_ui() -> void:
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+	UiTheme.add_stage_background(self, 0.35)
 
-	var title := UiTheme.ink_label("等待对局", 24, UiTheme.INK)
+	var title := UiTheme.ink_label("等待对局", 56, Color(1.0, 0.94, 0.70), 10, UiTheme.INK)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	title.offset_top = 44
+	title.offset_top = 80
 	title.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	add_child(title)
 
 	var margin := MarginContainer.new()
 	margin.name = "Margin"
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 16)
-	margin.add_theme_constant_override("margin_right", 16)
-	margin.add_theme_constant_override("margin_top", 88)
-	margin.add_theme_constant_override("margin_bottom", 16)
+	margin.add_theme_constant_override("margin_left", 44)
+	margin.add_theme_constant_override("margin_right", 44)
+	margin.add_theme_constant_override("margin_top", 180)
+	margin.add_theme_constant_override("margin_bottom", 36)
 	add_child(margin)
 
 	var v := VBoxContainer.new()
 	v.name = "Content"
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 24)
 	margin.add_child(v)
 
-	_room_name = UiTheme.ink_label("", 14, UiTheme.INK_SOFT)
+	_room_name = UiTheme.ink_label("", 28, Color.WHITE, 5, UiTheme.INK)
 	_room_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_room_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_room_name)
 
-	v.add_child(UiTheme.banner_card("⚡ 1v1 对决台 ⚡", "双方点击「准备」后 5 秒倒计时开局", UiTheme.SHIELD, 96))
+	v.add_child(UiTheme.banner_card("1v1 对决台", "双方点击「准备」后 5 秒倒计时开局", UiTheme.SHIELD, 200))
 
 	var seats := HBoxContainer.new()
-	seats.add_theme_constant_override("separation", 10)
+	seats.add_theme_constant_override("separation", 24)
 	seats.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	v.add_child(seats)
 	for i in 2:
@@ -91,10 +92,10 @@ func _build_ui() -> void:
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panel.add_theme_stylebox_override("panel", UiTheme.card_style())
 		var box := VBoxContainer.new()
-		box.add_theme_constant_override("separation", 6)
-		var name_lab := UiTheme.ink_label("", 17, UiTheme.INK)
+		box.add_theme_constant_override("separation", 12)
+		var name_lab := UiTheme.ink_label("", 36, UiTheme.INK)
 		name_lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var state_lab := UiTheme.ink_label("", 13, UiTheme.INK_FAINT)
+		var state_lab := UiTheme.ink_label("", 26, UiTheme.INK_SOFT)
 		box.add_child(name_lab)
 		box.add_child(state_lab)
 		panel.add_child(box)
@@ -102,22 +103,22 @@ func _build_ui() -> void:
 		_seat_names.append(name_lab)
 		_seat_states.append(state_lab)
 
-	_countdown = UiTheme.ink_label("等待双方准备", 16, UiTheme.INK)
+	_countdown = UiTheme.ink_label("等待双方准备", 34, Color(1.0, 0.94, 0.70), 6, UiTheme.INK)
 	_countdown.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(_countdown)
 
-	_ready_btn = UiTheme.make_btn("准备", UiTheme.SHIELD, Color.WHITE, 18, 56)
+	_ready_btn = UiTheme.make_btn("准备", UiTheme.SHIELD, Color.WHITE, 40, 124)
 	_ready_btn.pressed.connect(_on_ready_pressed)
 	BattleFx.bind_press(_ready_btn, "fang")
 	v.add_child(_ready_btn)
 
-	_status = UiTheme.ink_label("", 13, UiTheme.INK_FAINT)
+	_status = UiTheme.ink_label("", 26, Color.WHITE, 4, UiTheme.INK)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status.custom_minimum_size.y = 36
+	_status.custom_minimum_size.y = 72
 	v.add_child(_status)
 
-	var leave := UiTheme.make_btn("离开房间", UiTheme.BG_CARD, UiTheme.INK_SOFT, 15, 44)
+	var leave := UiTheme.make_btn("离开房间", UiTheme.BG_CARD, UiTheme.INK, 34, 102)
 	leave.pressed.connect(_on_leave)
 	v.add_child(leave)
 
@@ -157,7 +158,7 @@ func _refresh() -> void:
 		_ready_btn.disabled = sess != PeerManager.Session.LOBBY \
 			and sess != PeerManager.Session.READY_CHECK
 	_ready_btn.add_theme_stylebox_override("normal",
-		UiTheme.button_style(UiTheme.BG_CARD if _local_ready() else UiTheme.SHIELD))
+		UiTheme.button_style(UiTheme.BG_CARD if _local_ready() else UiTheme.SHIELD, 24, UiTheme.INK, 4, 8))
 	_ready_btn.add_theme_color_override("font_color",
 		UiTheme.INK if _local_ready() else Color.WHITE)
 
@@ -202,8 +203,6 @@ func _on_back_requested() -> bool:
 	return true
 
 
-# ---------- 加入请求（房主，单弹窗） ----------
-
 func _on_join_requested(_id: int, _profile: Dictionary) -> void:
 	if _dialog != null and is_instance_valid(_dialog):
 		if _net != null:
@@ -232,8 +231,6 @@ func _close_dialog() -> void:
 	_dialog = null
 
 
-# ---------- 对手/房主离开：提示 + 回入口 ----------
-
 func _on_lobby_left(reason: String) -> void:
 	if _notice != null and is_instance_valid(_notice):
 		return
@@ -249,7 +246,7 @@ func _modal(title: String, body: String, yes_text: String, no_text: String, cb: 
 	add_child(layer)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0.06, 0.09, 0.16, 0.45)
+	dim.color = Color(0.04, 0.06, 0.12, 0.62)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(dim)
 
@@ -258,33 +255,33 @@ func _modal(title: String, body: String, yes_text: String, no_text: String, cb: 
 	layer.add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(300, 0)
+	panel.custom_minimum_size = Vector2(760, 0)
 	panel.add_theme_stylebox_override("panel", UiTheme.card_style())
 	center.add_child(panel)
 
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 24)
 	panel.add_child(v)
 
-	v.add_child(UiTheme.ink_label(title, 18, UiTheme.INK))
-	var body_label := UiTheme.ink_label(body, 13, UiTheme.INK_SOFT)
+	v.add_child(UiTheme.ink_label(title, 40, UiTheme.INK))
+	var body_label := UiTheme.ink_label(body, 28, UiTheme.INK_SOFT)
 	body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body_label.custom_minimum_size = Vector2(260, 36)
+	body_label.custom_minimum_size = Vector2(680, 84)
 	v.add_child(body_label)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
+	row.add_theme_constant_override("separation", 28)
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	v.add_child(row)
 
-	var yes := UiTheme.make_btn(yes_text, UiTheme.ACCENT, Color.WHITE, 15, 42)
-	yes.custom_minimum_size.x = 120
+	var yes := UiTheme.make_btn(yes_text, UiTheme.ACCENT, Color.WHITE, 34, 96)
+	yes.custom_minimum_size.x = 280
 	yes.pressed.connect(func(): cb.call(true))
 	row.add_child(yes)
 
 	if no_text != "":
-		var no := UiTheme.make_btn(no_text, UiTheme.BG_CARD, UiTheme.INK, 15, 42)
-		no.custom_minimum_size.x = 120
+		var no := UiTheme.make_btn(no_text, UiTheme.BG_CARD, UiTheme.INK, 34, 96)
+		no.custom_minimum_size.x = 280
 		no.pressed.connect(func(): cb.call(false))
 		row.add_child(no)
 

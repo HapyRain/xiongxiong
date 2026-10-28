@@ -14,7 +14,7 @@ const ENVELOPE_VERSION := 1
 const LOBBY_COUNTDOWN_MS := 5000
 ## 客户端倒计时到 0 后等 battle_start 的兜底时限（I7：防房主静默挂死卡死等待页）。
 const BATTLE_START_WAIT_MS := 8000
-## 锁招宽限：双方 UI 开窗可能有时间差，给足 3.5s 避免超时默认吞掉对方已选招
+## 锁招宽限：双方 UI 开窗可能有时间差，给足 3.5s 避免超时默认吞掉对手已选招
 const LOCK_GRACE_SEC := 3.5
 const OPENING_DELAY := 0.8
 ## 开局（回合1）窗口：双方点「攒」才算正式开始
@@ -40,9 +40,9 @@ signal consent_needed(snap: Dictionary, need_from: Array)
 signal countdown_tick(remain_ms: int)
 signal session_failed(loser_role: int, reason: String)
 signal session_restored(snap: Dictionary)
-## 对方离开/掉线后本地改由人机接管（对局继续）
+## 对手离开/掉线后本地改由人机接管（对局继续）
 signal ai_takeover_started(reason: String)
-## 对方申请加入，等房主「同意 / 拒绝」
+## 对手申请加入，等房主「同意 / 拒绝」
 signal join_requested(peer_id: int, profile: Dictionary)
 ## 房主答复（客户端侧）：true=进等待页，false=回入口
 signal join_answered(yes: bool)
@@ -51,11 +51,11 @@ signal room_updated(room: Dictionary)
 signal ready_changed(host_ready: bool, client_ready: bool)
 ## 等待页 5s 倒计时（可注入）
 signal lobby_countdown_tick(remain_ms: int)
-## 未开局时对方/房主离开 → 提示并回入口
+## 未开局时对手/房主离开 → 提示并回入口
 signal lobby_left(reason: String)
-## 对方提出再来一局
+## 对手提出再来一局
 signal rematch_offer()
-## 对方答复再来一局（true=开打，false=回菜单）
+## 对手答复再来一局（true=开打，false=回菜单）
 signal rematch_answered(yes: bool)
 
 var state: BattleState = BattleState.new()
@@ -65,7 +65,7 @@ var fsm: NetworkSessionFSM = NetworkSessionFSM.new()
 ## 由 NetworkedBattleController 注入 beat / phase 元数据，进 SessionSnapshot。
 var session_meta_hook: Callable = Callable()
 
-## true=对方已离开，本地双座位结算（对方座位由 AiOpponent 驱动）
+## true=对手已离开，本地双座位结算（对手座位由 AiOpponent 驱动）
 var ai_takeover: bool = false
 
 var _mode: int = Mode.HOTSEAT
@@ -341,7 +341,7 @@ func join_game(opts: Dictionary) -> Error:
 func leave() -> void:
 	_self_closing = true
 	if provider != null:
-		# 主动离开：对局内尽量通知对方（对方走人机接管）；未开局由 leave_room 先发消息
+		# 主动离开：对局内尽量通知对手（对手走人机接管）；未开局由 leave_room 先发消息
 		if _session == Session.IN_BATTLE or _session == Session.SEALED or _session == Session.GAME_OVER:
 			_broadcast(_envelope("bye", state.round, {"reason": "local_leave"}))
 		_disconnect_provider()
@@ -396,7 +396,7 @@ func _reset_opening_flags() -> void:
 	_round_restart_pending = false
 
 
-## 对方离开/掉线：本地改由人机接管，对局继续（不再走封存判负）。
+## 对手离开/掉线：本地改由人机接管，对局继续（不再走封存判负）。
 ## 返回 true 表示已接管。
 func begin_ai_takeover(reason: String = "peer_left") -> bool:
 	if _mode == Mode.HOTSEAT or ai_takeover:
@@ -421,7 +421,7 @@ func begin_ai_takeover(reason: String = "peer_left") -> bool:
 		_do_opening()
 	_set_session(Session.IN_BATTLE)
 	ai_takeover_started.emit(reason)
-	status_text.emit("对方已离开，由人机接管")
+	status_text.emit("对手已离开，由人机接管")
 	return true
 
 
@@ -561,7 +561,7 @@ func debug_tick_countdown(ms: int) -> void:
 	_tick_lobby_countdown(ms)
 
 
-## 未开局时离开房间：通知对方 → 对方提示并回入口。对局内离开走 leave()（人机接管）。
+## 未开局时离开房间：通知对手 → 对手提示并回入口。对局内离开走 leave()（人机接管）。
 func leave_room() -> void:
 	if _session != Session.LOBBY and _session != Session.READY_CHECK and _session != Session.COUNTDOWN:
 		return
@@ -621,7 +621,7 @@ func _reset_lobby_peer() -> void:
 	_remote_peer_id = -1
 
 
-## 未开局时对方离开。
+## 未开局时对手离开。
 ## 统一行为（与 LOBBY 阶段一致）：房主保留房间、解绑对端，回大厅等下一个客户端；
 ## 客户端关连接、提示、回入口（不做 host migration）。
 func _handle_lobby_peer_gone(_reason: String) -> void:
@@ -634,10 +634,10 @@ func _handle_lobby_peer_gone(_reason: String) -> void:
 		if not room.is_empty():
 			room["players"] = 1
 		_set_session(Session.LOBBY)
-		status_text.emit("对方已离开，继续等待…")
+		status_text.emit("对手已离开，继续等待…")
 		room_updated.emit(room.duplicate(true))
 		return
-	var msg := "房主已离开，请重新选择模式" if not is_host() else "对方已离开"
+	var msg := "房主已离开，请重新选择模式" if not is_host() else "对手已离开"
 	_self_closing = true
 	if provider != null:
 		_disconnect_provider()
@@ -653,7 +653,7 @@ func _handle_lobby_peer_gone(_reason: String) -> void:
 	lobby_left.emit(msg)
 
 
-## 终局后再来一局：任一方可发起，对方确认后开打。
+## 终局后再来一局：任一方可发起，对手确认后开打。
 func request_rematch() -> void:
 	_rematch_want = true
 	if _mode == Mode.HOTSEAT or ai_takeover:
@@ -667,10 +667,10 @@ func request_rematch() -> void:
 	if _peer_rematch_want:
 		_confirm_rematch()
 	else:
-		status_text.emit("已发出「再来一局」，等待对方…")
+		status_text.emit("已发出「再来一局」，等待对手…")
 
 
-## 回应对方的再来一局。yes=false 则回菜单。
+## 回应对手的再来一局。yes=false 则回菜单。
 func answer_rematch(yes: bool) -> void:
 	_rematch_want = yes
 	if _mode == Mode.HOTSEAT or ai_takeover:
@@ -694,7 +694,7 @@ func _confirm_rematch() -> void:
 		_start_rematch_local()
 	else:
 		rematch_answered.emit(true)
-		status_text.emit("对方同意，进入新对局…")
+		status_text.emit("对手同意，进入新对局…")
 
 
 func _start_rematch_local() -> void:
@@ -859,7 +859,7 @@ func submit_resume_vote(yes: bool) -> void:
 		_send_to_host(_envelope("sys_consent", state.round, {"peer": my_peer, "yes": yes}))
 	else:
 		_broadcast(_envelope("sys_consent", state.round, {"peer": my_peer, "yes": yes}))
-	status_text.emit("已确认继续，等待对方…" if yes else "已拒绝继续")
+	status_text.emit("已确认继续，等待对手…" if yes else "已拒绝继续")
 
 
 ## 恢复：校验 SessionSnapshot（seq/checksum 闸门）→ restore rules → 开闸。
@@ -1015,12 +1015,12 @@ func _on_provider_disconnected(reason: String) -> void:
 		if _rematch_want:
 			_rematch_want = false
 			rematch_answered.emit(false)
-		status_text.emit("对方已离开")
+		status_text.emit("对手已离开")
 		return
 	if _session == Session.IN_BATTLE or _session == Session.SEALED:
 		peer_left.emit(0, reason)
 		if _mode == Mode.ENET and not state.is_over():
-			# 产品优先：对方掉线/离开 → 人机接管继续可玩。
+			# 产品优先：对手掉线/离开 → 人机接管继续可玩。
 			# 但先封存一份完整快照（rules+session），否则这次对局状态彻底丢失、也无从恢复。
 			if _session != Session.SEALED:
 				seal("peer_disconnected:%s" % reason)
@@ -1139,13 +1139,13 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			_begin_lobby_countdown(remain)
 			status_text.emit("双方已准备，即将开局")
 		"leave_room":
-			# 只有未开局阶段才算「大厅离房」；对局内对方离开走 bye（封存 → 人机接管）
+			# 只有未开局阶段才算「大厅离房」；对局内对手离开走 bye（封存 → 人机接管）
 			if _session == Session.LOBBY or _session == Session.READY_CHECK or _session == Session.COUNTDOWN:
 				_handle_lobby_peer_gone("leave_room")
 		"rematch_request":
 			if not _rematch_want:
 				rematch_offer.emit()
-				status_text.emit("对方想再来一局")
+				status_text.emit("对手想再来一局")
 			_peer_rematch_want = true
 			if _rematch_want:
 				_confirm_rematch()
@@ -1157,7 +1157,7 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			else:
 				rematch_answered.emit(yes)
 				if not yes:
-					status_text.emit("对方不想再来一局")
+					status_text.emit("对手不想再来一局")
 		"battle_start":
 			if not is_host():
 				# C3：对局中重放 battle_start 会把旧快照砸回当前对局（整局倒带），直接丢。
@@ -1301,7 +1301,7 @@ func _on_provider_packet(from_id: int, data: Dictionary) -> void:
 			if fsm.state == NetworkSessionFSM.State.SEALED:
 				fsm.on_link_ok(Time.get_ticks_msec())
 			fsm.submit_consent(cpeer, cyes, Time.get_ticks_msec())
-			status_text.emit("对方已确认，继续对局…" if cyes else "对方拒绝继续")
+			status_text.emit("对手已确认，继续对局…" if cyes else "对手拒绝继续")
 		"sys_countdown":
 			# 倒计时由房主广播
 			if is_host():
