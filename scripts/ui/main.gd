@@ -40,6 +40,7 @@ var _tempo_ticks: Array[ColorRect] = []
 var _fx_layer: Control
 var _spot_layer: Control
 var _audio_bank: Dictionary = {}
+var _active_round: int = 1
 
 
 func _ready() -> void:
@@ -407,9 +408,9 @@ func _refresh() -> void:
 		var opp_pick := "已就绪" if int(s.pending[1]) >= 0 else "思考中…"
 		_opp_state_tag.text = opp_seal + opp_pick
 	if open and _me_duel_card != null:
-		BattleFx.update_duel_card(_me_duel_card, picked, "待选")
+		BattleFx.update_duel_card(_me_duel_card, picked, "待选", false)
 	if open and _opp_duel_card != null:
-		BattleFx.update_duel_card(_opp_duel_card, -1, "已锁" if int(s.pending[1]) >= 0 else "…")
+		BattleFx.update_duel_card(_opp_duel_card, -1, "已锁" if int(s.pending[1]) >= 0 else "…", false)
 
 
 func _set_stat_row(boxes: Array, s: BattleState, i: int) -> void:
@@ -434,16 +435,22 @@ func _set_stat_row(boxes: Array, s: BattleState, i: int) -> void:
 
 
 func _on_phase(phase: int, round_no: int) -> void:
-	if phase == GameRules.Phase.SELECTING and overlay.visible:
-		overlay.visible = false
+	if phase == GameRules.Phase.SELECTING:
+		_active_round = maxi(1, round_no)
+		if overlay.visible:
+			overlay.visible = false
 	if controller != null and controller.state != null:
 		BattleFx.update_bgm_tension(_audio_bank, controller.state)
+	var s: BattleState = controller.state if controller != null else null
 	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null and not controller.opening_done()
 	match phase:
 		GameRules.Phase.SELECTING:
 			if is_opening:
 				BattleFx.show_moba_banner(_moba_banner, "⚡ 点击「攒气」开始对决 ⚡", "第 1 回合开局亮相 · 双方气 +1", UiTheme.ACCENT, false)
 				_show_spotlight()
+			elif s != null and s.quan_jiang_enabled() and int(s.qi[0]) == s.max_qi() and int(s.hp[0]) == s.max_hp() and int(s.hp[1]) == 1:
+				BattleFx.show_moba_banner(_moba_banner, "👑 劝降条件已达成！", "我方满气满血 vs 对手 1 血 · 本拍任意出招即刻获胜！", UiTheme.ACCENT, true)
+				_hide_spotlight()
 			else:
 				BattleFx.show_moba_banner(_moba_banner, "🎯 第 %d 回合 · 同步选招" % round_no, "两声拍手内点选技能 · 预判对手招式", UiTheme.SHIELD, false)
 				_hide_spotlight()
@@ -460,6 +467,7 @@ func _on_resolved(result: GameRules.RoundResult) -> void:
 
 	var r_dict := {
 		"opening": result.opening,
+		"round": _active_round,
 		"actions": result.actions,
 		"hp_delta": result.hp_delta,
 		"qi_delta": result.qi_delta,

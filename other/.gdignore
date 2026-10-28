@@ -1,0 +1,4 @@
+Godot 必须完全忽略本目录。
+这里存放的是外部交付的迭代副本/概念资产（不在版本控制内），
+若不加 .gdignore，副本里的 class_name（GameRules / UiTheme / BattleFx / BattleState）
+会劫持 .godot/global_script_class_cache.cfg，把真实 scripts/ 静默遮蔽掉。

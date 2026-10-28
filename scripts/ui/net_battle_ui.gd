@@ -12,6 +12,7 @@ var _status_label: Label
 var _round_label: Label
 var _log_label: Label
 var _score_label: Label
+var _you_wait_label: Label
 var _moba_banner: PanelContainer
 var _ticker: PanelContainer
 var _me_duel_card: PanelContainer
@@ -31,9 +32,9 @@ var _you_qi_row: HBoxContainer
 var _me_panel: PanelContainer
 var _you_panel: PanelContainer
 var _fx_layer: Control
-var _reveal_layer: CanvasLayer
 var _spot_layer: Control
 var _audio_bank: Dictionary = {}
+var _active_round: int = 1
 
 ## 封存 / 同意 / 倒计时 / 终局遮罩
 var _overlay: Control
@@ -149,11 +150,11 @@ func _build_ui() -> void:
 	you_v.add_child(you_head)
 	var you_title := UiTheme.ink_label("对手", 15, UiTheme.INK)
 	you_head.add_child(you_title)
-	var you_wait := UiTheme.ink_label("（等待对手选招…）", 12, UiTheme.INK_FAINT)
-	you_wait.name = "YouWait"
-	you_wait.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	you_wait.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	you_head.add_child(you_wait)
+	_you_wait_label = UiTheme.ink_label("（等待对手选招…）", 12, UiTheme.INK_FAINT)
+	_you_wait_label.name = "YouWait"
+	_you_wait_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_you_wait_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	you_head.add_child(_you_wait_label)
 	you_v.add_child(_make_stat_row("you", _you_boxes))
 
 	# 中央对撞舞台（上偏中 MOBA 横幅 + 中央亮招卡 + 左下拍点条 + 右下 5 轮打字机战报）
@@ -599,13 +600,17 @@ func _on_resolved(result: Dictionary) -> void:
 	if not bool(result.get("opening", false)) and text != "":
 		_status_label.text = text
 	_refresh_all()
-	_play_reveal_cards(result)
+
+	var r_copy := result.duplicate(true)
+	if not r_copy.has("round"):
+		r_copy["round"] = _active_round
+
 	if _fx_layer != null and _fx_layer.get_parent() != null:
 		_fx_layer.get_parent().move_child(_fx_layer, _fx_layer.get_parent().get_child_count() - 1)
 	BattleFx.play_clash_director(
 		_fx_layer,
 		controller.state if controller != null else null,
-		result,
+		r_copy,
 		mine,
 		_me_panel if _me_panel != null else self,
 		_you_panel if _you_panel != null else self,
@@ -679,9 +684,15 @@ func _on_battle_started_ui() -> void:
 
 
 func _on_phase(phase: int, round_no: int) -> void:
+	if phase == GameRules.Phase.SELECTING:
+		_active_round = maxi(1, round_no)
 	_round_label.text = "回合 %d / %d" % [round_no, controller.state.round_cap()]
 	if controller != null and controller.state != null:
 		BattleFx.update_bgm_tension(_audio_bank, controller.state)
+	var s: BattleState = controller.state if controller != null else null
+	var mine: int = Net.get_local_role()
+	if mine != 0 and mine != 1:
+		mine = 0
 	var is_opening: bool = round_no == GameRules.OPENING_ROUND and controller != null \
 		and not controller.opening_done()
 	match phase:
@@ -690,6 +701,10 @@ func _on_phase(phase: int, round_no: int) -> void:
 				_status_label.text = "点击「攒气」开始对决"
 				BattleFx.show_moba_banner(_moba_banner, "⚡ 点击「攒气」开始对决 ⚡", "第 1 回合开局亮相 · 双方气 +1", UiTheme.ACCENT, false)
 				_show_spotlight()
+			elif s != null and s.quan_jiang_enabled() and int(s.qi[mine]) == s.max_qi() and int(s.hp[mine]) == s.max_hp() and int(s.hp[1 - mine]) == 1:
+				_status_label.text = "劝降就绪"
+				BattleFx.show_moba_banner(_moba_banner, "👑 劝降条件已达成！", "我方满气满血 vs 对手 1 血 · 本拍任意出招即刻获胜！", UiTheme.ACCENT, true)
+				_hide_spotlight()
 			else:
 				_status_label.text = "同步出招"
 				BattleFx.show_moba_banner(_moba_banner, "🎯 第 %d 回合 · 同步选招" % round_no, "两声拍手内点选技能 · 预判对手招式", UiTheme.SHIELD, false)
@@ -706,100 +721,6 @@ func _on_phase(phase: int, round_no: int) -> void:
 			_status_label.text = "结束"
 			_hide_spotlight()
 	_refresh_all()
-
-
-func _play_reveal_cards(result: Dictionary) -> void:
-	if UiNav.is_settings_open(get_tree()):
-		return
-	if _reveal_layer != null and is_instance_valid(_reveal_layer):
-		_reveal_layer.queue_free()
-	_reveal_layer = CanvasLayer.new()
-	_reveal_layer.layer = 10
-	add_child(_reveal_layer)
-	var root := Control.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_reveal_layer.add_child(root)
-	var dim := ColorRect.new()
-	dim.color = Color(0.06, 0.09, 0.16, 0.22)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(dim)
-	var box := HBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	box.grow_vertical = Control.GROW_DIRECTION_BOTH
-	box.add_theme_constant_override("separation", 24)
-	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(box)
-	var acts: Array = result.get("actions", [-1, -1])
-	var timeouts: Array = result.get("timeout", [false, false])
-	var mine: int = Net.get_local_role()
-	if mine != 0 and mine != 1:
-		mine = 0
-	var my_act: int = int(acts[mine]) if acts.size() > mine else -1
-	var op_act: int = int(acts[1 - mine]) if acts.size() > (1 - mine) else -1
-	var my_to: bool = bool(timeouts[mine]) if timeouts.size() > mine else false
-	var op_to: bool = bool(timeouts[1 - mine]) if timeouts.size() > (1 - mine) else false
-	var me_card := _make_action_card("我", my_act, UiTheme.action_color(my_act), my_to)
-	var you_card := _make_action_card("对手", op_act, UiTheme.action_color(op_act), op_to)
-	box.add_child(me_card)
-	box.add_child(you_card)
-	me_card.scale = Vector2(0.2, 0.2)
-	you_card.scale = Vector2(0.2, 0.2)
-	me_card.pivot_offset = me_card.size / 2.0
-	you_card.pivot_offset = you_card.size / 2.0
-	var tw := create_tween().set_parallel(true)
-	tw.tween_property(me_card, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(you_card, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	var t := get_tree()
-	if t != null:
-		t.create_timer(BattleTempo.result_hold()).timeout.connect(_free_reveal_layer)
-
-
-func _free_reveal_layer() -> void:
-	if _reveal_layer != null and is_instance_valid(_reveal_layer):
-		_reveal_layer.queue_free()
-		_reveal_layer = null
-
-
-func _make_action_card(title: String, act_id: int, accent: Color, is_timeout: bool = false) -> PanelContainer:
-	var panel := PanelContainer.new()
-	var sb := UiTheme.card_style(UiTheme.BG_CARD, 16, accent, 3)
-	sb.content_margin_left = 18
-	sb.content_margin_right = 18
-	sb.content_margin_top = 12
-	sb.content_margin_bottom = 12
-	panel.add_theme_stylebox_override("panel", sb)
-	var v := VBoxContainer.new()
-	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_theme_constant_override("separation", 4)
-	panel.add_child(v)
-	var t_lab := UiTheme.ink_label(title, 13, UiTheme.INK_SOFT)
-	t_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(t_lab)
-
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 8)
-	v.add_child(row)
-
-	var ic := TextureRect.new()
-	ic.texture = UiTheme.load_ui_texture(UiTheme.action_icon_name(act_id))
-	ic.custom_minimum_size = Vector2(36, 36)
-	ic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	ic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	row.add_child(ic)
-
-	var act := UiTheme.ink_label(GameRules.action_short_name(act_id), 30, accent)
-	act.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	row.add_child(act)
-	if is_timeout:
-		var badge := UiTheme.make_btn("超时", UiTheme.DANGER, Color.WHITE, 11, 22)
-		badge.custom_minimum_size = Vector2(52, 22)
-		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		v.add_child(badge)
-	return panel
 
 
 func _on_reveal_actions(actions: Array, _results: Dictionary) -> void:
@@ -994,10 +915,11 @@ func _refresh_all() -> void:
 	var mine: int = Net.get_local_role()
 	if mine != 0 and mine != 1:
 		mine = 0
+	var op: int = 1 - mine
 	_set_row(_me_boxes, s, mine)
-	_set_row(_you_boxes, s, 1 - mine)
+	_set_row(_you_boxes, s, op)
 	if _score_label != null:
-		_score_label.text = "我 %d : %d 对手 · 先到 %d 分" % [int(s.score[mine]), int(s.score[1 - mine]), s.score_to_win()]
+		_score_label.text = "我 %d : %d 对手 · 先到 %d 分" % [int(s.score[mine]), int(s.score[op]), s.score_to_win()]
 	var input_ok: bool = controller.is_pick_open()
 	var can_lock: bool = input_ok and _overlay.visible == false
 	var preselect: Array = controller.local_preselect()
@@ -1006,8 +928,14 @@ func _refresh_all() -> void:
 		var b: Button = _me_btns[a]
 		var act := int(a)
 		UiTheme.update_skill_slot(b, s, mine, act, can_lock, picked, GameRules.PRIMARY_ACTIONS.has(act))
+	if _you_wait_label != null:
+		var opp_seal := "🚫封盾 " if s.is_sealed(op) else ""
+		var opp_wait := "（等待对手选招…）" if can_lock else "（已锁定）"
+		_you_wait_label.text = opp_seal + opp_wait
 	if can_lock and _me_duel_card != null:
-		BattleFx.update_duel_card(_me_duel_card, picked, "待选")
+		BattleFx.update_duel_card(_me_duel_card, picked, "待选", false)
+	if can_lock and _you_duel_card != null:
+		BattleFx.update_duel_card(_you_duel_card, -1, "…", false)
 	if not can_lock and _overlay != null and not _overlay.visible and not s.is_over():
 		if _status_label != null and controller != null and (controller.resolving() or controller.did_settle()):
 			_status_label.text = "结算中"

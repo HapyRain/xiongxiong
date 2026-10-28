@@ -13,8 +13,10 @@ Thumbs.db
 # 本机环境交接（不入库，勿推送）
 docs/ENVIRONMENT.md
 
-# UI 迭代副本与设计稿（不入库）
-other/
+# UI 迭代副本与设计稿（不入库）—— 但 other/.gdignore 必须入库，
+# 否则副本里的 class_name 会劫持 Godot 全局类缓存
+other/*
+!other/.gdignore
 docs/xiongxiong_ui_redesign_plan.md
 
 # agent 工具本地目录
