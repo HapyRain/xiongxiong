@@ -22,6 +22,9 @@ static var _wav_cache: Dictionary = {}
 # ══════════════════════ 0. 全屏三渲二特效画布 (CelStageCanvas) ══════════════════════
 
 class CelStageCanvas extends Control:
+	var ambient_time: float = 0.0
+	var me_aura_col: Color = Color(0.961, 0.620, 0.043, 0.0)
+	var opp_aura_col: Color = Color(0.937, 0.267, 0.267, 0.45)
 	var speed_lines_alpha: float = 0.0
 	var speed_lines_col: Color = Color(1.0, 0.85, 0.25)
 	var impact_flash_alpha: float = 0.0
@@ -39,7 +42,8 @@ class CelStageCanvas extends Control:
 		set_anchors_preset(Control.PRESET_FULL_RECT)
 
 	func _process(delta: float) -> void:
-		var dirty := false
+		ambient_time += delta
+		var dirty := true
 		if speed_lines_alpha > 0.005:
 			speed_lines_alpha = maxf(0.0, speed_lines_alpha - delta * 2.2)
 			dirty = true
@@ -101,7 +105,44 @@ class CelStageCanvas extends Control:
 	func _draw() -> void:
 		var sz := size if size.x > 100 else Vector2(1080, 1920)
 		var stage_h := minf(sz.y, 1320.0)
-		var center := Vector2(sz.x * 0.5, stage_h * 0.52)
+		var center := Vector2(sz.x * 0.5, stage_h * 0.50)
+
+		# 0. 常驻 60FPS 三渲二天台法阵呼吸光环、浮空能量火星与角色气场（告别选招期画面死寂）
+		var pulse := 0.5 + 0.5 * sin(ambient_time * 3.4)
+		var magic_r1 := 215.0 + pulse * 12.0
+		var magic_r2 := 152.0 - pulse * 8.0
+		draw_arc(center, magic_r1, 0.0, TAU, 48, Color(0.04, 0.06, 0.11, 0.38), 10.0)
+		draw_arc(center, magic_r1, 0.0, TAU, 48, Color(0.06, 0.68, 0.96, 0.24 + pulse * 0.12), 4.0)
+		draw_arc(center, magic_r2, 0.0, TAU, 36, Color(0.98, 0.68, 0.12, 0.22 + pulse * 0.12), 3.5)
+		for k in 8:
+			var ang_m := ambient_time * 0.45 + float(k) * TAU / 8.0
+			var p_in := center + Vector2(cos(ang_m), sin(ang_m)) * magic_r2
+			var p_out := center + Vector2(cos(ang_m), sin(ang_m)) * magic_r1
+			draw_line(p_in, p_out, Color(1.0, 0.88, 0.38, 0.22), 3.0)
+
+		# 角色双侧三渲二蓄力气场光晕
+		var left_pos := Vector2(sz.x * 0.27, stage_h * 0.50)
+		var right_pos := Vector2(sz.x * 0.73, stage_h * 0.50)
+		if me_aura_col.a > 0.02:
+			var mr := 148.0 + 10.0 * sin(ambient_time * 5.2)
+			draw_arc(left_pos, mr, 0.0, TAU, 36, Color(0.04, 0.06, 0.11, me_aura_col.a * 0.65), 12.0)
+			draw_arc(left_pos, mr, 0.0, TAU, 36, Color(me_aura_col.r, me_aura_col.g, me_aura_col.b, me_aura_col.a * 0.55), 6.0)
+		if opp_aura_col.a > 0.02:
+			var orad := 142.0 + 8.0 * cos(ambient_time * 4.6)
+			draw_arc(right_pos, orad, 0.0, TAU, 36, Color(0.04, 0.06, 0.11, opp_aura_col.a * 0.50), 10.0)
+			draw_arc(right_pos, orad, 0.0, TAU, 36, Color(opp_aura_col.r, opp_aura_col.g, opp_aura_col.b, opp_aura_col.a * 0.40), 5.0)
+
+		# 18 颗上浮三渲二漫画描边能量火种
+		for idx in 18:
+			var seed_f := float(idx) * 1.73
+			var px := fmod(80.0 + float(idx) * 56.0 + sin(ambient_time * 1.4 + seed_f) * 34.0, sz.x - 120.0) + 60.0
+			var cycle := fmod(ambient_time * (48.0 + float(idx % 5) * 14.0) + float(idx) * 65.0, 760.0)
+			var py := 1040.0 - cycle
+			var ea := sin(clampf(cycle / 760.0, 0.0, 1.0) * PI) * 0.65
+			var er := 5.0 + float(idx % 3) * 2.2
+			var ecol := Color(1.0, 0.78, 0.22, ea) if (idx % 2 == 0) else Color(0.22, 0.82, 1.0, ea)
+			draw_circle(Vector2(px, py), er + 2.5, Color(0.04, 0.06, 0.11, ea * 0.85))
+			draw_circle(Vector2(px, py), er, ecol)
 
 		# 1. Impact Frame 瞬态高对比闪光（仅覆盖上方特效舞台区 y=0..stage_h，绝不干扰底部技能盘）
 		if impact_flash_alpha > 0.01:
@@ -789,29 +830,67 @@ static func clear_ticker(ticker: PanelContainer) -> void:
 			lab.text = ""
 
 
-## 创建 1080P 三渲二漫画风中央对撞出招卡
+## 创建 1080P 三渲二角色立绘中央对撞战卡（内置金罡熊/赤影熊三渲二立绘背景，彻底告别黑底空框）
 static func make_duel_card(who_title: String, border_col: Color) -> PanelContainer:
+	var is_me := (who_title == "我")
 	var p := PanelContainer.new()
-	p.custom_minimum_size = Vector2(340, 168)
-	var sb := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.92), 26, UiTheme.INK, 5)
+	p.custom_minimum_size = Vector2(368, 224)
+	var sb := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.90), 26, border_col, 5)
 	sb.border_width_bottom = 12
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
 	p.add_theme_stylebox_override("panel", sb)
 
-	var v := VBoxContainer.new()
-	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	v.add_theme_constant_override("separation", 6)
-	p.add_child(v)
+	var inner := Control.new()
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	p.add_child(inner)
 
+	# 底层：三渲二角色半身战姿立绘（fighter_*_stage.png 交付包缺失时回退同源头像原画）
+	var art := TextureRect.new()
+	art.name = "FighterArt"
+	art.texture = UiTheme.load_ui_texture("fighter_me_stage.png" if is_me else "fighter_opp_stage.png")
+	if art.texture == null:
+		art.texture = UiTheme.load_ui_texture("avatar_bear_me.png" if is_me else "avatar_bear_opp.png")
+	art.set_anchors_preset(Control.PRESET_FULL_RECT)
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	art.modulate = Color(1.0, 1.0, 1.0, 0.86)
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner.add_child(art)
+
+	# 底部深色漫画横幅遮罩（衬托招式图标与大字）
+	var bot_shade := PanelContainer.new()
+	bot_shade.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	bot_shade.offset_top = -92
+	bot_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sh_sb := StyleBoxFlat.new()
+	sh_sb.bg_color = Color(0.03, 0.05, 0.10, 0.84)
+	sh_sb.set_corner_radius_all(18)
+	sh_sb.content_margin_left = 10
+	sh_sb.content_margin_right = 10
+	sh_sb.content_margin_top = 4
+	sh_sb.content_margin_bottom = 4
+	bot_shade.add_theme_stylebox_override("panel", sh_sb)
+	inner.add_child(bot_shade)
+
+	# 顶部角色阵营角标
 	var head := HBoxContainer.new()
-	head.alignment = BoxContainer.ALIGNMENT_CENTER
+	head.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	head.offset_left = 10
+	head.offset_right = -10
+	head.offset_top = 6
+	head.offset_bottom = 40
 	head.add_theme_constant_override("separation", 10)
-	v.add_child(head)
+	inner.add_child(head)
 
-	var t := UiTheme.ink_label(who_title, 24, Color(0.78, 0.85, 0.95), 4, UiTheme.INK)
-	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var t := UiTheme.ink_label(who_title, 26, Color(1.0, 0.95, 0.78) if is_me else Color(1.0, 0.78, 0.80), 6, UiTheme.INK)
 	head.add_child(t)
 
-	var to_lab := UiTheme.ink_label("超时", 20, UiTheme.DANGER, 4, UiTheme.INK)
+	var to_lab := UiTheme.ink_label("超时", 20, UiTheme.DANGER, 5, UiTheme.INK)
 	to_lab.name = "TimeoutBadge"
 	to_lab.visible = false
 	head.add_child(to_lab)
@@ -819,17 +898,17 @@ static func make_duel_card(who_title: String, border_col: Color) -> PanelContain
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
-	v.add_child(row)
+	bot_shade.add_child(row)
 
 	var icon := TextureRect.new()
 	icon.name = "DuelIcon"
-	icon.custom_minimum_size = Vector2(68, 68)
+	icon.custom_minimum_size = Vector2(74, 74)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.visible = false
 	row.add_child(icon)
 
-	var act_lab := UiTheme.ink_label("待命", 50, Color.WHITE, 10, UiTheme.INK)
+	var act_lab := UiTheme.ink_label("待选", 48, Color.WHITE, 10, UiTheme.INK)
 	act_lab.name = "DuelText"
 	act_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	row.add_child(act_lab)
@@ -837,6 +916,7 @@ static func make_duel_card(who_title: String, border_col: Color) -> PanelContain
 	p.set_meta("duel_icon", icon)
 	p.set_meta("duel_text", act_lab)
 	p.set_meta("duel_timeout", to_lab)
+	p.set_meta("fighter_art", art)
 	p.set_meta("base_border", border_col)
 	return p
 
@@ -847,29 +927,93 @@ static func update_duel_card(card: PanelContainer, act: int, placeholder_text: S
 	var icon := card.get_meta("duel_icon", null) as TextureRect
 	var lab := card.get_meta("duel_text", null) as Label
 	var to_lab := card.get_meta("duel_timeout", null) as Label
+	var art := card.get_meta("fighter_art", null) as TextureRect
 	var base_border: Color = card.get_meta("base_border", UiTheme.ACCENT)
 	if to_lab != null:
 		to_lab.visible = is_timeout
 	if act >= 0:
 		var col := UiTheme.action_color(act)
-		var sb := UiTheme.card_style( col.darkened(0.28), 26, UiTheme.INK, 5)
-		sb.border_width_bottom = 12
+		var sb := UiTheme.card_style(Color(0.08, 0.11, 0.20, 0.95), 26, col.lightened(0.22), 6)
+		sb.border_width_bottom = 14
+		sb.content_margin_left = 10
+		sb.content_margin_right = 10
+		sb.content_margin_top = 10
+		sb.content_margin_bottom = 10
 		card.add_theme_stylebox_override("panel", sb)
+		if art != null:
+			art.modulate = Color(1.0, 1.0, 1.0, 1.0)
 		if lab != null:
 			lab.text = GameRules.action_short_name(act)
-			lab.add_theme_color_override("font_color", Color.WHITE)
+			lab.add_theme_color_override("font_color", Color(1.0, 0.96, 0.72))
 		if icon != null:
 			icon.texture = UiTheme.load_ui_texture(UiTheme.action_icon_name(act))
 			icon.visible = icon.texture != null
 	else:
-		var sb2 := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.86), 26, base_border.darkened(0.15), 4)
-		sb2.border_width_bottom = 10
+		var sb2 := UiTheme.card_style(Color(0.06, 0.09, 0.16, 0.88), 26, base_border, 4)
+		sb2.border_width_bottom = 11
+		sb2.content_margin_left = 10
+		sb2.content_margin_right = 10
+		sb2.content_margin_top = 10
+		sb2.content_margin_bottom = 10
 		card.add_theme_stylebox_override("panel", sb2)
+		if art != null:
+			art.modulate = Color(0.88, 0.92, 1.0, 0.78)
 		if lab != null:
 			lab.text = placeholder_text
-			lab.add_theme_color_override("font_color", Color(0.68, 0.76, 0.88))
+			lab.add_theme_color_override("font_color", Color(0.86, 0.92, 1.0))
 		if icon != null:
 			icon.visible = false
+
+
+## 选招阶段点击任意技能按钮时的即时三渲二舞台蓄力动效（无需等到回合结算，点下即爆气/开盾/旋涡！）
+static func play_skill_select_vfx(fx_host: Control, act: int, me_duel_card: PanelContainer = null) -> void:
+	if fx_host == null or not is_instance_valid(fx_host):
+		return
+	var cel := ensure_cel_canvas(fx_host)
+	var col := UiTheme.action_color(act)
+	var sz := fx_host.size if fx_host.size.x > 100 else Vector2(1080, 1920)
+	var left_pos := Vector2(sz.x * 0.28, minf(sz.y, 1320.0) * 0.50)
+	if me_duel_card != null and is_instance_valid(me_duel_card):
+		left_pos = me_duel_card.get_global_rect().get_center()
+		me_duel_card.pivot_offset = me_duel_card.size * 0.5
+		me_duel_card.scale = Vector2(1.12, 1.12)
+		var tw := me_duel_card.create_tween()
+		tw.tween_property(me_duel_card, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+	if cel == null:
+		return
+	cel.me_aura_col = Color(col.r, col.g, col.b, 0.95)
+	var cat := GameRules.action_category(act)
+	if cat == "defense":
+		cel.add_cel_ring(left_pos, 40.0, 250.0, UiTheme.SHIELD, 14.0, true)
+		cel.add_cel_ring(left_pos, 20.0, 180.0, UiTheme.ACCENT, 8.0, true)
+	elif act == GameRules.Action.XI_SHOU:
+		cel.trigger_vortex(left_pos, UiTheme.SPECIAL, 0.68)
+		cel.add_cel_ring(left_pos, 180.0, 40.0, UiTheme.SPECIAL, 10.0, false)
+	elif cat == "attack":
+		cel.trigger_speed_lines(col, 0.48)
+		cel.add_cel_ring(left_pos, 36.0, 260.0, col, 14.0, false)
+		cel.add_cel_slash(left_pos + Vector2(-130, 90), left_pos + Vector2(130, -90), col.lightened(0.25), 18.0)
+	else:
+		cel.add_cel_ring(left_pos, 32.0, 230.0, col, 12.0, false)
+		cel.add_cel_ring(left_pos, 60.0, 290.0, Color(1.0, 0.94, 0.55), 8.0, false)
+
+
+## 节拍器每拍同步舞台脉冲（让两张角色立绘战卡与天台法阵随拍点呼吸律动）
+static func play_beat_pulse(fx_host: Control, beat_no: int, me_duel_card: PanelContainer = null, opp_duel_card: PanelContainer = null) -> void:
+	if fx_host != null and is_instance_valid(fx_host):
+		var cel := ensure_cel_canvas(fx_host)
+		if cel != null:
+			var sz := fx_host.size if fx_host.size.x > 100 else Vector2(1080, 1920)
+			var center := Vector2(sz.x * 0.5, minf(sz.y, 1320.0) * 0.50)
+			var b_col := UiTheme.SHIELD if beat_no == 1 else UiTheme.ACCENT
+			cel.add_cel_ring(center, 120.0, 320.0, b_col, 8.0, beat_no == 2)
+	for card in [me_duel_card, opp_duel_card]:
+		if card != null and is_instance_valid(card):
+			card.pivot_offset = card.size * 0.5
+			card.scale = Vector2(1.04, 1.04)
+			var tw: Tween = card.create_tween()
+			tw.tween_property(card, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 
 
 # ══════════════════════ 4. 1080P 全屏三渲二交锋导演系统（零冗余飘字，全舞台漫画冲击） ══════════════════════

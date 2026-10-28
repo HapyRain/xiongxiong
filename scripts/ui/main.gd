@@ -53,12 +53,8 @@ func _ready() -> void:
 	UiNav.register_back_guard(SCENE, _on_back_requested)
 	add_child(UiBackRouter.new())
 
-	# 铺设 1080P 三渲二天台对决背景（插在 Margin 之前）
-	var bg_tex := UiTheme.add_stage_background(self, 0.18)
-	move_child(bg_tex, 1)
-	var tint := get_node_or_null("StageTint")
-	if tint != null:
-		move_child(tint, 2)
+	# 铺设 1080P 三渲二天台对决背景（自动隐藏纯色 Bg 并置于 Margin 之前）
+	UiTheme.add_stage_background(self, 0.10)
 
 	menu_btn.add_theme_stylebox_override("normal", UiTheme.button_style(UiTheme.BG_DARK_CARD, 18, UiTheme.INK, 4, 6))
 	menu_btn.add_theme_color_override("font_color", Color.WHITE)
@@ -350,6 +346,7 @@ func _pick(action: int) -> void:
 			UiTheme.action_color(action),
 			false
 		)
+		BattleFx.play_skill_select_vfx(_fx_layer, action, _me_duel_card)
 		_refresh()
 
 
@@ -368,11 +365,12 @@ func _hide_spotlight() -> void:
 	_spot_layer = null
 
 
-func _on_beat(_beat_no: int) -> void:
+func _on_beat(beat_no: int) -> void:
 	var clap_p := 1.0
 	if controller != null and controller.state != null:
 		clap_p = BattleTempo.clap_pitch(controller.state.round)
 	BattleFx.play_named_sfx(_audio_bank, "clap", 1.0, clap_p)
+	BattleFx.play_beat_pulse(_fx_layer, beat_no, _me_duel_card, _opp_duel_card)
 
 
 func _refresh() -> void:

@@ -73,6 +73,15 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 | 战报文案「敌」违反「我/对手」规范 | 统一改「对手」 |
 | `quality_settings` 原子写/`fps_cap` 键被回退 | 恢复 tmp+rename 原子写与 `fps_cap` 键 |
 
+**2026-10-29（v3.2 贴图/动效实装复验）**
+
+| 问题 | 修法 |
+|---|---|
+| v3.2 交付包 `other/v3.0/... (newlest)` 并入 | 19 张真实三渲二贴图（`stage_bg_cel.png` 3.9MB、双头像、14 张 128×128 图标、2 张 vfx 特写）+ 4 个 UI 脚本（`ui_theme` 战术技能卡/自动隐藏 `Bg`；`battle_fx` 对撞战卡/60FPS 常驻法阵/点选即时爆发/节拍脉冲；`main`、`net_battle_ui` 接线） |
+| 交付包仍缺 `fighter_me_stage.png` / `fighter_opp_stage.png` | 实际不存在（两个 v3 zip 内都没有）；对撞战卡回退同源头像原画（`avatar_bear_*`），`run_ui_check` 新增断言锁住 |
+| 新 `battle_fx.gd` parse error：`var tw := card.create_tween()` 类型无法推断 | 显式 `var tw: Tween`；8 个 Godot 自检 803 条断言 + Python 镜像全绿 |
+| 真实贴图落盘后 `.godot/imported` 仍是旧占位缓存 | `& $g --headless --path . --import` 重导；窗口截图复验 menu/main/solo/lobby 天台背景全部透出、双层技能盘与对撞战卡用真实原画 |
+
 **2026-10-17（`c106e21`）**
 
 | 问题 | 修法 |

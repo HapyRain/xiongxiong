@@ -769,6 +769,14 @@ func _check_ticker_five_lines(ticker: PanelContainer) -> void:
 	_exp("ticker: clear_ticker 清空", (ticker.get_meta("history", []) as Array).is_empty())
 	_exp("audio: BGM 与新增音效可加载", BattleFx.load_wav_safe("bgm_battle.wav", true) != null and BattleFx.load_wav_safe("block_success.wav") != null)
 	_exp("ui_tex: 技能图标与状态遮罩可加载", UiTheme.load_ui_texture("icon_zan.png") != null and UiTheme.load_ui_texture("state_cd_overlay.png") != null)
+	# 交付包缺 fighter_*_stage.png，对撞战卡必须回退同源头像原画（删回退即红）
+	var card_me := BattleFx.make_duel_card("我", UiTheme.ACCENT)
+	var card_opp := BattleFx.make_duel_card("对手", UiTheme.DANGER)
+	_exp("duel_card: 对撞战卡立绘可加载（fighter_* 缺失回退头像）",
+		(card_me.get_meta("fighter_art") as TextureRect).texture != null
+		and (card_opp.get_meta("fighter_art") as TextureRect).texture != null)
+	card_me.free()
+	card_opp.free()
 
 
 func _walk(node: Node, cb: Callable) -> void:

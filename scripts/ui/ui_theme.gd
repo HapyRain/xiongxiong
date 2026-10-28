@@ -1,32 +1,33 @@
 ## ui_theme.gd
 ## 1080P (1080×1920) 全局三渲二 (3D-to-2D Cel-Shaded) 街机漫画风 UI 主题与四态双层技能盘。
 ## 核心设计约束（严禁漂移）：
-##   1. 彻底采用三渲二粗黑描边（#090D16 4~6px 漫画黑边 + 立体厚底沿 + 文字 6~10px 黑描边）
-##   2. 技能按钮图文严格分区：左侧独立图标槽、居中大号黑边白字（严格 2 个汉字）、右上黑底耗气胶囊、底部黑底状态条
-##   3. 严禁使用任何系统 Emoji（// 等），全部采用纯正中文角标与几何贴图
-##   4. 区分「结算演出锁输入 (can_lock=false)」与「技能不可用 (usable=false)」：可用技能在结算期间保持鲜亮原色，绝不整盘闪烁变灰
+##   1. 彻底采用三渲二粗黑描边（#090D16 4~6px 漫画黑边 + 元素霓虹内框 + 立体厚底沿 + 文字 6~10px 黑描边）
+##   2. 告别红蓝绿整块平涂的「8-bit 魂斗罗砖块感」：采用深曜石战术卡底 + 左侧大幅三渲二立绘技能图标 + 元素发光边框与底栏
+##   3. 技能按钮图文严格分区：左侧独立大图标槽、居中大号黑边白字（严格 2 个汉字）、右上黑底耗气胶囊、底部元素状态条
+##   4. 严禁使用任何系统 Emoji，全部采用纯正中文角标与三渲二立绘贴图
+##   5. 区分「结算演出锁输入 (can_lock=false)」与「技能不可用 (usable=false)」：可用技能在结算期间保持鲜亮原色，绝不整盘闪烁变灰
 class_name UiTheme
 extends RefCounted
 
-const BG := Color(0.071, 0.098, 0.165)           # #12192A 深邃天台夜幕底色（衬托三渲二舞台背景）
-const BG_CARD := Color(0.976, 0.984, 0.996)      # #F9FBFE 高亮漫画卡片白
-const BG_PANEL := Color(0.925, 0.945, 0.976)     # #ECF1F9 浅石板面板
-const BG_DARK_CARD := Color(0.086, 0.122, 0.204, 0.90) # #161F34E6 街机深色半透明战术底板
-const INK := Color(0.035, 0.051, 0.090)          # #090D17 纯正漫画粗黑墨线
-const INK_SOFT := Color(0.216, 0.275, 0.369)     # #37465E 深石板灰
-const INK_FAINT := Color(0.471, 0.545, 0.647)    # #788BA5 弱化灰蓝
-const LINE := Color(0.059, 0.090, 0.165)         # #0F172A 三渲二硬朗黑框线
-const ACCENT := Color(0.961, 0.620, 0.043)       # #F59E0B 元气琥珀金（攒气/主按钮）
-const ACCENT_DEEP := Color(0.851, 0.467, 0.024)  # #D97706 深琥珀
-const WAVE := Color(0.937, 0.267, 0.267)         # #EF4444 烈焰珊瑚红（攻击/包子/破防）
-const SHIELD := Color(0.055, 0.647, 0.914)       # #0EA5E9 澄澈天青蓝（防御/护盾）
-const SPECIAL := Color(0.545, 0.361, 0.965)      # #8B5CF6 电光幻影紫（吸收/爆气/终极）
-const GAIN := Color(0.063, 0.725, 0.506)         # #10B981 翡翠生机绿（集气/回复）
-const DANGER := Color(0.886, 0.149, 0.212)       # #E22636 警示猩红
-const OK_GREEN := Color(0.063, 0.725, 0.506)     # #10B981 成功绿（勿命名 OK，会遮蔽全局 Error.OK）
-const DISABLED_BG := Color(0.145, 0.192, 0.282)  # #253148 未解锁/冷却深岩灰（高对比衬托白字）
-const DISABLED_FG := Color(0.780, 0.835, 0.910)  # #C7D5E8 禁用态清晰银白字
-const SHADOW := Color(0.020, 0.031, 0.059, 0.42)
+const BG := Color(0.071, 0.098, 0.165)                  # #12192A 深邃天台夜幕底色
+const BG_CARD := Color(0.976, 0.984, 0.996)             # #F9FBFE 高亮漫画卡片白
+const BG_PANEL := Color(0.925, 0.945, 0.976)            # #ECF1F9 浅石板面板
+const BG_DARK_CARD := Color(0.067, 0.094, 0.165, 0.84)  # #11182AD6 半透明三渲二战术底板（透出天台背景）
+const INK := Color(0.035, 0.051, 0.090)                 # #090D17 纯正漫画粗黑墨线
+const INK_SOFT := Color(0.216, 0.275, 0.369)            # #37465E 深石板灰
+const INK_FAINT := Color(0.471, 0.545, 0.647)           # #788BA5 弱化灰蓝
+const LINE := Color(0.059, 0.090, 0.165)                # #0F172A 三渲二硬朗黑框线
+const ACCENT := Color(0.961, 0.620, 0.043)              # #F59E0B 元气琥珀金（攒气/主按钮）
+const ACCENT_DEEP := Color(0.851, 0.467, 0.024)         # #D97706 深琥珀
+const WAVE := Color(0.937, 0.267, 0.267)                # #EF4444 烈焰珊瑚红（攻击/包子/破防）
+const SHIELD := Color(0.055, 0.647, 0.914)              # #0EA5E9 澄澈天青蓝（防御/护盾）
+const SPECIAL := Color(0.545, 0.361, 0.965)             # #8B5CF6 电光幻影紫（吸收/爆气/终极）
+const GAIN := Color(0.063, 0.725, 0.506)                # #10B981 翡翠生机绿（集气/回复）
+const DANGER := Color(0.886, 0.149, 0.212)              # #E22636 警示猩红
+const OK_GREEN := Color(0.063, 0.725, 0.506)            # #10B981 成功绿（勿命名 OK，会遮蔽全局 Error.OK）
+const DISABLED_BG := Color(0.090, 0.118, 0.184, 0.90)   # #171E2FE6 未解锁/冷却深曜石底
+const DISABLED_FG := Color(0.720, 0.785, 0.875)         # #B8C8DF 禁用态银灰字
+const SHADOW := Color(0.020, 0.031, 0.059, 0.48)
 ## W0 占位块（UiPlaceholder 兼容保留）
 const PLACEHOLDER_BG := Color(0.886, 0.910, 0.941, 0.75)
 const PLACEHOLDER_FG := Color(0.278, 0.333, 0.412)
@@ -70,7 +71,7 @@ static func apply_to_tree(tree: SceneTree) -> void:
 	tree.root.theme = default_theme()
 
 
-## 加载 assets/ui/ 下的 PNG/JPG 贴图（支持裸字节流免 import 直读 + ResourceLoader 双路加载）
+## 加载 assets/ui/ 下的 PNG/JPG 贴图（优先走裸字节流免 import 直读，彻底绕开旧 .ctex 缓存）
 static func load_ui_texture(file_name: String) -> Texture2D:
 	if _tex_cache.has(file_name):
 		return _tex_cache[file_name]
@@ -92,7 +93,17 @@ static func load_ui_texture(file_name: String) -> Texture2D:
 
 
 ## 为任意全屏场景底层铺设 1080P 三渲二夕阳天台对决舞台背景 + 氛围暗角
-static func add_stage_background(host: Control, dim_alpha: float = 0.22) -> TextureRect:
+## 关键修复：自动隐藏或透明化宿主下原有的纯色 Bg (ColorRect)，确保 Bg 绝不会盖在 StageBgTex 之上！
+static func add_stage_background(host: Control, dim_alpha: float = 0.10) -> TextureRect:
+	for c in host.get_children():
+		if c is ColorRect and c.name != "StageTint":
+			(c as ColorRect).color = Color(0.04, 0.06, 0.11, 0.0)
+			(c as ColorRect).visible = false
+
+	var existing := host.get_node_or_null("StageBgTex") as TextureRect
+	if existing != null:
+		return existing
+
 	var bg_tex := TextureRect.new()
 	bg_tex.name = "StageBgTex"
 	bg_tex.texture = load_ui_texture("stage_bg_cel.png")
@@ -101,13 +112,26 @@ static func add_stage_background(host: Control, dim_alpha: float = 0.22) -> Text
 	bg_tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	bg_tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(bg_tex)
-	if dim_alpha > 0.001:
-		var tint := ColorRect.new()
-		tint.name = "StageTint"
-		tint.color = Color(0.04, 0.06, 0.12, dim_alpha)
-		tint.set_anchors_preset(Control.PRESET_FULL_RECT)
-		tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		host.add_child(tint)
+
+	var margin_node := host.get_node_or_null("Margin")
+	if margin_node != null:
+		var insert_idx := margin_node.get_index()
+		host.move_child(bg_tex, insert_idx)
+		if dim_alpha > 0.001:
+			var tint := ColorRect.new()
+			tint.name = "StageTint"
+			tint.color = Color(0.03, 0.05, 0.10, dim_alpha)
+			tint.set_anchors_preset(Control.PRESET_FULL_RECT)
+			tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			host.add_child(tint)
+			host.move_child(tint, insert_idx + 1)
+	elif dim_alpha > 0.001:
+		var tint2 := ColorRect.new()
+		tint2.name = "StageTint"
+		tint2.color = Color(0.03, 0.05, 0.10, dim_alpha)
+		tint2.set_anchors_preset(Control.PRESET_FULL_RECT)
+		tint2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		host.add_child(tint2)
 	return bg_tex
 
 
@@ -150,7 +174,7 @@ static func card_style(bg: Color = BG_CARD, radius: int = 24, border: Color = IN
 	sb.border_width_bottom = border_w + 5
 	sb.border_color = border
 	sb.shadow_color = SHADOW
-	sb.shadow_size = 6
+	sb.shadow_size = 8
 	sb.shadow_offset = Vector2(0, 4)
 	sb.content_margin_left = 22
 	sb.content_margin_right = 22
@@ -166,13 +190,45 @@ static func button_style(bg: Color, radius: int = 22, border: Color = INK, borde
 	sb.set_border_width_all(border_w)
 	sb.border_color = border
 	sb.border_width_bottom = border_w + bottom_lip
-	sb.shadow_color = Color(0, 0, 0, 0.28)
-	sb.shadow_size = 4
-	sb.shadow_offset = Vector2(0, 3)
+	sb.shadow_color = Color(0, 0, 0, 0.36)
+	sb.shadow_size = 6
+	sb.shadow_offset = Vector2(0, 4)
 	sb.content_margin_left = 18
 	sb.content_margin_right = 18
 	sb.content_margin_top = 10
 	sb.content_margin_bottom = 10
+	return sb
+
+
+## 三渲二战术技能卡专属样式：
+## 采用深曜石质感卡底（混入 26% 元素辉光）+ 亮色元素霓虹边框 + 厚重立体底沿，
+## 彻底告别「红蓝绿平涂 8-bit 砖块感」，让左侧 128×128 三渲二技能立绘图标与中央白字同时高对比突显！
+static func skill_card_style(col: Color, is_primary: bool, usable: bool, is_selected: bool) -> StyleBoxFlat:
+	var rad := 26 if is_primary else 18
+	var sb := StyleBoxFlat.new()
+	if not usable:
+		sb.bg_color = DISABLED_BG
+		sb.border_color = Color(0.20, 0.26, 0.38, 0.85)
+		sb.set_border_width_all(3)
+		sb.border_width_bottom = 7
+	elif is_selected:
+		sb.bg_color = Color(0.12, 0.16, 0.28, 0.96).lerp(col, 0.48)
+		sb.border_color = Color(1.0, 0.90, 0.28)
+		sb.set_border_width_all(6)
+		sb.border_width_bottom = 14 if is_primary else 11
+	else:
+		sb.bg_color = Color(0.08, 0.11, 0.20, 0.94).lerp(col, 0.28)
+		sb.border_color = col.lightened(0.20)
+		sb.set_border_width_all(4)
+		sb.border_width_bottom = 12 if is_primary else 9
+	sb.set_corner_radius_all(rad)
+	sb.shadow_color = Color(col.r, col.g, col.b, 0.38) if (usable and is_selected) else Color(0, 0, 0, 0.45)
+	sb.shadow_size = 12 if is_selected else 6
+	sb.shadow_offset = Vector2(0, 4)
+	sb.content_margin_bottom = 34 if is_primary else 28
+	sb.content_margin_left = 86 if is_primary else 58
+	sb.content_margin_right = 12
+	sb.content_margin_top = 8
 	return sb
 
 
@@ -261,16 +317,16 @@ static func banner_card(title_text: String, sub_text: String, accent: Color = AC
 	return panel
 
 
-## 创建 1080P 三渲二街机风四态技能按钮：
-##   1. Button.text 严格保持 2 个汉字（action_short_name），配 8~10px 纯黑漫画描边，任何底色下 100% 清晰
-##   2. 左侧独立图标槽 IconTex（绝不垫在文字正下方！），右上黑底耗气胶囊 CostBadge，底部深色状态带 SubBadge（零 Emoji！）
-##   3. 支持禁用态点击拒绝反馈（on_reject_cb）：误触不可用技能时触发抖动 + 拒绝音效 + 顶部原因横幅
+## 创建 1080P 三渲二战术卡牌风四态技能按钮：
+##   1. Button.text 严格保持 2 个汉字（action_short_name），配 8~10px 纯黑漫画描边
+##   2. 左侧大幅三渲二立绘图标 IconTex（84px / 60px），与右侧文字严格分区，绝不重叠
+##   3. 右上元素耗气胶囊 CostBadge，底部元素发光状态带 SubBar（零 Emoji）
 static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Callable = Callable()) -> Button:
 	var col := action_color(act)
 	var b := Button.new()
 	b.name = "Action%d" % act
 	b.text = GameRules.action_short_name(act)
-	b.custom_minimum_size = Vector2(0, 152 if is_primary else 112)
+	b.custom_minimum_size = Vector2(0, 154 if is_primary else 114)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.clip_text = false
 	b.add_theme_font_override("font", default_font())
@@ -282,14 +338,12 @@ static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Ca
 	b.add_theme_constant_override("outline_size", 10 if is_primary else 8)
 	b.add_theme_color_override("font_outline_color", INK)
 
-	var rad := 26 if is_primary else 18
-	var lip := 10 if is_primary else 7
-	var norm_sb := button_style(col, rad, INK, 4, lip)
-	norm_sb.content_margin_bottom = 32 if is_primary else 26
-	norm_sb.content_margin_left = 54 if is_primary else 38
+	var norm_sb := skill_card_style(col, is_primary, true, false)
+	var hov_sb := skill_card_style(col.lightened(0.12), is_primary, true, false)
+	var prs_sb := skill_card_style(col.darkened(0.10), is_primary, true, true)
 	b.add_theme_stylebox_override("normal", norm_sb)
-	b.add_theme_stylebox_override("hover", button_style(col.lightened(0.12), rad, INK, 4, lip))
-	b.add_theme_stylebox_override("pressed", button_style(col.darkened(0.14), rad, INK, 4, 2))
+	b.add_theme_stylebox_override("hover", hov_sb)
+	b.add_theme_stylebox_override("pressed", prs_sb)
 	b.add_theme_stylebox_override("disabled", norm_sb)
 
 	# 1. 状态纹理层（冷却斜纹 / 未解锁暗纹 / 封盾红角 / 选中金框 —— 中心全透明，绝不挡字）
@@ -302,19 +356,19 @@ static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Ca
 	state_tex.visible = false
 	b.add_child(state_tex)
 
-	# 2. 左侧独立技能徽章（锚定在按钮左侧，与中央二字大名完全分开，绝不重叠！）
+	# 2. 左侧大幅三渲二技能立绘徽章（84×84 主键 / 60×60 进阶，在深曜石卡底上鲜明突出）
 	var icon_tex := TextureRect.new()
 	icon_tex.name = "IconTex"
 	icon_tex.texture = load_ui_texture(action_icon_name(act))
-	var ic_sz := 62 if is_primary else 42
+	var ic_sz := 84 if is_primary else 60
 	icon_tex.anchor_left = 0.0
 	icon_tex.anchor_right = 0.0
 	icon_tex.anchor_top = 0.5
 	icon_tex.anchor_bottom = 0.5
 	icon_tex.offset_left = 12 if is_primary else 8
 	icon_tex.offset_right = (12 if is_primary else 8) + ic_sz
-	icon_tex.offset_top = -ic_sz * 0.5 - 10
-	icon_tex.offset_bottom = ic_sz * 0.5 - 10
+	icon_tex.offset_top = -ic_sz * 0.5 - 12
+	icon_tex.offset_bottom = ic_sz * 0.5 - 12
 	icon_tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon_tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon_tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -333,7 +387,9 @@ static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Ca
 	cost_pill.offset_bottom = 36 if is_primary else 32
 	cost_pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var pill_sb := StyleBoxFlat.new()
-	pill_sb.bg_color = Color(0.035, 0.051, 0.090, 0.86)
+	pill_sb.bg_color = Color(0.035, 0.051, 0.090, 0.90)
+	pill_sb.border_color = col.lightened(0.20)
+	pill_sb.set_border_width_all(2)
 	pill_sb.set_corner_radius_all(10)
 	pill_sb.content_margin_left = 6
 	pill_sb.content_margin_right = 6
@@ -349,17 +405,17 @@ static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Ca
 	cost_lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cost_pill.add_child(cost_lab)
 
-	# 4. 底部高对比黑底状态彩带（彻底解决底部小字看不清的问题，且严禁使用 Emoji）
+	# 4. 底部元素发光状态彩带（既用元素色区分攻/防/气/特/益，又保证白字 100% 清晰，零 Emoji）
 	var sub_bar := PanelContainer.new()
 	sub_bar.name = "SubBar"
 	sub_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	sub_bar.offset_left = 4
-	sub_bar.offset_right = -4
-	sub_bar.offset_top = -36 if is_primary else -30
-	sub_bar.offset_bottom = -6
+	sub_bar.offset_left = 5
+	sub_bar.offset_right = -5
+	sub_bar.offset_top = -38 if is_primary else -32
+	sub_bar.offset_bottom = -7
 	sub_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var sub_sb := StyleBoxFlat.new()
-	sub_sb.bg_color = Color(0.035, 0.051, 0.090, 0.82)
+	sub_sb.bg_color = col.darkened(0.32)
 	sub_sb.set_corner_radius_all(10)
 	sub_sb.content_margin_left = 4
 	sub_sb.content_margin_right = 4
@@ -375,7 +431,7 @@ static func make_skill_slot(act: int, is_primary: bool = false, on_reject_cb: Ca
 	sub_lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	sub_bar.add_child(sub_lab)
 
-	# 5. 禁用态点击拒绝反馈（当按钮处于 CD / 未解锁 / 封盾 / 缺气 时被点击，给抖动+音效+原因）
+	# 5. 禁用态点击拒绝反馈
 	b.gui_input.connect(func(ev: InputEvent):
 		if not b.disabled:
 			return
@@ -403,9 +459,7 @@ static func next_bao_action(s: BattleState, who: int, current_picked: int) -> in
 	return GameRules.Action.BAO1
 
 
-## 刷新 1080P 三渲二四态技能按钮：
-##   关键设计：当技能本身可用 (usable=true) 但当前处于结算演出阶段 (can_lock=false) 时，
-##   按钮只锁定点击 (b.disabled = true) 但保持鲜亮原色样式，绝不每回合全盘变灰闪烁！
+## 刷新 1080P 三渲二四态技能按钮
 static func update_skill_slot(
 	b: Button,
 	s: BattleState,
@@ -432,15 +486,14 @@ static func update_skill_slot(
 	var icon_tex := b.get_node_or_null("IconTex") as TextureRect
 	if icon_tex != null:
 		icon_tex.texture = load_ui_texture(action_icon_name(display_act))
-		icon_tex.modulate = Color(1, 1, 1, 1.0 if usable else 0.52)
+		icon_tex.modulate = Color(1, 1, 1, 1.0 if usable else 0.45)
 
 	var state_tex := b.get_node_or_null("StateTex") as TextureRect
 	var col := action_color(display_act)
-	var rad := 26 if is_primary else 18
-	var lip := 10 if is_primary else 7
 
 	var cost_lab := b.find_child("CostBadge", true, false) as Label
 	var sub_lab := b.find_child("SubBadge", true, false) as Label
+	var sub_bar := b.get_node_or_null("SubBar") as PanelContainer
 
 	var cost := GameRules.qi_cost(display_act)
 	var cost_str := "0气"
@@ -450,7 +503,7 @@ static func update_skill_slot(
 		cost_str = "1盾"
 
 	var sub_str := action_hint(display_act)
-	var sub_col := Color(0.95, 0.98, 1.0)
+	var sub_col := Color(0.96, 0.98, 1.0)
 	var reject_reason := "正在结算本拍交锋，请稍候"
 	var overlay_png := ""
 
@@ -492,28 +545,37 @@ static func update_skill_slot(
 			if is_selected:
 				var cnt := GameRules.bao_count(display_act)
 				sub_str = "已选×%d 再点升阶" % cnt if cnt < s.bao_max() and int(s.qi[who]) >= cnt + 1 else "已锁×%d连发" % cnt
-				sub_col = Color(1.0, 0.92, 0.35)
+				sub_col = Color(1.0, 0.94, 0.40)
 				overlay_png = "state_selected_glow.png"
 			else:
 				sub_str = "连点1~3连"
 		elif is_selected:
 			sub_str = "已锁定"
-			sub_col = Color(1.0, 0.92, 0.35)
+			sub_col = Color(1.0, 0.94, 0.40)
 			overlay_png = "state_selected_glow.png"
 
 	b.set_meta("reject_reason", reject_reason)
 
-	# 样式构建：可用技能即使在结算锁定期（can_lock=false）也保持鲜明彩色，彻底告别每回合闪灰
-	var fill := (col.lightened(0.14) if is_selected else col) if usable else DISABLED_BG
-	var b_col := Color(1.0, 0.90, 0.25) if is_selected else INK
-	var b_w := 6 if is_selected else 4
-	var active_sb := button_style(fill, rad, b_col, b_w, lip if usable else 4)
-	active_sb.content_margin_bottom = 32 if is_primary else 26
-	active_sb.content_margin_left = 54 if is_primary else 38
+	var active_sb := skill_card_style(col, is_primary, usable, is_selected)
 	b.add_theme_stylebox_override("normal", active_sb)
 	b.add_theme_stylebox_override("disabled", active_sb)
 	b.add_theme_color_override("font_color", Color.WHITE if usable else DISABLED_FG)
 	b.add_theme_color_override("font_disabled_color", Color.WHITE if usable else DISABLED_FG)
+
+	if sub_bar != null:
+		var s_sb := StyleBoxFlat.new()
+		if is_selected:
+			s_sb.bg_color = Color(0.85, 0.55, 0.04, 0.95)
+		elif usable:
+			s_sb.bg_color = col.darkened(0.28)
+		else:
+			s_sb.bg_color = Color(0.04, 0.06, 0.11, 0.85)
+		s_sb.set_corner_radius_all(10)
+		s_sb.content_margin_left = 4
+		s_sb.content_margin_right = 4
+		s_sb.content_margin_top = 1
+		s_sb.content_margin_bottom = 1
+		sub_bar.add_theme_stylebox_override("panel", s_sb)
 
 	if state_tex != null:
 		if overlay_png != "":
@@ -524,8 +586,9 @@ static func update_skill_slot(
 
 	if cost_lab != null:
 		cost_lab.text = cost_str
-		var lack_qi := (unlocked and cost > int(s.qi[who]) and s.round > GameRules.OPENING_ROUND)
+		var lack_qi := unlocked and cost > int(s.qi[who]) and s.round > GameRules.OPENING_ROUND
 		cost_lab.add_theme_color_override("font_color", Color(1.0, 0.42, 0.42) if lack_qi else Color(1.0, 0.92, 0.45))
+
 	if sub_lab != null:
 		sub_lab.text = sub_str
 		sub_lab.add_theme_color_override("font_color", sub_col)

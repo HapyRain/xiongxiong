@@ -92,10 +92,11 @@ func _on_net_battle_started(_snap: Dictionary) -> void:
 
 func _build_ui() -> void:
 	var bg := ColorRect.new()
+	bg.name = "Bg"
 	bg.color = UiTheme.BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
-	UiTheme.add_stage_background(self, 0.18)
+	UiTheme.add_stage_background(self, 0.10)
 
 	# 右上角唯一「菜单」按钮（QualitySettings 已在对局场景自动隐藏常驻设置键，无重叠）
 	var top_menu := UiTheme.make_btn("菜单", UiTheme.BG_DARK_CARD, Color.WHITE, 28, 68)
@@ -565,11 +566,12 @@ func _on_session_restored(_snap: Dictionary) -> void:
 	_log("已从快照恢复")
 
 
-func _on_beat(_n: int) -> void:
+func _on_beat(n: int) -> void:
 	var clap_pitch := 1.0
 	if controller != null and controller.state != null:
 		clap_pitch = BattleTempo.clap_pitch(controller.state.round)
 	BattleFx.play_named_sfx(_audio_bank, "clap", 1.0, clap_pitch)
+	BattleFx.play_beat_pulse(_fx_layer, n, _me_duel_card, _you_duel_card)
 	if _status_label != null and controller != null and controller.window_open():
 		_status_label.text = "出招中"
 
@@ -625,6 +627,7 @@ func _on_pick(who: int, action: int) -> void:
 			UiTheme.action_color(action),
 			false
 		)
+		BattleFx.play_skill_select_vfx(_fx_layer, action, _me_duel_card)
 		_log("已选 %s" % GameRules.action_short_name(action))
 		_refresh_all()
 	else:
