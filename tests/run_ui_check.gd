@@ -261,6 +261,8 @@ func _check_screen() -> void:
 			_exp("main: 我方真实血气盾 HUD", _find_named(cs, "me_hp") != null and _find_named(cs, "me_qi") != null and _find_named(cs, "me_shield") != null)
 			_exp("main: MOBA 反馈横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
 			_exp("main: 1080P 三渲二全屏特效画布与炉石烧绳条就位", _find_named(cs, "CelStageCanvas") != null and _find_named(cs, "BurningRopeBar") != null and _find_named(cs, "StageBgTex") != null)
+			var post := _find_named(cs, "StagePostFxRect") as ColorRect
+			_exp("main: 屏幕后处理层就位且限高 1320（不模糊技能栏）", post != null and post.size.y <= 1320.0)
 			_exp("main: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 			_exp("main: 无【占位】残留", not flat.contains("【占位】"))
 			_exp("main: 技能按钮主文案严格为 2 个汉字", _all_action_buttons_two_chars(cs))
@@ -277,6 +279,8 @@ func _check_screen() -> void:
 				_exp("net_battle: lesson 技能按钮主文案严格 2 字", _all_action_buttons_two_chars(cs))
 				_exp("net_battle: MOBA 横幅与右下 5 轮战报栏就位", _find_named(cs, "MobaBanner") != null and _find_named(cs, "BattleTicker") != null)
 				_exp("net_battle: 1080P 三渲二全屏特效画布与炉石烧绳条就位", _find_named(cs, "CelStageCanvas") != null and _find_named(cs, "BurningRopeBar") != null and _find_named(cs, "StageBgTex") != null)
+				var post := _find_named(cs, "StagePostFxRect") as ColorRect
+				_exp("net_battle: 屏幕后处理层就位且限高 1320（不模糊技能栏）", post != null and post.size.y <= 1320.0)
 				_exp("net_battle: 右上角无重叠 SettingsButton", _settings_entry_hidden())
 				_exp("net_battle: lesson 无【占位】残留", not flat.contains("【占位】"))
 			else:
@@ -769,6 +773,9 @@ func _check_ticker_five_lines(ticker: PanelContainer) -> void:
 	_exp("ticker: clear_ticker 清空", (ticker.get_meta("history", []) as Array).is_empty())
 	_exp("audio: BGM 与新增音效可加载", BattleFx.load_wav_safe("bgm_battle.wav", true) != null and BattleFx.load_wav_safe("block_success.wav") != null)
 	_exp("ui_tex: 技能图标与状态遮罩可加载", UiTheme.load_ui_texture("icon_zan.png") != null and UiTheme.load_ui_texture("state_cd_overlay.png") != null)
+	# v3.3 红线：舞台特效禁止规则圆圈，全改不规则锯齿/折线闪电
+	var vfx_src := FileAccess.get_file_as_string("res://scripts/ui/battle_fx.gd")
+	_exp("vfx: battle_fx 无 draw_arc/draw_circle 规则圆圈", not vfx_src.is_empty() and not vfx_src.contains("draw_arc(") and not vfx_src.contains("draw_circle("))
 	# 交付包缺 fighter_*_stage.png，对撞战卡必须回退同源头像原画（删回退即红）
 	var card_me := BattleFx.make_duel_card("我", UiTheme.ACCENT)
 	var card_opp := BattleFx.make_duel_card("对手", UiTheme.DANGER)

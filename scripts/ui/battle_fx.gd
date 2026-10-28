@@ -19,23 +19,89 @@ const COLOR_DRAW := Color(0.478, 0.525, 0.604)
 static var _wav_cache: Dictionary = {}
 
 
-# ══════════════════════ 0. 全屏三渲二特效画布 (CelStageCanvas) ══════════════════════
+# ══════════════════════ 0. 全屏三渲二不规则动态特效画布与屏幕后处理着色器 (CelStageCanvas) ══════════════════════
+
+const POST_FX_SHADER_CODE := """
+shader_type canvas_item;
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform vec2 center_uv = vec2(0.5, 0.35);
+uniform float radial_blur : hint_range(0.0, 0.08) = 0.0;
+uniform float chroma_split : hint_range(0.0, 0.04) = 0.0;
+uniform float shock_radius : hint_range(0.0, 1.5) = 0.0;
+uniform float shock_amp : hint_range(0.0, 0.08) = 0.0;
+uniform float impact_invert : hint_range(0.0, 1.0) = 0.0;
+uniform vec4 tint_col : source_color = vec4(1.0, 0.85, 0.2, 1.0);
+
+void fragment() {
+	vec2 uv = SCREEN_UV;
+	vec2 to_c = uv - center_uv;
+	float dist = length(to_c);
+	vec2 dir = dist > 0.0001 ? to_c / dist : vec2(0.0);
+
+	if (shock_amp > 0.0005) {
+		float band = abs(dist - shock_radius);
+		if (band < 0.16) {
+			float w = (1.0 - band / 0.16);
+			uv += dir * sin(band * 42.0) * shock_amp * w * w;
+		}
+	}
+
+	vec3 col = vec3(0.0);
+	if (radial_blur > 0.0005 || chroma_split > 0.0005) {
+		for (int i = 0; i < 8; i++) {
+			float t = float(i) / 7.0;
+			vec2 s_uv = uv - to_c * (t * radial_blur);
+			float r = texture(screen_tex, s_uv + dir * chroma_split * t).r;
+			float g = texture(screen_tex, s_uv).g;
+			float b = texture(screen_tex, s_uv - dir * chroma_split * t).b;
+			col += vec3(r, g, b);
+		}
+		col /= 8.0;
+	} else {
+		col = texture(screen_tex, uv).rgb;
+	}
+
+	if (impact_invert > 0.01) {
+		float lum = dot(col, vec3(0.299, 0.587, 0.114));
+		float bw = step(0.45, lum);
+		vec3 inv_c = mix(vec3(0.03, 0.04, 0.08), tint_col.rgb, 1.0 - bw);
+		col = mix(col, inv_c, impact_invert);
+	}
+
+	COLOR = vec4(col, 1.0);
+}
+"""
+
 
 class CelStageCanvas extends Control:
 	var ambient_time: float = 0.0
 	var me_aura_col: Color = Color(0.961, 0.620, 0.043, 0.0)
-	var opp_aura_col: Color = Color(0.937, 0.267, 0.267, 0.45)
+	var opp_aura_col: Color = Color(0.937, 0.267, 0.267, 0.0)
 	var speed_lines_alpha: float = 0.0
 	var speed_lines_col: Color = Color(1.0, 0.85, 0.25)
 	var impact_flash_alpha: float = 0.0
 	var impact_flash_col: Color = Color.WHITE
-	var rings: Array = []        # [{pos, r, max_r, col, width, alpha, hex}]
-	var slashes: Array = []      # [{a, b, col, width, alpha}]
+	var rings: Array = []          # 不规则锯齿爆裂多边形 [{pos, r, max_r, col, width, alpha, hex, spikes}]
+	var slashes: Array = []        # 不规则狂暴刀光 [{a, b, col, width, alpha}]
+	var lightning_bolts: Array = [] # 中点位移不规则雷霆折线 [{pts, col, width, alpha}]
+	var cracks: Array = []          # 屏幕裂痕树 [{pts, col, width, alpha}]
+	var shards: Array = []          # 物理崩飞不规则碎片 [{pos, vel, rot, rvel, poly, col, alpha}]
 	var vortex_alpha: float = 0.0
 	var vortex_pos: Vector2 = Vector2(540, 620)
 	var vortex_rot: float = 0.0
 	var vortex_scale: float = 1.0
 	var vortex_col: Color = Color(0.62, 0.32, 1.0)
+
+	# 屏幕空间径向模糊 / 色差撕裂 / 空气冲击波 / 黑白顿帧参数
+	var post_rect: ColorRect = null
+	var post_mat: ShaderMaterial = null
+	var blur_strength: float = 0.0
+	var chroma_strength: float = 0.0
+	var shock_radius: float = 0.0
+	var shock_amp: float = 0.0
+	var impact_invert: float = 0.0
+	var post_center_uv: Vector2 = Vector2(0.5, 0.34)
+	var post_tint_col: Color = Color(1.0, 0.85, 0.2)
 
 	func _ready() -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -43,36 +109,77 @@ class CelStageCanvas extends Control:
 
 	func _process(delta: float) -> void:
 		ambient_time += delta
-		var dirty := true
 		if speed_lines_alpha > 0.005:
-			speed_lines_alpha = maxf(0.0, speed_lines_alpha - delta * 2.2)
-			dirty = true
+			speed_lines_alpha = maxf(0.0, speed_lines_alpha - delta * 2.1)
 		if impact_flash_alpha > 0.005:
-			impact_flash_alpha = maxf(0.0, impact_flash_alpha - delta * 6.5)
-			dirty = true
+			impact_flash_alpha = maxf(0.0, impact_flash_alpha - delta * 6.0)
 		if vortex_alpha > 0.005:
-			vortex_rot += delta * 9.5
+			vortex_rot += delta * 10.5
 			vortex_alpha = maxf(0.0, vortex_alpha - delta * 1.65)
-			dirty = true
+		if blur_strength > 0.0005:
+			blur_strength = maxf(0.0, blur_strength - delta * 0.085)
+		if chroma_strength > 0.0005:
+			chroma_strength = maxf(0.0, chroma_strength - delta * 0.045)
+		if shock_amp > 0.0005:
+			shock_radius += delta * 1.35
+			shock_amp = maxf(0.0, shock_amp - delta * 0.075)
+		if impact_invert > 0.01:
+			impact_invert = maxf(0.0, impact_invert - delta * 9.5)
+
+		if post_mat != null and post_rect != null:
+			var active_post := (blur_strength > 0.001 or chroma_strength > 0.001 or shock_amp > 0.001 or impact_invert > 0.01)
+			post_rect.visible = active_post
+			if active_post:
+				post_mat.set_shader_parameter("center_uv", post_center_uv)
+				post_mat.set_shader_parameter("radial_blur", blur_strength)
+				post_mat.set_shader_parameter("chroma_split", chroma_strength)
+				post_mat.set_shader_parameter("shock_radius", shock_radius)
+				post_mat.set_shader_parameter("shock_amp", shock_amp)
+				post_mat.set_shader_parameter("impact_invert", impact_invert)
+				post_mat.set_shader_parameter("tint_col", post_tint_col)
+
 		for i in range(rings.size() - 1, -1, -1):
 			var d: Dictionary = rings[i]
-			d["r"] = float(d["r"]) + (float(d["max_r"]) - float(d["r"])) * minf(1.0, delta * 9.0)
-			d["alpha"] = float(d["alpha"]) - delta * 2.4
+			d["r"] = float(d["r"]) + (float(d["max_r"]) - float(d["r"])) * minf(1.0, delta * 9.5)
+			d["alpha"] = float(d["alpha"]) - delta * 2.2
 			if float(d["alpha"]) <= 0.02:
 				rings.remove_at(i)
 			else:
 				rings[i] = d
-			dirty = true
 		for i in range(slashes.size() - 1, -1, -1):
 			var s: Dictionary = slashes[i]
-			s["alpha"] = float(s["alpha"]) - delta * 3.2
+			s["alpha"] = float(s["alpha"]) - delta * 3.0
 			if float(s["alpha"]) <= 0.02:
 				slashes.remove_at(i)
 			else:
 				slashes[i] = s
-			dirty = true
-		if dirty:
-			queue_redraw()
+		for i in range(lightning_bolts.size() - 1, -1, -1):
+			var lb: Dictionary = lightning_bolts[i]
+			lb["alpha"] = float(lb["alpha"]) - delta * 3.6
+			if float(lb["alpha"]) <= 0.02:
+				lightning_bolts.remove_at(i)
+			else:
+				lightning_bolts[i] = lb
+		for i in range(cracks.size() - 1, -1, -1):
+			var cr: Dictionary = cracks[i]
+			cr["alpha"] = float(cr["alpha"]) - delta * 1.15
+			if float(cr["alpha"]) <= 0.02:
+				cracks.remove_at(i)
+			else:
+				cracks[i] = cr
+		for i in range(shards.size() - 1, -1, -1):
+			var sh: Dictionary = shards[i]
+			var v: Vector2 = sh["vel"]
+			v.y += 1100.0 * delta
+			sh["vel"] = v
+			sh["pos"] = (sh["pos"] as Vector2) + v * delta
+			sh["rot"] = float(sh["rot"]) + float(sh["rvel"]) * delta
+			sh["alpha"] = float(sh["alpha"]) - delta * 1.65
+			if float(sh["alpha"]) <= 0.02:
+				shards.remove_at(i)
+			else:
+				shards[i] = sh
+		queue_redraw()
 
 	func trigger_speed_lines(col: Color, intensity: float = 0.92) -> void:
 		speed_lines_col = col
@@ -84,15 +191,109 @@ class CelStageCanvas extends Control:
 		impact_flash_alpha = clampf(alpha, 0.0, 0.85)
 		queue_redraw()
 
+	## 触发屏幕空间径向动态模糊 + 色差撕裂 + 空气扭曲波（爆气/大羊/终极技核心反馈）
+	func trigger_screen_distortion(world_pos: Vector2, blur: float = 0.052, chroma: float = 0.020, s_amp: float = 0.042, invert: float = 0.0, tint: Color = Color(1.0, 0.85, 0.2)) -> void:
+		var sz := size if size.x > 100 else Vector2(1080, 1920)
+		post_center_uv = Vector2(clampf(world_pos.x / sz.x, 0.1, 0.9), clampf(world_pos.y / sz.y, 0.1, 0.7))
+		blur_strength = maxf(blur_strength, blur)
+		chroma_strength = maxf(chroma_strength, chroma)
+		shock_radius = 0.04
+		shock_amp = maxf(shock_amp, s_amp)
+		impact_invert = maxf(impact_invert, invert)
+		post_tint_col = tint
+
+	## 添加不规则锯齿多边形爆裂冲击（彻底废除规则圆环，每次爆裂均生成随机不对称尖刺）
 	func add_cel_ring(pos: Vector2, start_r: float, max_r: float, col: Color, width: float = 14.0, is_hex: bool = false) -> void:
+		var n_pts := 18 if is_hex else 24
+		var spikes := PackedFloat32Array()
+		for i in n_pts:
+			if i % 2 == 0:
+				spikes.append(randf_range(1.02, 1.42))
+			else:
+				spikes.append(randf_range(0.46, 0.78))
 		rings.append({
 			"pos": pos, "r": start_r, "max_r": max_r,
 			"col": col, "width": width, "alpha": 1.0, "hex": is_hex,
+			"spikes": spikes, "rot": randf_range(0.0, TAU),
 		})
 		queue_redraw()
 
 	func add_cel_slash(a: Vector2, b: Vector2, col: Color, width: float = 22.0) -> void:
 		slashes.append({"a": a, "b": b, "col": col, "width": width, "alpha": 1.0})
+		queue_redraw()
+
+	## 添加中点位移不规则狂暴雷电折线（含分叉支流）
+	func add_jagged_lightning(a: Vector2, b: Vector2, col: Color, width: float = 16.0, jitter: float = 78.0) -> void:
+		var pts := PackedVector2Array()
+		var segs := 9
+		var dir := (b - a)
+		var nrm := Vector2(-dir.y, dir.x).normalized()
+		pts.append(a)
+		for i in range(1, segs):
+			var t := float(i) / float(segs)
+			var env := sin(t * PI)
+			var off := randf_range(-jitter, jitter) * env
+			pts.append(a + dir * t + nrm * off)
+		pts.append(b)
+		lightning_bolts.append({"pts": pts, "col": col, "width": width, "alpha": 1.0})
+		# 随机生成 2 条分叉支流闪电
+		for _k in 2:
+			var idx := randi_range(2, segs - 2)
+			var fork_start: Vector2 = pts[idx]
+			var fork_end := fork_start + dir.normalized().rotated(randf_range(-0.85, 0.85)) * randf_range(110.0, 240.0)
+			var f_pts := PackedVector2Array([
+				fork_start,
+				(fork_start + fork_end) * 0.5 + nrm * randf_range(-38.0, 38.0),
+				fork_end,
+			])
+			lightning_bolts.append({"pts": f_pts, "col": col.lightened(0.25), "width": width * 0.6, "alpha": 0.92})
+		queue_redraw()
+
+	## 添加不规则屏幕碎裂纹（小羊：局部蛛网裂痕；大羊/终极：横贯全屏的巨型地壳大裂痕）
+	func add_screen_crack(origin: Vector2, is_huge: bool, col: Color) -> void:
+		var n_branches := 22 if is_huge else 11
+		var max_len := 560.0 if is_huge else 250.0
+		for i in n_branches:
+			var base_ang := TAU * float(i) / float(n_branches) + randf_range(-0.18, 0.18)
+			var cur := origin
+			var pts := PackedVector2Array([cur])
+			var steps := 6 if is_huge else 4
+			for s in steps:
+				var seg_len := (max_len / float(steps)) * randf_range(0.65, 1.35)
+				var ang := base_ang + randf_range(-0.42, 0.42)
+				cur += Vector2(cos(ang), sin(ang)) * seg_len
+				cur.y = clampf(cur.y, 20.0, 1280.0)
+				pts.append(cur)
+			cracks.append({
+				"pts": pts,
+				"col": col,
+				"width": (18.0 if is_huge else 11.0) * randf_range(0.75, 1.25),
+				"alpha": 1.0,
+			})
+		spawn_shatter_shards(origin, 26 if is_huge else 14, col, 1.45 if is_huge else 1.0)
+		queue_redraw()
+
+	## 喷射不规则多边形碎晶/碎石块
+	func spawn_shatter_shards(origin: Vector2, count: int, col: Color, speed_scale: float = 1.0) -> void:
+		for i in count:
+			var ang := randf_range(0.0, TAU)
+			var spd := randf_range(240.0, 880.0) * speed_scale
+			var v_cnt := randi_range(3, 5)
+			var poly := PackedVector2Array()
+			var base_r := randf_range(12.0, 32.0) * speed_scale
+			for v_idx in v_cnt:
+				var va := TAU * float(v_idx) / float(v_cnt) + randf_range(-0.25, 0.25)
+				var vr := base_r * randf_range(0.55, 1.35)
+				poly.append(Vector2(cos(va) * vr, sin(va) * vr))
+			shards.append({
+				"pos": origin + Vector2(cos(ang), sin(ang)) * randf_range(8.0, 36.0),
+				"vel": Vector2(cos(ang) * spd, sin(ang) * spd - randf_range(120.0, 360.0)),
+				"rot": randf_range(0.0, TAU),
+				"rvel": randf_range(-14.0, 14.0),
+				"poly": poly,
+				"col": col.lightened(randf_range(0.0, 0.38)),
+				"alpha": 1.0,
+			})
 		queue_redraw()
 
 	func trigger_vortex(pos: Vector2, col: Color, sc: float = 1.0) -> void:
@@ -107,104 +308,117 @@ class CelStageCanvas extends Control:
 		var stage_h := minf(sz.y, 1320.0)
 		var center := Vector2(sz.x * 0.5, stage_h * 0.50)
 
-		# 0. 常驻 60FPS 三渲二天台法阵呼吸光环、浮空能量火星与角色气场（告别选招期画面死寂）
-		var pulse := 0.5 + 0.5 * sin(ambient_time * 3.4)
-		var magic_r1 := 215.0 + pulse * 12.0
-		var magic_r2 := 152.0 - pulse * 8.0
-		draw_arc(center, magic_r1, 0.0, TAU, 48, Color(0.04, 0.06, 0.11, 0.38), 10.0)
-		draw_arc(center, magic_r1, 0.0, TAU, 48, Color(0.06, 0.68, 0.96, 0.24 + pulse * 0.12), 4.0)
-		draw_arc(center, magic_r2, 0.0, TAU, 36, Color(0.98, 0.68, 0.12, 0.22 + pulse * 0.12), 3.5)
-		for k in 8:
-			var ang_m := ambient_time * 0.45 + float(k) * TAU / 8.0
-			var p_in := center + Vector2(cos(ang_m), sin(ang_m)) * magic_r2
-			var p_out := center + Vector2(cos(ang_m), sin(ang_m)) * magic_r1
-			draw_line(p_in, p_out, Color(1.0, 0.88, 0.38, 0.22), 3.0)
+		# 0. 彻底废除那 3 个丑陋的闪烁圆圈！改用 12 道不规则斜掠疾风火种流线点缀天台空气感
+		for idx in 12:
+			var seed_f := float(idx) * 2.17
+			var cycle := fmod(ambient_time * (75.0 + float(idx % 4) * 22.0) + float(idx) * 90.0, 920.0)
+			var prog := clampf(cycle / 920.0, 0.0, 1.0)
+			var px := fmod(120.0 + float(idx) * 86.0 + cycle * 0.32, sz.x - 100.0) + 50.0
+			var py := 1060.0 - cycle * 0.82 + sin(ambient_time * 2.5 + seed_f) * 18.0
+			var ea := sin(prog * PI) * 0.58
+			var streak_dir := Vector2(0.42, -0.91)
+			var streak_nrm := Vector2(0.91, 0.42)
+			var slen := 18.0 + float(idx % 3) * 9.0
+			var sw := 3.5 + float(idx % 2) * 2.0
+			var p_head := Vector2(px, py) + streak_dir * slen
+			var p_tail := Vector2(px, py) - streak_dir * slen
+			var s_poly := PackedVector2Array([
+				p_head,
+				Vector2(px, py) + streak_nrm * sw,
+				p_tail,
+				Vector2(px, py) - streak_nrm * sw,
+			])
+			var ecol := Color(1.0, 0.76, 0.22, ea) if (idx % 2 == 0) else Color(0.28, 0.86, 1.0, ea)
+			draw_colored_polygon(s_poly, ecol)
 
-		# 角色双侧三渲二蓄力气场光晕
-		var left_pos := Vector2(sz.x * 0.27, stage_h * 0.50)
-		var right_pos := Vector2(sz.x * 0.73, stage_h * 0.50)
-		if me_aura_col.a > 0.02:
-			var mr := 148.0 + 10.0 * sin(ambient_time * 5.2)
-			draw_arc(left_pos, mr, 0.0, TAU, 36, Color(0.04, 0.06, 0.11, me_aura_col.a * 0.65), 12.0)
-			draw_arc(left_pos, mr, 0.0, TAU, 36, Color(me_aura_col.r, me_aura_col.g, me_aura_col.b, me_aura_col.a * 0.55), 6.0)
-		if opp_aura_col.a > 0.02:
-			var orad := 142.0 + 8.0 * cos(ambient_time * 4.6)
-			draw_arc(right_pos, orad, 0.0, TAU, 36, Color(0.04, 0.06, 0.11, opp_aura_col.a * 0.50), 10.0)
-			draw_arc(right_pos, orad, 0.0, TAU, 36, Color(opp_aura_col.r, opp_aura_col.g, opp_aura_col.b, opp_aura_col.a * 0.40), 5.0)
-
-		# 18 颗上浮三渲二漫画描边能量火种
-		for idx in 18:
-			var seed_f := float(idx) * 1.73
-			var px := fmod(80.0 + float(idx) * 56.0 + sin(ambient_time * 1.4 + seed_f) * 34.0, sz.x - 120.0) + 60.0
-			var cycle := fmod(ambient_time * (48.0 + float(idx % 5) * 14.0) + float(idx) * 65.0, 760.0)
-			var py := 1040.0 - cycle
-			var ea := sin(clampf(cycle / 760.0, 0.0, 1.0) * PI) * 0.65
-			var er := 5.0 + float(idx % 3) * 2.2
-			var ecol := Color(1.0, 0.78, 0.22, ea) if (idx % 2 == 0) else Color(0.22, 0.82, 1.0, ea)
-			draw_circle(Vector2(px, py), er + 2.5, Color(0.04, 0.06, 0.11, ea * 0.85))
-			draw_circle(Vector2(px, py), er, ecol)
-
-		# 1. Impact Frame 瞬态高对比闪光（仅覆盖上方特效舞台区 y=0..stage_h，绝不干扰底部技能盘）
+		# 1. Impact Frame 瞬态高对比闪光（仅覆盖上方特效舞台区 y=0..stage_h）
 		if impact_flash_alpha > 0.01:
-			draw_rect(Rect2(0, 0, sz.x, stage_h), Color(impact_flash_col.r, impact_flash_col.g, impact_flash_col.b, impact_flash_alpha * 0.45), true)
+			draw_rect(Rect2(0, 0, sz.x, stage_h), Color(impact_flash_col.r, impact_flash_col.g, impact_flash_col.b, impact_flash_alpha * 0.48), true)
 
-		# 2. 全屏三渲二放射漫画速度线（围绕上方舞台四周向中心刺入）
+		# 2. 全屏三渲二不规则放射漫画速度线（长短粗细随机错落，极具张力）
 		if speed_lines_alpha > 0.01:
-			var n_spikes := 44
+			var n_spikes := 52
 			for i in n_spikes:
-				var ang := TAU * float(i) / float(n_spikes)
-				var outer_r := 760.0
-				var inner_r := 280.0 + float((i * 37) % 140)
-				var half_w := 0.022 if (i % 2 == 0) else 0.012
+				var ang := TAU * float(i) / float(n_spikes) + sin(float(i) * 3.7) * 0.025
+				var outer_r := 880.0
+				var inner_r := 190.0 + float((i * 61) % 240)
+				var half_w := 0.028 if (i % 3 == 0) else (0.016 if (i % 2 == 0) else 0.009)
 				var p0 := center + Vector2(cos(ang - half_w), sin(ang - half_w)) * outer_r
 				var p1 := center + Vector2(cos(ang + half_w), sin(ang + half_w)) * outer_r
 				var tip := center + Vector2(cos(ang), sin(ang)) * inner_r
 				p0.y = clampf(p0.y, 0.0, stage_h)
 				p1.y = clampf(p1.y, 0.0, stage_h)
 				tip.y = clampf(tip.y, 0.0, stage_h)
-				var ink_c := Color(0.04, 0.06, 0.11, speed_lines_alpha * 0.78)
-				var fill_c := Color(speed_lines_col.r, speed_lines_col.g, speed_lines_col.b, speed_lines_alpha * 0.85)
+				var ink_c := Color(0.03, 0.05, 0.10, speed_lines_alpha * 0.84)
+				var fill_c := Color(speed_lines_col.r, speed_lines_col.g, speed_lines_col.b, speed_lines_alpha * 0.90)
 				draw_colored_polygon(PackedVector2Array([p0, p1, tip]), ink_c if (i % 3 == 0) else fill_c)
 
-		# 3. 吸收黑洞三渲二螺旋引力场
+		# 3. 吸收黑洞不规则撕裂引力旋臂（无规则圆圈，纯锯齿黑洞裂隙与狂暴旋臂）
 		if vortex_alpha > 0.01:
-			var vr := 220.0 * vortex_scale
-			draw_circle(vortex_pos, vr * 0.85, Color(0.04, 0.02, 0.10, vortex_alpha * 0.88))
-			draw_arc(vortex_pos, vr * 0.88, 0.0, TAU, 48, Color(0.04, 0.06, 0.11, vortex_alpha), 14.0)
-			draw_arc(vortex_pos, vr * 0.82, 0.0, TAU, 48, Color(vortex_col.r, vortex_col.g, vortex_col.b, vortex_alpha), 8.0)
-			for arm in 6:
-				var base_a := vortex_rot + float(arm) * TAU / 6.0
+			var vr := 260.0 * vortex_scale
+			var core_poly := PackedVector2Array()
+			for k in 20:
+				var ca := vortex_rot * -1.4 + float(k) * TAU / 20.0
+				var cr := vr * (0.48 if k % 2 == 0 else 0.30)
+				core_poly.append(vortex_pos + Vector2(cos(ca), sin(ca)) * cr)
+			draw_colored_polygon(core_poly, Color(0.03, 0.01, 0.08, vortex_alpha * 0.94))
+			for arm in 7:
+				var base_a := vortex_rot + float(arm) * TAU / 7.0
 				var pts := PackedVector2Array()
 				for step in 12:
 					var t := float(step) / 11.0
-					var rr := lerpf(24.0, vr * 1.15, t)
-					var aa := base_a + t * 2.4
+					var rr := lerpf(22.0, vr * 1.25, t) + sin(t * 18.0 + float(arm)) * 16.0
+					var aa := base_a + t * 2.65
 					pts.append(vortex_pos + Vector2(cos(aa), sin(aa)) * rr)
-				draw_polyline(pts, Color(0.04, 0.06, 0.11, vortex_alpha * 0.95), 14.0)
-				draw_polyline(pts, Color(vortex_col.lightened(0.35).r, vortex_col.lightened(0.35).g, vortex_col.lightened(0.35).b, vortex_alpha), 7.0)
+				draw_polyline(pts, Color(0.03, 0.05, 0.10, vortex_alpha * 0.95), 16.0)
+				draw_polyline(pts, Color(vortex_col.lightened(0.35).r, vortex_col.lightened(0.35).g, vortex_col.lightened(0.35).b, vortex_alpha), 8.0)
 
-		# 4. 三渲二粗黑描边扩环与六边圣盾波
+		# 4. 不规则锯齿爆裂冲击多边形（替代原先单调的圆环！）
 		for d: Dictionary in rings:
 			var pos: Vector2 = d["pos"]
 			var r: float = float(d["r"])
 			var a: float = clampf(float(d["alpha"]), 0.0, 1.0)
 			var col: Color = d["col"]
 			var w: float = float(d["width"])
-			var is_hex: bool = bool(d["hex"])
-			var ink := Color(0.04, 0.06, 0.11, a * 0.95)
-			var fg := Color(col.r, col.g, col.b, a)
-			if is_hex:
-				var hex_pts := PackedVector2Array()
-				for k in 7:
-					var ang := float(k) * TAU / 6.0 - PI / 6.0
-					hex_pts.append(pos + Vector2(cos(ang), sin(ang)) * r)
-				draw_polyline(hex_pts, ink, w + 10.0)
-				draw_polyline(hex_pts, fg, w)
-			else:
-				draw_arc(pos, r, 0.0, TAU, 56, ink, w + 10.0)
-				draw_arc(pos, r, 0.0, TAU, 56, fg, w)
+			var spikes: PackedFloat32Array = d.get("spikes", PackedFloat32Array())
+			var base_rot: float = float(d.get("rot", 0.0))
+			var n_s := spikes.size()
+			if n_s >= 6:
+				var poly_pts := PackedVector2Array()
+				for k in range(n_s + 1):
+					var idx_s := k % n_s
+					var ang := base_rot + float(idx_s) * TAU / float(n_s)
+					var sr := r * spikes[idx_s]
+					var pt := pos + Vector2(cos(ang), sin(ang)) * sr
+					pt.y = clampf(pt.y, 0.0, stage_h)
+					poly_pts.append(pt)
+				draw_polyline(poly_pts, Color(0.03, 0.05, 0.10, a * 0.95), w + 10.0)
+				draw_polyline(poly_pts, Color(col.r, col.g, col.b, a), w)
+				draw_polyline(poly_pts, Color(1.0, 1.0, 1.0, a * 0.78), maxf(2.0, w * 0.35))
 
-		# 5. 三渲二漫画刀光 / 裂痕斩击线
+		# 5. 屏幕裂痕树（小羊蛛网裂痕 / 大羊与终极技全屏地壳崩裂）
+		for cr: Dictionary in cracks:
+			var c_pts: PackedVector2Array = cr["pts"]
+			var ca2: float = clampf(float(cr["alpha"]), 0.0, 1.0)
+			var c_col: Color = cr["col"]
+			var cw: float = float(cr["width"])
+			if c_pts.size() >= 2:
+				draw_polyline(c_pts, Color(0.02, 0.03, 0.07, ca2 * 0.96), cw + 8.0)
+				draw_polyline(c_pts, Color(c_col.r, c_col.g, c_col.b, ca2 * 0.95), cw)
+				draw_polyline(c_pts, Color(1.0, 0.98, 0.92, ca2 * 0.85), maxf(2.0, cw * 0.35))
+
+		# 6. 中点位移不规则雷霆折线
+		for lb: Dictionary in lightning_bolts:
+			var l_pts: PackedVector2Array = lb["pts"]
+			var la: float = clampf(float(lb["alpha"]), 0.0, 1.0)
+			var l_col: Color = lb["col"]
+			var lw: float = float(lb["width"])
+			if l_pts.size() >= 2:
+				draw_polyline(l_pts, Color(0.03, 0.05, 0.10, la * 0.95), lw + 10.0)
+				draw_polyline(l_pts, Color(l_col.r, l_col.g, l_col.b, la), lw)
+				draw_polyline(l_pts, Color(1.0, 1.0, 1.0, la * 0.92), maxf(2.5, lw * 0.38))
+
+		# 7. 三渲二不规则狂暴刀光 / 撕裂斩击
 		for s: Dictionary in slashes:
 			var pa: Vector2 = s["a"]
 			var pb: Vector2 = s["b"]
@@ -213,11 +427,30 @@ class CelStageCanvas extends Control:
 			var w2: float = float(s["width"]) * a2
 			var dir := (pb - pa).normalized()
 			var nrm := Vector2(-dir.y, dir.x) * w2
-			var mid := (pa + pb) * 0.5
-			var poly := PackedVector2Array([pa, mid + nrm, pb, mid - nrm])
-			draw_colored_polygon(poly, Color(0.04, 0.06, 0.11, a2))
-			var poly_in := PackedVector2Array([pa, mid + nrm * 0.55, pb, mid - nrm * 0.55])
+			var mid := (pa + pb) * 0.5 + nrm * 0.22
+			var poly := PackedVector2Array([pa, mid + nrm, pb, mid - nrm * 0.85])
+			draw_colored_polygon(poly, Color(0.03, 0.05, 0.10, a2))
+			var poly_in := PackedVector2Array([pa, mid + nrm * 0.55, pb, mid - nrm * 0.45])
 			draw_colored_polygon(poly_in, Color(col2.r, col2.g, col2.b, a2))
+
+		# 8. 物理崩飞的不规则多边形碎晶与岩石残片
+		for sh: Dictionary in shards:
+			var spos: Vector2 = sh["pos"]
+			if spos.y > stage_h:
+				continue
+			var srot: float = float(sh["rot"])
+			var sa: float = clampf(float(sh["alpha"]), 0.0, 1.0)
+			var scol: Color = sh["col"]
+			var base_poly: PackedVector2Array = sh["poly"]
+			var xform_poly := PackedVector2Array()
+			var cs := cos(srot)
+			var sn := sin(srot)
+			for pt in base_poly:
+				xform_poly.append(spos + Vector2(pt.x * cs - pt.y * sn, pt.x * sn + pt.y * cs))
+			if xform_poly.size() >= 3:
+				draw_colored_polygon(xform_poly, Color(scol.r, scol.g, scol.b, sa))
+				xform_poly.append(xform_poly[0])
+				draw_polyline(xform_poly, Color(0.03, 0.05, 0.10, sa * 0.95), 4.5)
 
 
 # ══════════════════════ 1. 音频引擎（三层兜底：裸 WAV 字节 -> ResourceLoader -> 内存级 PCM 合成器） ══════════════════════
@@ -965,7 +1198,7 @@ static func update_duel_card(card: PanelContainer, act: int, placeholder_text: S
 			icon.visible = false
 
 
-## 选招阶段点击任意技能按钮时的即时三渲二舞台蓄力动效（无需等到回合结算，点下即爆气/开盾/旋涡！）
+## 选招阶段点击任意技能按钮时的即时不规则舞台蓄力动效（零规则圆圈，点下即爆闪电/碎晶/龙卷！）
 static func play_skill_select_vfx(fx_host: Control, act: int, me_duel_card: PanelContainer = null) -> void:
 	if fx_host == null or not is_instance_valid(fx_host):
 		return
@@ -976,7 +1209,7 @@ static func play_skill_select_vfx(fx_host: Control, act: int, me_duel_card: Pane
 	if me_duel_card != null and is_instance_valid(me_duel_card):
 		left_pos = me_duel_card.get_global_rect().get_center()
 		me_duel_card.pivot_offset = me_duel_card.size * 0.5
-		me_duel_card.scale = Vector2(1.12, 1.12)
+		me_duel_card.scale = Vector2(1.14, 1.14)
 		var tw := me_duel_card.create_tween()
 		tw.tween_property(me_duel_card, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
@@ -985,38 +1218,35 @@ static func play_skill_select_vfx(fx_host: Control, act: int, me_duel_card: Pane
 	cel.me_aura_col = Color(col.r, col.g, col.b, 0.95)
 	var cat := GameRules.action_category(act)
 	if cat == "defense":
-		cel.add_cel_ring(left_pos, 40.0, 250.0, UiTheme.SHIELD, 14.0, true)
-		cel.add_cel_ring(left_pos, 20.0, 180.0, UiTheme.ACCENT, 8.0, true)
+		cel.add_cel_ring(left_pos, 48.0, 240.0, UiTheme.SHIELD, 12.0, true)
+		cel.spawn_shatter_shards(left_pos, 8, UiTheme.SHIELD, 0.75)
 	elif act == GameRules.Action.XI_SHOU:
-		cel.trigger_vortex(left_pos, UiTheme.SPECIAL, 0.68)
-		cel.add_cel_ring(left_pos, 180.0, 40.0, UiTheme.SPECIAL, 10.0, false)
+		cel.trigger_vortex(left_pos, UiTheme.SPECIAL, 0.62)
+		cel.add_jagged_lightning(left_pos + Vector2(-140, -90), left_pos + Vector2(140, 90), UiTheme.SPECIAL, 10.0, 48.0)
+	elif act == GameRules.Action.BAO_QI:
+		cel.trigger_screen_distortion(left_pos, 0.032, 0.012, 0.025, 0.0, UiTheme.SPECIAL)
+		cel.add_jagged_lightning(left_pos + Vector2(0, 140), left_pos + Vector2(0, -160), UiTheme.ACCENT, 14.0, 56.0)
+		cel.spawn_shatter_shards(left_pos, 10, UiTheme.ACCENT, 0.85)
 	elif cat == "attack":
-		cel.trigger_speed_lines(col, 0.48)
-		cel.add_cel_ring(left_pos, 36.0, 260.0, col, 14.0, false)
-		cel.add_cel_slash(left_pos + Vector2(-130, 90), left_pos + Vector2(130, -90), col.lightened(0.25), 18.0)
+		cel.trigger_speed_lines(col, 0.42)
+		cel.add_jagged_lightning(left_pos + Vector2(-150, 100), left_pos + Vector2(160, -110), col.lightened(0.20), 12.0, 52.0)
+		cel.spawn_shatter_shards(left_pos, 9, col, 0.80)
 	else:
-		cel.add_cel_ring(left_pos, 32.0, 230.0, col, 12.0, false)
-		cel.add_cel_ring(left_pos, 60.0, 290.0, Color(1.0, 0.94, 0.55), 8.0, false)
+		cel.add_jagged_lightning(left_pos + Vector2(-60, 130), left_pos + Vector2(60, -140), col, 11.0, 42.0)
+		cel.spawn_shatter_shards(left_pos, 8, col, 0.70)
 
 
-## 节拍器每拍同步舞台脉冲（让两张角色立绘战卡与天台法阵随拍点呼吸律动）
-static func play_beat_pulse(fx_host: Control, beat_no: int, me_duel_card: PanelContainer = null, opp_duel_card: PanelContainer = null) -> void:
-	if fx_host != null and is_instance_valid(fx_host):
-		var cel := ensure_cel_canvas(fx_host)
-		if cel != null:
-			var sz := fx_host.size if fx_host.size.x > 100 else Vector2(1080, 1920)
-			var center := Vector2(sz.x * 0.5, minf(sz.y, 1320.0) * 0.50)
-			var b_col := UiTheme.SHIELD if beat_no == 1 else UiTheme.ACCENT
-			cel.add_cel_ring(center, 120.0, 320.0, b_col, 8.0, beat_no == 2)
+## 节拍器每拍同步舞台律动（仅让两张角色战卡弹性律动，绝不在画面中央画丑陋的圆圈！）
+static func play_beat_pulse(_fx_host: Control, _beat_no: int, me_duel_card: PanelContainer = null, opp_duel_card: PanelContainer = null) -> void:
 	for card in [me_duel_card, opp_duel_card]:
 		if card != null and is_instance_valid(card):
 			card.pivot_offset = card.size * 0.5
-			card.scale = Vector2(1.04, 1.04)
+			card.scale = Vector2(1.045, 0.965)
 			var tw: Tween = card.create_tween()
-			tw.tween_property(card, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			tw.tween_property(card, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
-# ══════════════════════ 4. 1080P 全屏三渲二交锋导演系统（零冗余飘字，全舞台漫画冲击） ══════════════════════
+# ══════════════════════ 4. 1080P 全屏三渲二不规则动态交锋导演系统（一招一式一结果专属动画） ══════════════════════
 
 static func ensure_cel_canvas(fx_host: Control) -> CelStageCanvas:
 	if fx_host == null:
@@ -1027,6 +1257,28 @@ static func ensure_cel_canvas(fx_host: Control) -> CelStageCanvas:
 		c.name = "CelStageCanvas"
 		fx_host.add_child(c)
 		fx_host.move_child(c, 0)
+
+		# 挂载屏幕空间后处理节点（BackBufferCopy + StagePostFxRect，严格限定在 y=0..1320 舞台区，绝不模糊底部技能栏）
+		var bbc := BackBufferCopy.new()
+		bbc.name = "StageBackBuffer"
+		bbc.copy_mode = BackBufferCopy.COPY_MODE_VIEWPORT
+		fx_host.add_child(bbc)
+
+		var post := ColorRect.new()
+		post.name = "StagePostFxRect"
+		post.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		post.position = Vector2.ZERO
+		post.size = Vector2(1080, 1320)
+		post.visible = false
+		var sh := Shader.new()
+		sh.code = POST_FX_SHADER_CODE
+		var mat := ShaderMaterial.new()
+		mat.shader = sh
+		post.material = mat
+		fx_host.add_child(post)
+
+		c.post_rect = post
+		c.post_mat = mat
 	return c
 
 
@@ -1059,6 +1311,7 @@ static func play_clash_director(
 		update_duel_card(opp_duel_card, op_act, "待选", op_to)
 
 	var cel := ensure_cel_canvas(fx_host)
+	var stage_center := Vector2(540, 620)
 
 	if opening:
 		play_named_sfx(audio_bank, "game_start", 0.0)
@@ -1066,7 +1319,8 @@ static func play_clash_director(
 		push_ticker_line(ticker, "R01 开局亮相 ▸ 双方气+1")
 		if cel != null:
 			cel.trigger_speed_lines(UiTheme.ACCENT, 0.72)
-			cel.add_cel_ring(Vector2(540, 620), 60.0, 480.0, UiTheme.ACCENT, 16.0, false)
+			cel.add_jagged_lightning(Vector2(180, 620), Vector2(900, 620), UiTheme.ACCENT, 18.0, 85.0)
+			cel.spawn_shatter_shards(stage_center, 16, UiTheme.ACCENT, 1.1)
 		return
 
 	var hit: Array = result_dict.get("hit", [false, false])
@@ -1089,9 +1343,9 @@ static func play_clash_director(
 
 	_animate_duel_cards_clash(me_duel_card, opp_duel_card, my_blk, op_blk, my_hit, op_hit)
 
-	# 1. 劝降终结演出
+	# 1. 劝降终结演出（全屏黑白反色顿帧 + 径向模糊 + 霸主雷霆轰击）
 	if qj >= 0:
-		play_named_sfx(audio_bank, "quan_jiang", 1.5)
+		play_named_sfx(audio_bank, "quan_jiang", 2.0)
 		var qj_win := (qj == me)
 		show_moba_banner(
 			moba_banner,
@@ -1102,24 +1356,28 @@ static func play_clash_director(
 		)
 		push_ticker_line(ticker, "R%02d 劝降触发 ▸ %s直接获胜" % [rno, "我" if qj_win else "对手"])
 		if cel != null:
-			cel.trigger_impact_flash(UiTheme.ACCENT, 0.75)
+			cel.trigger_screen_distortion(stage_center, 0.068, 0.032, 0.055, 0.92, UiTheme.ACCENT)
 			cel.trigger_speed_lines(UiTheme.ACCENT, 1.0)
-			cel.add_cel_ring(Vector2(540, 620), 80.0, 620.0, UiTheme.ACCENT, 24.0, true)
+			cel.add_screen_crack(stage_center, true, UiTheme.ACCENT)
 		if fx_host != null:
-			_spawn_comic_callout(fx_host, Vector2(540, 620), "劝降秒杀！！", UiTheme.ACCENT, 76)
+			_spawn_cutin_card(fx_host, "vfx_zhongji_ult.png", stage_center, UiTheme.ACCENT, Vector2(760, 440))
+			_spawn_screen_crack_tex(fx_host, stage_center, true)
+			_spawn_comic_callout(fx_host, stage_center, "👑 劝降秒杀！！", UiTheme.ACCENT, 82)
 		return
 
-	# 2. 全舞台技能施法音效与三渲二弹道演出
+	# 2. 全舞台技能施法音效与「一招一式一结果」专属不规则特效演出
 	var from_me: Control = me_duel_card if me_duel_card != null else me_card
 	var from_opp: Control = opp_duel_card if opp_duel_card != null else opp_card
-	_play_skill_cast_vfx_and_sfx(fx_host, cel, my_act, op_act, from_me, from_opp, me_card, opp_card, op_blk, my_blk, audio_bank)
+	_play_skill_cast_vfx_and_sfx(
+		fx_host, cel, my_act, op_act, from_me, from_opp, me_card, opp_card,
+		op_blk, my_blk, op_hit, my_hit, op_seal, my_seal, audio_bank
+	)
 
-	# 3. 判定核心博弈结果（只保留正中偏上 MOBA 横幅 + 舞台中心三渲二漫画拟声大字 + 右下微缩记招器，彻底消灭上下重叠的胶囊飘字！）
+	# 3. 判定核心博弈结果（MOBA 横幅 + 舞台中央漫画拟声大字 + 右下微缩记招器）
 	var banner_title := "⚔️ 【%s】 对决 【%s】" % [my_name, op_name]
 	var banner_sub := "双方交锋完成"
 	var banner_col := UiTheme.ACCENT
 	var ticker_tag := "平分秋色"
-	var stage_center := Vector2(540, 640)
 
 	# 3A. 吸收博弈分支
 	if my_act == GameRules.Action.XI_SHOU or op_act == GameRules.Action.XI_SHOU:
@@ -1130,37 +1388,39 @@ static func play_clash_director(
 			banner_col = UiTheme.SPECIAL
 			ticker_tag = "双吸落空"
 			if cel != null:
-				cel.trigger_vortex(stage_center, UiTheme.INK_FAINT, 0.65)
+				cel.trigger_vortex(stage_center, UiTheme.INK_FAINT, 0.72)
 		elif my_act == GameRules.Action.XI_SHOU:
 			if GameRules.is_gain(op_act):
-				play_named_sfx(audio_bank, "xi_shou_ok", 1.5)
-				banner_title = "🌀 吸收成功 · 巧取对手【%s】！" % op_name
-				banner_sub = "对手本轮增益作废，全数归入我方囊中！"
+				play_named_sfx(audio_bank, "xi_shou_ok", 1.8)
+				banner_title = "🌀 吸收成功 · 强夺对手【%s】！" % op_name
+				banner_sub = "对手本轮增益作废，全数吸入我方黑洞！"
 				banner_col = UiTheme.SPECIAL
 				ticker_tag = "偷取[%s]" % op_name
 				if cel != null:
-					cel.trigger_impact_flash(UiTheme.SPECIAL, 0.55)
-					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.95)
-					cel.trigger_vortex(stage_center, UiTheme.SPECIAL, 1.15)
+					var my_c := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+					cel.trigger_screen_distortion(my_c, 0.048, 0.022, 0.040, 0.0, UiTheme.SPECIAL)
+					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.96)
+					cel.trigger_vortex(my_c, UiTheme.SPECIAL, 1.25)
 				if fx_host != null:
-					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center, UiTheme.SPECIAL)
-					_siphon_orbs(fx_host, opp_card, me_card, UiTheme.SPECIAL)
-					_spawn_comic_callout(fx_host, stage_center + Vector2(0, -110), "吸收得手！偷【%s】！" % op_name, UiTheme.SPECIAL, 62)
+					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center + Vector2(-90, -20), UiTheme.SPECIAL, Vector2(540, 320))
+					_siphon_orbs(fx_host, cel, from_opp, from_me, UiTheme.SPECIAL)
+					_spawn_comic_callout(fx_host, stage_center + Vector2(0, -110), "🌀 黑洞虹吸！夺【%s】！" % op_name, UiTheme.SPECIAL, 64)
 			elif GameRules.is_attack(op_act):
-				play_named_sfx(audio_bank, "xi_shou_fail", 1.5)
-				banner_title = "💔 吸收反噬 · 被【%s】打断！" % op_name
-				banner_sub = "预判失误撞上对手攻击，我方掉 1 血"
+				play_named_sfx(audio_bank, "xi_shou_fail", 1.8)
+				banner_title = "💔 吸收反噬 · 被【%s】轰碎黑洞！" % op_name
+				banner_sub = "预判失误撞上对手攻击，黑洞坍缩掉 1 血"
 				banner_col = UiTheme.DANGER
 				ticker_tag = "吸收反噬-1血"
 				if cel != null:
-					cel.trigger_impact_flash(UiTheme.DANGER, 0.65)
-					cel.trigger_speed_lines(UiTheme.DANGER, 0.95)
-					cel.trigger_vortex(stage_center, UiTheme.DANGER, 0.85)
-					cel.add_cel_slash(stage_center + Vector2(-240, -180), stage_center + Vector2(240, 180), UiTheme.DANGER, 34.0)
-					cel.add_cel_slash(stage_center + Vector2(240, -180), stage_center + Vector2(-240, 180), UiTheme.DANGER, 34.0)
+					var my_c2 := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+					cel.trigger_screen_distortion(my_c2, 0.045, 0.025, 0.038, 0.0, UiTheme.DANGER)
+					cel.trigger_speed_lines(UiTheme.DANGER, 0.96)
+					cel.add_screen_crack(my_c2, false, UiTheme.DANGER)
 				if fx_host != null:
+					var my_c3 := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+					_spawn_screen_crack_tex(fx_host, my_c3, false)
 					play_hurt(fx_host, me_card)
-					_spawn_comic_callout(fx_host, stage_center, "吸收反噬 -1血！！", UiTheme.DANGER, 64)
+					_spawn_comic_callout(fx_host, stage_center, "💥 黑洞坍缩反噬 -1血！！", UiTheme.DANGER, 64)
 			else:
 				play_named_sfx(audio_bank, "ui_deny", 0.0)
 				banner_title = "💨 吸收落空 · 对手出【%s】" % op_name
@@ -1168,74 +1428,76 @@ static func play_clash_director(
 				banner_col = UiTheme.INK_FAINT
 				ticker_tag = "吸收落空"
 				if fx_host != null:
-					_spawn_comic_callout(fx_host, stage_center, "吸收落空…", UiTheme.INK_FAINT, 52)
+					_spawn_comic_callout(fx_host, stage_center, "吸收抓空…", UiTheme.INK_FAINT, 52)
 		else:
 			if GameRules.is_gain(my_act):
-				play_named_sfx(audio_bank, "xi_shou_ok", 1.0)
+				play_named_sfx(audio_bank, "xi_shou_ok", 1.5)
 				banner_title = "⚠️ 增益被偷 · 对手吸收了【%s】！" % my_name
-				banner_sub = "我方本轮【%s】收益被对手夺走！" % my_name
+				banner_sub = "我方本轮【%s】收益被对手黑洞强行夺走！" % my_name
 				banner_col = UiTheme.DANGER
 				ticker_tag = "被偷[%s]" % my_name
 				if cel != null:
-					cel.trigger_impact_flash(UiTheme.SPECIAL, 0.50)
-					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.90)
-					cel.trigger_vortex(stage_center, UiTheme.SPECIAL, 1.10)
+					var op_c := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+					cel.trigger_screen_distortion(op_c, 0.048, 0.022, 0.040, 0.0, UiTheme.SPECIAL)
+					cel.trigger_speed_lines(UiTheme.SPECIAL, 0.92)
+					cel.trigger_vortex(op_c, UiTheme.SPECIAL, 1.20)
 				if fx_host != null:
-					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center, UiTheme.SPECIAL)
-					_siphon_orbs(fx_host, me_card, opp_card, UiTheme.SPECIAL)
-					_spawn_comic_callout(fx_host, stage_center, "【%s】被吸走！！" % my_name, UiTheme.DANGER, 60)
+					_spawn_cutin_card(fx_host, "vfx_vortex_cutin.png", stage_center + Vector2(90, -20), UiTheme.SPECIAL, Vector2(540, 320))
+					_siphon_orbs(fx_host, cel, from_me, from_opp, UiTheme.SPECIAL)
+					_spawn_comic_callout(fx_host, stage_center, "⚠️【%s】被黑洞吸走！！" % my_name, UiTheme.DANGER, 62)
 			elif GameRules.is_attack(my_act):
-				play_named_sfx(audio_bank, "xi_shou_fail", 1.5)
-				banner_title = "🎯 识破吸收 · 【%s】重创对手！" % my_name
+				play_named_sfx(audio_bank, "xi_shou_fail", 1.8)
+				banner_title = "🎯 识破吸收 · 【%s】轰碎对手黑洞！" % my_name
 				banner_sub = "对手妄图吸收被我方直接打断，对手 -1 血！"
 				banner_col = UiTheme.OK_GREEN
 				ticker_tag = "破对手吸收-1血"
 				if cel != null:
-					cel.trigger_impact_flash(UiTheme.ACCENT, 0.65)
-					cel.trigger_speed_lines(UiTheme.ACCENT, 0.95)
-					cel.add_cel_slash(stage_center + Vector2(-260, 160), stage_center + Vector2(260, -160), UiTheme.ACCENT, 36.0)
+					var op_c2 := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+					cel.trigger_screen_distortion(op_c2, 0.045, 0.022, 0.038, 0.0, UiTheme.ACCENT)
+					cel.trigger_speed_lines(UiTheme.ACCENT, 0.96)
+					cel.add_screen_crack(op_c2, false, UiTheme.ACCENT)
 				if fx_host != null:
+					var op_c3 := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+					_spawn_screen_crack_tex(fx_host, op_c3, false)
 					play_hit(fx_host, opp_card)
-					_spawn_comic_callout(fx_host, stage_center, "抓破吸收！对手-1血！", UiTheme.ACCENT, 64)
+					_spawn_comic_callout(fx_host, stage_center, "🔥 抓破吸收！对手-1血！", UiTheme.ACCENT, 64)
 			else:
 				banner_title = "🛡️ 稳健识破 · 对手吸收落空！"
 				banner_sub = "对手白耗 1 气，未偷到任何收益"
 				banner_col = UiTheme.SHIELD
 				ticker_tag = "对手吸收落空"
 				if fx_host != null:
-					_spawn_comic_callout(fx_host, stage_center, "对手吸收落空！", UiTheme.SHIELD, 54)
+					_spawn_comic_callout(fx_host, stage_center, "对手吸收抓空！", UiTheme.SHIELD, 54)
 
-	# 3B. 小羊破防封盾分支
+	# 3B. 小羊破防封盾分支（灵羊冲撞 + 局部蛛网裂痕 + 封盾锁链）
 	elif my_seal or op_seal:
-		play_named_sfx(audio_bank, "seal", 1.5)
+		play_named_sfx(audio_bank, "seal", 1.8)
 		if op_seal:
-			banner_title = "⛓️ 破防封盾 · 锁死对手护盾！"
-			banner_sub = "对手下回合禁用「防御」与「爆气」！"
+			banner_title = "🐏 灵羊破盾 · 撞裂对手护盾！"
+			banner_sub = "小羊冲撞破防成功！对手下回合禁用「防御」与「爆气」！"
 			banner_col = UiTheme.ACCENT
 			ticker_tag = "封对手护盾"
 			if cel != null:
-				cel.trigger_impact_flash(UiTheme.ACCENT, 0.60)
-				cel.trigger_speed_lines(UiTheme.ACCENT, 0.92)
-				var oc := opp_card.get_global_rect().get_center() if opp_card != null else Vector2(540, 260)
-				cel.add_cel_slash(oc + Vector2(-260, -80), oc + Vector2(260, 80), UiTheme.SPECIAL, 24.0)
-				cel.add_cel_slash(oc + Vector2(260, -80), oc + Vector2(-260, 80), UiTheme.SPECIAL, 24.0)
+				var oc := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+				cel.trigger_screen_distortion(oc, 0.036, 0.018, 0.032, 0.0, UiTheme.ACCENT)
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.94)
+				cel.add_screen_crack(oc, false, UiTheme.SHIELD)
 			if fx_host != null:
 				_play_seal_chains(fx_host, opp_card)
-				_spawn_comic_callout(fx_host, stage_center, "破防！封锁护盾！！", UiTheme.ACCENT, 66)
+				_spawn_comic_callout(fx_host, stage_center, "🐏 灵羊裂盾！封锁护盾！！", UiTheme.ACCENT, 66)
 		else:
-			banner_title = "⚠️ 护盾被封 · 小心下回合！"
-			banner_sub = "我方被小羊破防，下回合禁用「防御」与「爆气」"
+			banner_title = "⚠️ 护盾被撞裂 · 小心下回合！"
+			banner_sub = "我方被小羊冲撞破防，下回合禁用「防御」与「爆气」"
 			banner_col = UiTheme.DANGER
 			ticker_tag = "我被封盾"
 			if cel != null:
-				cel.trigger_impact_flash(UiTheme.DANGER, 0.60)
-				cel.trigger_speed_lines(UiTheme.DANGER, 0.92)
-				var mc := me_card.get_global_rect().get_center() if me_card != null else Vector2(540, 1200)
-				cel.add_cel_slash(mc + Vector2(-260, -80), mc + Vector2(260, 80), UiTheme.DANGER, 24.0)
-				cel.add_cel_slash(mc + Vector2(260, -80), mc + Vector2(-260, 80), UiTheme.DANGER, 24.0)
+				var mc := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+				cel.trigger_screen_distortion(mc, 0.036, 0.018, 0.032, 0.0, UiTheme.DANGER)
+				cel.trigger_speed_lines(UiTheme.DANGER, 0.94)
+				cel.add_screen_crack(mc, false, UiTheme.DANGER)
 			if fx_host != null:
 				_play_seal_chains(fx_host, me_card)
-				_spawn_comic_callout(fx_host, stage_center, "护盾被封 1 回合！！", UiTheme.DANGER, 64)
+				_spawn_comic_callout(fx_host, stage_center, "⛓️ 护盾碎裂被封 1 回合！！", UiTheme.DANGER, 64)
 
 	# 3C. 格挡成功 vs 被格挡（全屏三渲二非对称强反馈）
 	elif my_blk or op_blk:
@@ -1244,61 +1506,66 @@ static func play_clash_director(
 			var is_sf := (my_act == GameRules.Action.STRONG_FANG)
 			var is_bao_blk := GameRules.is_bao(my_act)
 			if is_sf:
-				banner_title = "⚡ 强防壁垒 · 完美弹反【%s】！" % op_name
+				banner_title = "⚡ 强防壁垒 · 完美弹飞【%s】！" % op_name
 			elif is_bao_blk:
 				banner_title = "🔥 火力格挡 · 【%s】硬接【%s】！" % [my_name, op_name]
 			else:
 				banner_title = "🛡️ 完美格挡 · 化解【%s】攻势！" % op_name
 			banner_sub = "我方成功抵御对手进攻，稳住阵脚！"
 			if is_sf and op_act == GameRules.Action.ZHONG_JI:
-				banner_sub = "强防挡下终极技，但我方护盾已全部震碎！"
+				banner_sub = "强防硬抗终极技！虽挡下必杀但护盾全碎！"
 			banner_col = UiTheme.SHIELD
 			ticker_tag = "格挡[%s]" % op_name
 			if cel != null:
-				cel.trigger_impact_flash(UiTheme.SHIELD, 0.65)
+				var def_pos := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+				cel.trigger_screen_distortion(def_pos, 0.038, 0.016, 0.036, 0.0, UiTheme.SHIELD)
 				cel.trigger_speed_lines(UiTheme.SHIELD, 0.96)
-				cel.add_cel_ring(stage_center + Vector2(-120, 40), 40.0, 380.0, UiTheme.SHIELD, 22.0, true)
-				cel.add_cel_ring(stage_center + Vector2(-120, 40), 80.0, 480.0, UiTheme.ACCENT, 14.0, true)
+				cel.add_cel_ring(def_pos, 50.0, 420.0, UiTheme.SHIELD, 20.0, true)
+				cel.add_jagged_lightning(def_pos + Vector2(-180, -140), def_pos + Vector2(220, 140), UiTheme.ACCENT, 16.0, 64.0)
+				if is_sf and op_act == GameRules.Action.ZHONG_JI:
+					cel.add_screen_crack(def_pos, true, UiTheme.SHIELD)
 			if fx_host != null:
-				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(-90, -20), UiTheme.SHIELD)
+				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(-90, -20), UiTheme.SHIELD, Vector2(520, 310))
 				_play_block_positive(fx_host, me_card)
 				_play_blocked_rebound(fx_host, opp_card)
 				_spawn_comic_callout(fx_host, stage_center + Vector2(-80, -110), "⚡ 强防弹反！！" if is_sf else "🛡️ 完美格挡！！", UiTheme.SHIELD, 68)
-				_spawn_comic_callout(fx_host, stage_center + Vector2(140, 120), "💥 攻势被挡！", Color(1.0, 0.55, 0.20), 46)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(140, 120), "💥 攻势被弹飞！", Color(1.0, 0.55, 0.20), 46)
 		if op_blk:
 			play_named_sfx(audio_bank, "blocked_rebound", 2.0)
 			var op_sf := (op_act == GameRules.Action.STRONG_FANG)
 			banner_title = "💥 攻势受挫 · 【%s】被对手挡下！" % my_name
-			banner_sub = ("对手开启【强防】弹开了你的进攻" if op_sf else "对手提前预判格挡，未能造成伤害")
+			banner_sub = ("对手开启【强防】弹飞了你的进攻" if op_sf else "对手提前预判格挡，未能造成伤害")
 			banner_col = Color(0.96, 0.52, 0.18)
 			ticker_tag = "[%s]被挡" % my_name
 			if cel != null:
-				cel.trigger_impact_flash(Color(0.95, 0.45, 0.15), 0.55)
+				var odef_pos := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+				cel.trigger_screen_distortion(odef_pos, 0.032, 0.014, 0.030, 0.0, UiTheme.SHIELD)
 				cel.trigger_speed_lines(UiTheme.SHIELD, 0.88)
-				cel.add_cel_ring(stage_center + Vector2(120, -40), 40.0, 360.0, UiTheme.SHIELD, 20.0, true)
+				cel.add_cel_ring(odef_pos, 50.0, 380.0, UiTheme.SHIELD, 18.0, true)
 			if fx_host != null:
-				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(90, -20), UiTheme.SHIELD)
+				_spawn_cutin_card(fx_host, "vfx_shield_cutin.png", stage_center + Vector2(90, -20), UiTheme.SHIELD, Vector2(520, 310))
 				_play_blocked_rebound(fx_host, me_card)
 				_play_block_positive(fx_host, opp_card)
-				_spawn_comic_callout(fx_host, stage_center + Vector2(-90, 100), "💥 攻击被挡！！", Color(1.0, 0.50, 0.18), 64)
+				_spawn_comic_callout(fx_host, stage_center + Vector2(-90, 100), "💥 攻击被弹回！！", Color(1.0, 0.50, 0.18), 64)
 				_spawn_comic_callout(fx_host, stage_center + Vector2(120, -110), "🛡️ 对手格挡！", UiTheme.SHIELD, 48)
 
-	# 3D. 命中扣血分支（终极 / 大羊 / 包子 / 裸防受击）
+	# 3D. 命中扣血分支（终极 / 大羊 / 小羊 / 三包破防 / 包子）
 	elif my_hit or op_hit:
 		if op_hit and my_hit:
 			play_named_sfx(audio_bank, "zhong_ji", 2.0)
-			banner_title = "☄️ 双终极对轰 · 两败俱伤！"
-			banner_sub = "双方同时命中终极技，各掉 2 血！"
+			banner_title = "☄️ 双终极对轰 · 天崩地裂！"
+			banner_sub = "双方同时命中终极技，全屏崩裂各掉 2 血！"
 			banner_col = UiTheme.SPECIAL
 			ticker_tag = "双终极互轰-2"
 			if cel != null:
-				cel.trigger_impact_flash(UiTheme.SPECIAL, 0.80)
+				cel.trigger_screen_distortion(stage_center, 0.072, 0.035, 0.060, 0.95, UiTheme.SPECIAL)
 				cel.trigger_speed_lines(UiTheme.SPECIAL, 1.0)
-				cel.add_cel_ring(stage_center, 60.0, 640.0, UiTheme.SPECIAL, 28.0, false)
+				cel.add_screen_crack(stage_center, true, UiTheme.SPECIAL)
 			if fx_host != null:
+				_spawn_screen_crack_tex(fx_host, stage_center, true)
 				play_hit(fx_host, me_card)
 				play_hit(fx_host, opp_card)
-				_spawn_comic_callout(fx_host, stage_center, "双终极对轰 -2血！！", UiTheme.SPECIAL, 68)
+				_spawn_comic_callout(fx_host, stage_center, "☄️ 双终极对轰 -2血！！", UiTheme.SPECIAL, 72)
 		elif op_hit:
 			var dmg: int = absi(int(hp_d[op]))
 			play_named_sfx(audio_bank, "zhong_ji" if dmg >= 2 else "hit", 2.0)
@@ -1306,14 +1573,16 @@ static func play_clash_director(
 			banner_sub = "我方进攻直接奏效，压制对手血线！"
 			banner_col = UiTheme.OK_GREEN if dmg == 1 else UiTheme.SPECIAL
 			ticker_tag = "命中对手-%d血" % dmg
-			if cel != null:
-				cel.trigger_impact_flash(UiTheme.SPECIAL if dmg >= 2 else UiTheme.WAVE, 0.72)
-				cel.trigger_speed_lines(UiTheme.SPECIAL if dmg >= 2 else UiTheme.ACCENT, 0.98)
-				cel.add_cel_slash(stage_center + Vector2(-340, 220), stage_center + Vector2(340, -220), UiTheme.ACCENT, 42.0)
-				cel.add_cel_ring(stage_center, 50.0, 520.0, UiTheme.WAVE, 22.0, false)
 			if fx_host != null:
 				play_hit(fx_host, opp_card)
-				_spawn_comic_callout(fx_host, stage_center, ("雷霆必杀 -%d血！！" % dmg) if dmg >= 2 else "破防命中 -1血！！", UiTheme.ACCENT, 68)
+				var callout_txt := "☄️ 终极必杀 -2血！！" if dmg >= 2 else (
+					"🐏 巨羊踏碎 -1血！！" if my_act == GameRules.Action.DA_YANG else (
+						"🐏 灵羊冲撞 -1血！！" if my_act == GameRules.Action.XIAO_YANG else (
+							"🔥 三包破防 -1血！！" if my_act == GameRules.Action.BAO3 else "🔥 精准命中 -1血！！"
+						)
+					)
+				)
+				_spawn_comic_callout(fx_host, stage_center, callout_txt, UiTheme.SPECIAL if dmg >= 2 else UiTheme.ACCENT, 70)
 		else:
 			var my_dmg: int = absi(int(hp_d[me]))
 			play_named_sfx(audio_bank, "zhong_ji" if my_dmg >= 2 else "hit", 2.0)
@@ -1321,58 +1590,60 @@ static func play_clash_director(
 			banner_sub = "注意对手气量与破防技冷却！"
 			banner_col = UiTheme.DANGER
 			ticker_tag = "我受击-%d血" % my_dmg
-			if cel != null:
-				cel.trigger_impact_flash(UiTheme.DANGER, 0.72)
-				cel.trigger_speed_lines(UiTheme.DANGER, 0.96)
-				cel.add_cel_slash(stage_center + Vector2(-320, -200), stage_center + Vector2(320, 200), UiTheme.DANGER, 40.0)
 			if fx_host != null:
 				play_hurt(fx_host, me_card)
-				_spawn_comic_callout(fx_host, stage_center, "遭受重击 -%d血！！" % my_dmg, UiTheme.DANGER, 66)
+				var hurt_txt := "☄️ 遭终极轰击 -2血！！" if my_dmg >= 2 else (
+					"🐏 遭巨羊踏碎 -1血！！" if op_act == GameRules.Action.DA_YANG else "💥 遭受重击 -1血！！"
+				)
+				_spawn_comic_callout(fx_host, stage_center, hurt_txt, UiTheme.DANGER, 68)
 
 	# 3E. 包子互拼削盾 / 招式互抵 / 双方攒气回血
 	else:
 		var my_sh_d := int(sh_d[me])
 		var op_sh_d := int(sh_d[op])
 		if op_sh_d < 0 and GameRules.is_bao(my_act):
-			play_named_sfx(audio_bank, "hit", 0.5)
+			play_named_sfx(audio_bank, "hit", 0.8)
 			banner_title = "💥 火力压制 · 震碎对手 %d 盾！" % absi(op_sh_d)
 			banner_sub = "包子对拼占优，大幅削减对手护盾"
 			banner_col = UiTheme.WAVE
 			ticker_tag = "碎对手%d盾" % absi(op_sh_d)
 			if cel != null:
-				cel.trigger_speed_lines(UiTheme.WAVE, 0.80)
-				cel.add_cel_ring(stage_center, 40.0, 420.0, UiTheme.WAVE, 18.0, true)
+				var oc4 := from_opp.get_global_rect().get_center() if from_opp != null else Vector2(780, 620)
+				cel.trigger_speed_lines(UiTheme.WAVE, 0.82)
+				cel.add_screen_crack(oc4, false, UiTheme.WAVE)
 			if fx_host != null:
-				_spawn_comic_callout(fx_host, stage_center, "轰碎对手 %d 盾！！" % absi(op_sh_d), UiTheme.WAVE, 58)
+				_spawn_comic_callout(fx_host, stage_center, "💥 轰碎对手 %d 盾！！" % absi(op_sh_d), UiTheme.WAVE, 60)
 		elif my_sh_d < 0 and GameRules.is_bao(op_act):
-			play_named_sfx(audio_bank, "hit", 0.5)
+			play_named_sfx(audio_bank, "hit", 0.8)
 			banner_title = "⚠️ 对拼劣势 · 我方损失 %d 盾" % absi(my_sh_d)
 			banner_sub = "对手包子连数更高，注意补盾"
 			banner_col = UiTheme.ACCENT
 			ticker_tag = "我损%d盾" % absi(my_sh_d)
 			if cel != null:
-				cel.trigger_speed_lines(UiTheme.ACCENT, 0.75)
+				var mc4 := from_me.get_global_rect().get_center() if from_me != null else Vector2(300, 620)
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.78)
+				cel.add_screen_crack(mc4, false, UiTheme.ACCENT)
 			if fx_host != null:
-				_spawn_comic_callout(fx_host, stage_center, "护盾受损 %d 盾！" % my_sh_d, UiTheme.ACCENT, 56)
+				_spawn_comic_callout(fx_host, stage_center, "⚠️ 护盾受损 %d 盾！" % my_sh_d, UiTheme.ACCENT, 58)
 		elif GameRules.is_attack(my_act) and my_act == op_act:
 			play_named_sfx(audio_bank, "block", 1.5)
 			banner_title = "⚔️ 招式互抵 · 【%s】正面相撞！" % my_name
-			banner_sub = "双方同招对撞，攻势相互抵消"
+			banner_sub = "双方同招对撞，在舞台中央炸裂抵消"
 			banner_col = UiTheme.ACCENT
 			ticker_tag = "同招[%s]互抵" % my_name
 			if cel != null:
-				cel.trigger_impact_flash(UiTheme.ACCENT, 0.50)
-				cel.trigger_speed_lines(UiTheme.ACCENT, 0.85)
-				cel.add_cel_ring(stage_center, 40.0, 460.0, UiTheme.ACCENT, 20.0, false)
+				cel.trigger_screen_distortion(stage_center, 0.035, 0.015, 0.032, 0.0, UiTheme.ACCENT)
+				cel.trigger_speed_lines(UiTheme.ACCENT, 0.88)
+				cel.add_jagged_lightning(stage_center + Vector2(-260, -180), stage_center + Vector2(260, 180), UiTheme.ACCENT, 18.0, 75.0)
+				cel.add_jagged_lightning(stage_center + Vector2(260, -180), stage_center + Vector2(-260, 180), UiTheme.WAVE, 18.0, 75.0)
+				cel.spawn_shatter_shards(stage_center, 18, UiTheme.ACCENT, 1.15)
 			if fx_host != null:
-				_spawn_comic_callout(fx_host, stage_center, "⚔️ 正面拼招抵消！！", UiTheme.ACCENT, 58)
+				_spawn_comic_callout(fx_host, stage_center, "⚔️ 正面硬拼抵消！！", UiTheme.ACCENT, 62)
 		else:
-			banner_title = "✨ 蓄势运营 · 我【%s】 vs 对手【%s】" % [my_name, op_name]
-			banner_sub = "双方调息蓄力，准备下一拍博弈"
+			banner_title = "✨ 蓄势博弈 · 我【%s】 vs 对手【%s】" % [my_name, op_name]
+			banner_sub = "双方运转元气，准备下一拍交锋"
 			banner_col = UiTheme.GAIN
 			ticker_tag = "蓄力运营"
-			if cel != null:
-				cel.add_cel_ring(stage_center, 50.0, 360.0, UiTheme.GAIN, 12.0, false)
 
 	show_moba_banner(moba_banner, banner_title, banner_sub, banner_col, true)
 	push_ticker_line(ticker, "R%02d 我:%s 对手:%s ▸ %s" % [rno, my_name, op_name, ticker_tag])
@@ -1391,16 +1662,16 @@ static func _animate_duel_cards_clash(
 		me_duel.pivot_offset = me_duel.size * 0.5
 		var tw_m := me_duel.create_tween()
 		if op_blk:
-			tw_m.tween_property(me_duel, "scale", Vector2(0.82, 0.82), 0.06)
-			tw_m.parallel().tween_property(me_duel, "rotation", -0.20, 0.08)
+			tw_m.tween_property(me_duel, "scale", Vector2(0.80, 0.80), 0.06)
+			tw_m.parallel().tween_property(me_duel, "rotation", -0.22, 0.08)
 			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
 			tw_m.parallel().tween_property(me_duel, "rotation", 0.0, 0.18)
 		elif my_blk:
-			tw_m.tween_property(me_duel, "scale", Vector2(1.26, 1.26), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_m.tween_property(me_duel, "scale", Vector2(1.28, 1.28), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.18)
 		elif my_hit:
-			tw_m.tween_property(me_duel, "scale", Vector2(0.80, 0.80), 0.08)
-			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.16)
+			tw_m.tween_property(me_duel, "scale", Vector2(0.76, 0.76), 0.08)
+			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.18)
 		else:
 			tw_m.tween_property(me_duel, "scale", Vector2(1.16, 1.16), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_m.tween_property(me_duel, "scale", Vector2.ONE, 0.14)
@@ -1409,23 +1680,23 @@ static func _animate_duel_cards_clash(
 		opp_duel.pivot_offset = opp_duel.size * 0.5
 		var tw_o := opp_duel.create_tween()
 		if my_blk:
-			tw_o.tween_property(opp_duel, "scale", Vector2(0.82, 0.82), 0.06)
-			tw_o.parallel().tween_property(opp_duel, "rotation", 0.20, 0.08)
+			tw_o.tween_property(opp_duel, "scale", Vector2(0.80, 0.80), 0.06)
+			tw_o.parallel().tween_property(opp_duel, "rotation", 0.22, 0.08)
 			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
 			tw_o.parallel().tween_property(opp_duel, "rotation", 0.0, 0.18)
 		elif op_blk:
-			tw_o.tween_property(opp_duel, "scale", Vector2(1.26, 1.26), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw_o.tween_property(opp_duel, "scale", Vector2(1.28, 1.28), 0.10).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.18)
 		elif op_hit:
-			tw_o.tween_property(opp_duel, "scale", Vector2(0.80, 0.80), 0.08)
-			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.16)
+			tw_o.tween_property(opp_duel, "scale", Vector2(0.76, 0.76), 0.08)
+			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.18)
 		else:
 			tw_o.tween_property(opp_duel, "scale", Vector2(1.16, 1.16), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			tw_o.tween_property(opp_duel, "scale", Vector2.ONE, 0.14)
 
 
-## 弹出三渲二特写插画切入卡（格挡六边圣盾特写 / 吸收黑洞特写）
-static func _spawn_cutin_card(host: Control, tex_name: String, pos: Vector2, col: Color) -> void:
+## 弹出不规则锯齿特写插画切入卡
+static func _spawn_cutin_card(host: Control, tex_name: String, pos: Vector2, _col: Color, card_sz: Vector2 = Vector2(520, 310)) -> void:
 	if host == null:
 		return
 	var tex := UiTheme.load_ui_texture(tex_name)
@@ -1433,24 +1704,56 @@ static func _spawn_cutin_card(host: Control, tex_name: String, pos: Vector2, col
 		return
 	var tr := TextureRect.new()
 	tr.texture = tex
-	tr.size = Vector2(420, 256)
-	tr.pivot_offset = Vector2(210, 128)
-	tr.global_position = pos - Vector2(210, 128)
-	tr.scale = Vector2(0.25, 0.25)
+	tr.size = card_sz
+	tr.pivot_offset = card_sz * 0.5
+	tr.global_position = pos - card_sz * 0.5
+	tr.scale = Vector2(0.22, 0.22)
+	tr.rotation = randf_range(-0.08, 0.08)
 	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(tr)
 	var tw := host.create_tween()
-	tw.tween_property(tr, "scale", Vector2(1.12, 1.12), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(tr, "scale", Vector2(1.0, 1.0), 0.12)
-	tw.tween_interval(0.22)
+	tw.tween_property(tr, "scale", Vector2(1.15, 1.15), 0.12).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(tr, "scale", Vector2(1.0, 1.0), 0.10)
+	tw.tween_interval(0.26)
 	tw.tween_property(tr, "modulate:a", 0.0, 0.22)
-	tw.parallel().tween_property(tr, "scale", Vector2(1.35, 1.35), 0.22)
+	tw.parallel().tween_property(tr, "scale", Vector2(1.38, 1.38), 0.22)
 	tw.tween_callback(func():
 		if is_instance_valid(tr):
 			tr.queue_free())
 
 
-## 舞台中央三渲二漫画拟声大字（粗黑描边 + 弹性冲击缩放，替代旧版琐碎黑胶囊）
+## 弹出透明屏幕裂痕贴图（小羊：580×340 青白蛛网裂痕 vfx_crack_small.png；大羊/终极：960×540 巨型熔岩地壳裂痕 vfx_crack_huge.png）
+static func _spawn_screen_crack_tex(host: Control, pos: Vector2, is_huge: bool) -> void:
+	if host == null:
+		return
+	var tex_name := "vfx_crack_huge.png" if is_huge else "vfx_crack_small.png"
+	var tex := UiTheme.load_ui_texture(tex_name)
+	if tex == null:
+		return
+	var c_sz := Vector2(980, 560) if is_huge else Vector2(560, 330)
+	var tr := TextureRect.new()
+	tr.texture = tex
+	tr.size = c_sz
+	tr.pivot_offset = c_sz * 0.5
+	var clamped_pos := Vector2(clampf(pos.x, 220.0, 860.0), clampf(pos.y, 260.0, 980.0))
+	if is_huge:
+		clamped_pos = Vector2(540.0, clampf(pos.y, 440.0, 760.0))
+	tr.global_position = clamped_pos - c_sz * 0.5
+	tr.scale = Vector2(0.35, 0.35)
+	tr.rotation = randf_range(-0.12, 0.12)
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(tr)
+	var tw := host.create_tween()
+	tw.tween_property(tr, "scale", Vector2(1.12, 1.12), 0.07).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(tr, "scale", Vector2(1.0, 1.0), 0.08)
+	tw.tween_interval(0.42 if is_huge else 0.30)
+	tw.tween_property(tr, "modulate:a", 0.0, 0.32)
+	tw.tween_callback(func():
+		if is_instance_valid(tr):
+			tr.queue_free())
+
+
+## 舞台中央三渲二漫画拟声大字
 static func _spawn_comic_callout(host: Control, pos: Vector2, text: String, col: Color, fsize: int = 62) -> void:
 	if host == null:
 		return
@@ -1485,38 +1788,45 @@ static func _play_skill_cast_vfx_and_sfx(
 	opp_hud: Control,
 	op_blk: bool,
 	my_blk: bool,
+	op_hit: bool,
+	my_hit: bool,
+	op_seal: bool,
+	my_seal: bool,
 	audio_bank: Dictionary
 ) -> void:
 	for act in [my_act, op_act]:
 		match act:
 			GameRules.Action.BAO3:
-				play_named_sfx(audio_bank, "bao3", 1.5)
+				play_named_sfx(audio_bank, "bao3", 1.8)
 			GameRules.Action.BAO2:
-				play_named_sfx(audio_bank, "bao2", 1.0)
+				play_named_sfx(audio_bank, "bao2", 1.2)
 			GameRules.Action.BAO1:
-				play_named_sfx(audio_bank, "bao1", 0.5)
+				play_named_sfx(audio_bank, "bao1", 0.8)
 			GameRules.Action.STRONG_FANG:
-				play_named_sfx(audio_bank, "strong_fang", 1.0)
+				play_named_sfx(audio_bank, "strong_fang", 1.2)
 			GameRules.Action.XIAO_YANG:
-				play_named_sfx(audio_bank, "xiao_yang", 1.0)
+				play_named_sfx(audio_bank, "xiao_yang", 1.4)
 			GameRules.Action.DA_YANG:
-				play_named_sfx(audio_bank, "da_yang", 1.5)
+				play_named_sfx(audio_bank, "da_yang", 2.0)
 			GameRules.Action.JI_QI:
-				play_named_sfx(audio_bank, "ji_qi", 1.0)
+				play_named_sfx(audio_bank, "ji_qi", 1.2)
 			GameRules.Action.BAO_QI:
-				play_named_sfx(audio_bank, "bao_qi", 1.0)
+				play_named_sfx(audio_bank, "bao_qi", 1.6)
 			GameRules.Action.HUI_FU:
-				play_named_sfx(audio_bank, "hui_fu", 1.0)
+				play_named_sfx(audio_bank, "hui_fu", 1.2)
 			GameRules.Action.ZAN:
-				play_named_sfx(audio_bank, "zan", 0.0)
+				play_named_sfx(audio_bank, "zan", 0.4)
 
 	if fx_host == null:
 		return
 
 	var my_stolen := (op_act == GameRules.Action.XI_SHOU and GameRules.is_gain(my_act))
 	var op_stolen := (my_act == GameRules.Action.XI_SHOU and GameRules.is_gain(op_act))
-	_spawn_single_side_skill_vfx(fx_host, cel, my_act, me_duel, opp_duel, me_hud, opp_hud, true, op_blk, my_stolen)
-	_spawn_single_side_skill_vfx(fx_host, cel, op_act, opp_duel, me_duel, opp_hud, me_hud, false, my_blk, op_stolen)
+	var my_succeeded := op_hit or op_seal or (not op_blk and my_act != op_act)
+	var op_succeeded := my_hit or my_seal or (not my_blk and op_act != my_act)
+
+	_spawn_single_side_skill_vfx(fx_host, cel, my_act, me_duel, opp_duel, me_hud, opp_hud, true, op_blk, my_stolen, my_succeeded)
+	_spawn_single_side_skill_vfx(fx_host, cel, op_act, opp_duel, me_duel, opp_hud, me_hud, false, my_blk, op_stolen, op_succeeded)
 
 
 static func _spawn_single_side_skill_vfx(
@@ -1525,30 +1835,29 @@ static func _spawn_single_side_skill_vfx(
 	act: int,
 	from_card: Control,
 	to_card: Control,
-	from_hud: Control,
-	to_hud: Control,
+	_from_hud: Control,
+	_to_hud: Control,
 	friendly: bool,
 	was_blocked: bool,
-	was_stolen: bool = false
+	was_stolen: bool = false,
+	succeeded: bool = true
 ) -> void:
 	if host == null or from_card == null or to_card == null:
 		return
-	var gain_hud: Control = to_hud if was_stolen else from_hud
-	var gain_center := gain_hud.get_global_rect().get_center() if gain_hud != null else from_card.get_global_rect().get_center()
+	var from_pos := from_card.get_global_rect().get_center()
+	var to_pos := to_card.get_global_rect().get_center()
 	match act:
 		GameRules.Action.ZAN:
-			if cel != null:
-				cel.add_cel_ring(gain_center, 30.0, 220.0, UiTheme.ACCENT, 12.0, false)
+			if not was_stolen:
+				_spawn_qi_tornado_eruption(host, cel, from_pos, UiTheme.ACCENT, 0.72)
 		GameRules.Action.JI_QI:
-			if cel != null:
-				cel.add_cel_ring(gain_center, 40.0, 320.0, UiTheme.GAIN, 16.0, false)
-				cel.trigger_speed_lines(UiTheme.GAIN, 0.55)
+			if not was_stolen:
+				_spawn_qi_tornado_eruption(host, cel, from_pos, UiTheme.GAIN, 1.18)
 		GameRules.Action.HUI_FU:
-			if cel != null:
-				cel.add_cel_ring(gain_center, 40.0, 340.0, UiTheme.OK_GREEN, 18.0, false)
+			if not was_stolen:
+				_spawn_qi_tornado_eruption(host, cel, from_pos, UiTheme.OK_GREEN, 1.25)
 		GameRules.Action.BAO_QI:
-			if cel != null:
-				cel.add_cel_ring(gain_center, 40.0, 360.0, UiTheme.SPECIAL, 20.0, true)
+			_spawn_baoqi_spectacle(host, cel, from_pos, to_pos, was_stolen)
 		GameRules.Action.BAO1, GameRules.Action.BAO2, GameRules.Action.BAO3:
 			var n := GameRules.bao_count(act)
 			for k in n:
@@ -1556,138 +1865,260 @@ static func _spawn_single_side_skill_vfx(
 					if is_instance_valid(host) and is_instance_valid(from_card) and is_instance_valid(to_card):
 						_fire_bao_orb(host, from_card, to_card, friendly, was_blocked, n))
 		GameRules.Action.XIAO_YANG:
-			_fire_ram_wave(host, from_card, to_card, Color(1.0, 0.55, 0.15), false, was_blocked)
+			_fire_ram_stampede(host, cel, from_card, to_card, false, was_blocked or (not succeeded))
 		GameRules.Action.DA_YANG:
-			_fire_ram_wave(host, from_card, to_card, UiTheme.WAVE, true, was_blocked)
+			_fire_ram_stampede(host, cel, from_card, to_card, true, was_blocked or (not succeeded))
 		GameRules.Action.ZHONG_JI:
-			_play_ultimate_beam(host, from_card, to_card, was_blocked)
+			_play_ultimate_beam(host, cel, from_card, to_card, was_blocked)
 
 
+## 【攒气 / 集气 / 回复】专属演出：不规则翠玉金风龙卷柱升腾 + 疾风闪电撕裂
+static func _spawn_qi_tornado_eruption(host: Control, cel: CelStageCanvas, pos: Vector2, col: Color, sc: float = 1.0) -> void:
+	if cel != null:
+		cel.add_jagged_lightning(pos + Vector2(-80, 140), pos + Vector2(60, -180 * sc), col, 14.0 * sc, 56.0)
+		cel.add_jagged_lightning(pos + Vector2(80, 130), pos + Vector2(-60, -170 * sc), col.lightened(0.28), 12.0 * sc, 48.0)
+		cel.spawn_shatter_shards(pos, int(10 * sc), col, 0.85 * sc)
+	var tex := UiTheme.load_ui_texture("vfx_qi_tornado.png")
+	if tex == null:
+		return
+	var t_sz := Vector2(380, 260) * sc
+	var tr := TextureRect.new()
+	tr.texture = tex
+	tr.size = t_sz
+	tr.pivot_offset = Vector2(t_sz.x * 0.5, t_sz.y * 0.85)
+	tr.global_position = pos - tr.pivot_offset + Vector2(0, 40)
+	tr.scale = Vector2(0.35, 0.25)
+	tr.modulate = col.lightened(0.35)
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(tr)
+	var tw := host.create_tween()
+	tw.tween_property(tr, "scale", Vector2(1.18, 1.32), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(tr, "global_position:y", tr.global_position.y - 48.0, 0.24)
+	tw.tween_property(tr, "modulate:a", 0.0, 0.22)
+	tw.parallel().tween_property(tr, "scale", Vector2(1.42, 1.55), 0.22)
+	tw.tween_callback(func():
+		if is_instance_valid(tr):
+			tr.queue_free())
+
+
+## 【爆气】专属演出：成功时触发全舞台径向动态模糊 + 空气扭曲波 + 金紫雷霆特写；被吸收偷走时能量中途崩解被扯入敌方黑洞
+static func _spawn_baoqi_spectacle(host: Control, cel: CelStageCanvas, from_pos: Vector2, absorber_pos: Vector2, was_stolen: bool) -> void:
+	if was_stolen:
+		if cel != null:
+			cel.add_jagged_lightning(from_pos, absorber_pos, UiTheme.SPECIAL, 18.0, 90.0)
+		return
+	if cel != null:
+		cel.trigger_screen_distortion(from_pos, 0.062, 0.024, 0.052, 0.0, UiTheme.ACCENT)
+		cel.trigger_speed_lines(UiTheme.ACCENT, 0.92)
+		for k in 5:
+			var ang := TAU * float(k) / 5.0 + randf_range(-0.2, 0.2)
+			var tip := from_pos + Vector2(cos(ang), sin(ang)) * 340.0
+			cel.add_jagged_lightning(from_pos, tip, UiTheme.ACCENT if k % 2 == 0 else UiTheme.SPECIAL, 16.0, 68.0)
+		cel.spawn_shatter_shards(from_pos, 20, UiTheme.ACCENT, 1.25)
+	_spawn_cutin_card(host, "vfx_baoqi_burst.png", from_pos, UiTheme.ACCENT, Vector2(560, 330))
+
+
+## 【单包 / 双包 / 三包】专属演出：真实熔岩火陨连射（带不规则锯齿残影与破防碎裂）
 static func _fire_bao_orb(host: Control, from_c: Control, to_c: Control, friendly: bool, bounce: bool, combo_n: int = 1) -> void:
-	var d_sz := 72 + combo_n * 22
-	var orb := Panel.new()
-	orb.size = Vector2(d_sz, d_sz)
-	orb.pivot_offset = orb.size * 0.5
-	orb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var col := UiTheme.WAVE if friendly else Color(1.0, 0.42, 0.15)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1.0, 0.92, 0.35)
-	sb.border_color = UiTheme.INK
-	sb.set_border_width_all(8)
-	sb.set_corner_radius_all(d_sz / 2)
-	sb.shadow_color = col
-	sb.shadow_size = 18
-	orb.add_theme_stylebox_override("panel", sb)
-	host.add_child(orb)
-
+	var cel := ensure_cel_canvas(host)
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
-	orb.global_position = a - orb.size * 0.5
+	var dir := (b - a).normalized()
+	var sc := 0.72 + float(combo_n) * 0.22
+	var m_sz := Vector2(340, 188) * sc
+
+	var tr := TextureRect.new()
+	tr.texture = UiTheme.load_ui_texture("vfx_bao_meteor.png")
+	tr.size = m_sz
+	tr.pivot_offset = m_sz * 0.5
+	tr.global_position = a - m_sz * 0.5 + Vector2(0, randf_range(-28.0, 28.0) * float(combo_n - 1))
+	tr.rotation = dir.angle()
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(tr)
+
+	# 拖尾残影巧思：生成 2 个半透明错位火陨残影跟随冲刺
+	for g_idx in 2:
+		var ghost := TextureRect.new()
+		ghost.texture = tr.texture
+		ghost.size = m_sz * (0.86 - float(g_idx) * 0.14)
+		ghost.pivot_offset = ghost.size * 0.5
+		ghost.global_position = tr.global_position - dir * float((g_idx + 1) * 48)
+		ghost.rotation = tr.rotation
+		ghost.modulate = Color(1.0, 0.55, 0.15, 0.48 - float(g_idx) * 0.16)
+		ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		host.add_child(ghost)
+		var g_tw := host.create_tween()
+		g_tw.tween_property(ghost, "global_position", b - ghost.size * 0.5 - dir * float((g_idx + 1) * 32), 0.17)
+		g_tw.parallel().tween_property(ghost, "modulate:a", 0.0, 0.17)
+		g_tw.tween_callback(func():
+			if is_instance_valid(ghost):
+				ghost.queue_free())
+
 	var tw := host.create_tween()
-	tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	var target_pt := (a + b) * 0.5 if bounce else b
+	tw.tween_property(tr, "global_position", target_pt - m_sz * 0.5, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	if bounce:
-		var deflect := b + Vector2(randf_range(-240, 240), 140 if friendly else -140)
-		tw.tween_property(orb, "global_position", deflect, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(orb, "scale", Vector2(0.4, 0.4), 0.16)
-		tw.parallel().tween_property(orb, "modulate", Color(0.7, 0.7, 0.7, 0.0), 0.16)
+		var deflect := target_pt + Vector2(-dir.x * 220.0, randf_range(-260.0, -140.0) if friendly else randf_range(140.0, 260.0))
+		tw.tween_callback(func():
+			if cel != null:
+				cel.add_cel_slash(target_pt + Vector2(-90, -110), target_pt + Vector2(90, 110), UiTheme.SHIELD, 20.0)
+				cel.spawn_shatter_shards(target_pt, 10, UiTheme.SHIELD, 0.9))
+		tw.tween_property(tr, "global_position", deflect - m_sz * 0.5, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(tr, "rotation", tr.rotation + (1.8 if friendly else -1.8), 0.18)
+		tw.parallel().tween_property(tr, "scale", Vector2(0.35, 0.35), 0.18)
+		tw.parallel().tween_property(tr, "modulate:a", 0.0, 0.18)
 	else:
-		tw.tween_property(orb, "scale", Vector2(2.2, 2.2), 0.08)
-		tw.parallel().tween_property(orb, "modulate", Color(1, 1, 1, 0), 0.08)
+		tw.tween_callback(func():
+			if cel != null:
+				cel.add_jagged_lightning(b + Vector2(-140 * sc, -100 * sc), b + Vector2(140 * sc, 100 * sc), UiTheme.WAVE, 14.0 * sc, 55.0)
+				cel.spawn_shatter_shards(b, 8 + combo_n * 5, UiTheme.WAVE, 0.85 + float(combo_n) * 0.2)
+				if combo_n >= 3:
+					cel.trigger_screen_distortion(b, 0.042, 0.020, 0.036, 0.0, UiTheme.WAVE)
+					cel.add_screen_crack(b, false, UiTheme.WAVE)
+					_spawn_screen_crack_tex(host, b, false))
+		tw.tween_property(tr, "scale", Vector2(1.65, 1.65), 0.09)
+		tw.parallel().tween_property(tr, "modulate:a", 0.0, 0.09)
 	tw.tween_callback(func():
-		if is_instance_valid(orb):
-			orb.queue_free())
+		if is_instance_valid(tr):
+			tr.queue_free())
 
 
-static func _fire_ram_wave(host: Control, from_c: Control, to_c: Control, col: Color, heavy: bool, bounce: bool = false) -> void:
-	var wave := Panel.new()
-	wave.size = Vector2(260 if heavy else 190, 68 if heavy else 48)
-	wave.pivot_offset = wave.size * 0.5
-	wave.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = col
-	sb.border_color = UiTheme.INK
-	sb.set_border_width_all(7)
-	sb.set_corner_radius_all(24)
-	wave.add_theme_stylebox_override("panel", sb)
-	host.add_child(wave)
-
+## 【小羊 / 大羊】专属真羊冲撞演出：
+##   - 小羊（heavy=false）：金焰灵羊 (vfx_xiaoyang_ram.png) 疾驰冲撞，命中炸开【小裂痕 (vfx_crack_small.png)】与玻璃碎晶
+##   - 大羊（heavy=true）：赤金巨兽魔羊 (vfx_dayang_ram.png) 裹挟黑红雷霆狂暴冲撞，命中触发全舞台【巨型地壳大裂痕 (vfx_crack_huge.png)】+ 径向模糊与色差撕裂！
+##   - 若被强防或三包挡下（bounce=true）：羊冲到舞台中央一头撞在护盾墙上向后翻滚弹飞！
+static func _fire_ram_stampede(host: Control, cel: CelStageCanvas, from_c: Control, to_c: Control, heavy: bool, bounce: bool = false) -> void:
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
-	wave.global_position = a - wave.size * 0.5
+	var dir := (b - a).normalized()
+	var tex_name := "vfx_dayang_ram.png" if heavy else "vfx_xiaoyang_ram.png"
+	var r_sz := Vector2(600, 355) if heavy else Vector2(460, 272)
+
+	var ram := TextureRect.new()
+	ram.texture = UiTheme.load_ui_texture(tex_name)
+	ram.size = r_sz
+	ram.pivot_offset = r_sz * 0.5
+	ram.global_position = a - r_sz * 0.5
+	ram.flip_h = (dir.x < 0.0)
+	ram.scale = Vector2(1.32, 0.76) # 起跑蓄力拉伸形变（Smear Frame 巧思）
+	ram.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(ram)
+
+	# 4 层高速冲锋残影
+	var ghost_col := Color(1.0, 0.25, 0.20) if heavy else Color(1.0, 0.72, 0.18)
+	for g in 4:
+		var gh := TextureRect.new()
+		gh.texture = ram.texture
+		gh.size = r_sz * (0.92 - float(g) * 0.10)
+		gh.pivot_offset = gh.size * 0.5
+		gh.global_position = a - gh.size * 0.5 - dir * float((g + 1) * 55)
+		gh.flip_h = ram.flip_h
+		gh.modulate = Color(ghost_col.r, ghost_col.g, ghost_col.b, 0.52 - float(g) * 0.11)
+		gh.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		host.add_child(gh)
+		var gtw := host.create_tween()
+		var g_end := ((a + b) * 0.5 if bounce else b) - gh.size * 0.5 - dir * float((g + 1) * 28)
+		gtw.tween_property(gh, "global_position", g_end, 0.18 + float(g) * 0.02).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+		gtw.parallel().tween_property(gh, "modulate:a", 0.0, 0.20 + float(g) * 0.02)
+		gtw.tween_callback(func():
+			if is_instance_valid(gh):
+				gh.queue_free())
+
+	if cel != null:
+		cel.add_jagged_lightning(a, (a + b) * 0.5 if bounce else b, UiTheme.WAVE if heavy else UiTheme.ACCENT, 22.0 if heavy else 14.0, 88.0 if heavy else 54.0)
+
 	var tw := host.create_tween()
-	tw.tween_property(wave, "global_position", b - wave.size * 0.5, 0.19).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+	var hit_pt := (a + b) * 0.5 if bounce else b
+	tw.tween_property(ram, "global_position", hit_pt - r_sz * 0.5, 0.17).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(ram, "scale", Vector2(1.15, 1.15), 0.17)
+
 	if bounce:
-		var deflect := b + Vector2(randf_range(-260, 260), 120)
-		tw.tween_property(wave, "global_position", deflect, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(wave, "rotation", 0.75, 0.16)
-		tw.parallel().tween_property(wave, "modulate", Color(0.65, 0.68, 0.75, 0.0), 0.16)
+		var rebound_pt := a + Vector2(0, -140.0)
+		tw.tween_callback(func():
+			if cel != null:
+				cel.add_cel_ring(hit_pt, 50.0, 380.0, UiTheme.SHIELD, 20.0, true)
+				cel.spawn_shatter_shards(hit_pt, 16, UiTheme.SHIELD, 1.1))
+		tw.tween_property(ram, "global_position", rebound_pt - r_sz * 0.5, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(ram, "rotation", -0.75 if dir.x > 0 else 0.75, 0.22)
+		tw.parallel().tween_property(ram, "scale", Vector2(0.45, 0.45), 0.22)
+		tw.parallel().tween_property(ram, "modulate:a", 0.0, 0.22)
 	else:
-		tw.tween_property(wave, "scale", Vector2(2.1, 2.1), 0.09)
-		tw.parallel().tween_property(wave, "modulate", Color(1, 1, 1, 0), 0.09)
+		tw.tween_callback(func():
+			# 撞击瞬间：小羊爆局部青白蛛网裂痕 (vfx_crack_small.png)，大羊爆全屏巨型地壳大裂痕 (vfx_crack_huge.png) + 剧烈震屏！
+			_spawn_screen_crack_tex(host, b, heavy)
+			if cel != null:
+				if heavy:
+					cel.trigger_screen_distortion(b, 0.056, 0.028, 0.048, 0.35, UiTheme.WAVE)
+					cel.trigger_speed_lines(UiTheme.WAVE, 1.0)
+					cel.add_screen_crack(Vector2(540, 620), true, UiTheme.WAVE)
+					cel.add_jagged_lightning(Vector2(80, 260), Vector2(1000, 980), UiTheme.WAVE, 24.0, 110.0)
+					cel.add_jagged_lightning(Vector2(980, 280), Vector2(100, 960), UiTheme.ACCENT, 20.0, 95.0)
+				else:
+					cel.trigger_screen_distortion(b, 0.034, 0.016, 0.030, 0.0, UiTheme.ACCENT)
+					cel.trigger_speed_lines(UiTheme.ACCENT, 0.88)
+					cel.add_screen_crack(b, false, UiTheme.SHIELD)
+					cel.add_jagged_lightning(b + Vector2(-220, -140), b + Vector2(220, 140), UiTheme.ACCENT, 16.0, 64.0))
+		tw.tween_property(ram, "scale", Vector2(1.42, 1.42), 0.09)
+		tw.tween_interval(0.10)
+		tw.tween_property(ram, "modulate:a", 0.0, 0.16)
+		tw.parallel().tween_property(ram, "scale", Vector2(1.68, 1.68), 0.16)
 	tw.tween_callback(func():
-		if is_instance_valid(wave):
-			wave.queue_free())
+		if is_instance_valid(ram):
+			ram.queue_free())
 
 
-static func _play_ultimate_beam(host: Control, from_c: Control, to_c: Control, was_blocked: bool = false) -> void:
+## 【终极技】全屏毁天灭地演出：
+##   1. 0.11s 全舞台黑白反色漫画顿帧 (Impact Frame) + 径向动态模糊 + 色差撕裂
+##   2. 760×440 紫金雷神巨熊特写 (vfx_zhongji_ult.png) 镇压全场
+##   3. 全屏多道狂暴中点位移紫金雷霆 + 960×540 巨型空间崩裂大裂痕 (vfx_crack_huge.png)
+static func _play_ultimate_beam(host: Control, cel: CelStageCanvas, from_c: Control, to_c: Control, was_blocked: bool = false) -> void:
 	var a := from_c.get_global_rect().get_center()
 	var b := to_c.get_global_rect().get_center()
-	var min_y := 80.0
-	var h := 1160.0 if not was_blocked else 640.0
-	var beam := Panel.new()
-	beam.size = Vector2(220, h)
-	beam.pivot_offset = beam.size * 0.5
-	beam.global_position = Vector2(b.x - 110, min_y)
-	beam.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.58, 0.28, 0.98, 0.92)
-	sb.border_color = UiTheme.INK
-	sb.set_border_width_all(8)
-	beam.add_theme_stylebox_override("panel", sb)
-	host.add_child(beam)
+	var stage_mid := Vector2(540, 600)
 
-	var core := ColorRect.new()
-	core.color = Color(1.0, 0.95, 0.42, 0.98)
-	core.size = Vector2(92, h - 16)
-	core.position = Vector2(64, 8)
-	core.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	beam.add_child(core)
+	if cel != null:
+		cel.trigger_screen_distortion(b if not was_blocked else stage_mid, 0.072, 0.034, 0.060, 0.96, UiTheme.SPECIAL)
+		cel.trigger_speed_lines(UiTheme.SPECIAL, 1.0)
+		for k in 7:
+			var top_pt := Vector2(140.0 + float(k) * 135.0 + randf_range(-40, 40), 60.0)
+			var bot_pt := b + Vector2(randf_range(-180, 180), randf_range(-120, 160)) if not was_blocked else stage_mid + Vector2(randf_range(-160, 160), randf_range(-100, 100))
+			cel.add_jagged_lightning(top_pt, bot_pt, UiTheme.SPECIAL if k % 2 == 0 else UiTheme.ACCENT, 26.0, 115.0)
+		cel.add_jagged_lightning(a, b if not was_blocked else stage_mid, Color(1.0, 0.94, 0.45), 34.0, 95.0)
+		cel.add_screen_crack(b if not was_blocked else stage_mid, true, UiTheme.SPECIAL)
 
-	var tw := host.create_tween()
-	tw.tween_property(beam, "scale:x", 1.85, 0.10)
-	tw.tween_property(beam, "scale:x", 0.08, 0.28)
-	tw.parallel().tween_property(beam, "modulate", Color(1, 1, 1, 0), 0.28)
-	tw.tween_callback(func():
-		if is_instance_valid(beam):
-			beam.queue_free())
+	_spawn_cutin_card(host, "vfx_zhongji_ult.png", stage_mid + Vector2(0, -40), UiTheme.SPECIAL, Vector2(760, 440))
+	_spawn_screen_crack_tex(host, b if not was_blocked else stage_mid, true)
 
 
-static func _siphon_orbs(host: Control, victim_c: Control, absorber_c: Control, col: Color) -> void:
+## 【吸收成功】不规则暗物质闪电触手与碎晶虹吸
+static func _siphon_orbs(host: Control, cel: CelStageCanvas, victim_c: Control, absorber_c: Control, col: Color) -> void:
 	if host == null or victim_c == null or absorber_c == null:
 		return
 	var a := victim_c.get_global_rect().get_center()
 	var b := absorber_c.get_global_rect().get_center()
-	var stage_mid := Vector2(540, 640)
-	for i in 10:
-		var orb := Panel.new()
-		orb.size = Vector2(44, 44)
-		orb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = col.lightened(0.32)
-		sb.border_color = UiTheme.INK
-		sb.set_border_width_all(5)
-		sb.set_corner_radius_all(22)
-		orb.add_theme_stylebox_override("panel", sb)
-		host.add_child(orb)
-		var off := Vector2(randf_range(-140, 140), randf_range(-60, 60))
-		orb.global_position = a + off
+	if cel != null:
+		for k in 4:
+			cel.add_jagged_lightning(a + Vector2(randf_range(-80, 80), randf_range(-60, 60)), b, col, 14.0, 72.0)
+	var stage_mid := Vector2(540, 620)
+	for i in 12:
+		var shard := ColorRect.new()
+		shard.size = Vector2(randf_range(22, 42), randf_range(14, 28))
+		shard.pivot_offset = shard.size * 0.5
+		shard.rotation = randf_range(0.0, TAU)
+		shard.color = col.lightened(0.35) if i % 2 == 0 else UiTheme.ACCENT
+		shard.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		host.add_child(shard)
+		var off := Vector2(randf_range(-160, 160), randf_range(-90, 90))
+		shard.global_position = a + off
 		var tw := host.create_tween()
-		tw.tween_interval(i * 0.03)
-		tw.tween_property(orb, "global_position", stage_mid - orb.size * 0.5 + off * 0.3, 0.14).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		tw.tween_property(orb, "global_position", b - orb.size * 0.5, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		tw.tween_interval(i * 0.025)
+		tw.tween_property(shard, "global_position", stage_mid + off * 0.25, 0.13).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(shard, "rotation", shard.rotation + 3.2, 0.13)
+		tw.tween_property(shard, "global_position", b - shard.size * 0.5, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+		tw.parallel().tween_property(shard, "scale", Vector2(0.2, 0.2), 0.16)
 		tw.tween_callback(func():
-			if is_instance_valid(orb):
-				orb.queue_free())
+			if is_instance_valid(shard):
+				shard.queue_free())
 
 
 static func _play_seal_chains(host: Control, target: Control) -> void:
@@ -1695,7 +2126,12 @@ static func _play_seal_chains(host: Control, target: Control) -> void:
 		return
 	_flash_rect(host, target, Color(0.55, 0.15, 0.75, 0.55))
 	_shake(target)
-	_burst(host, target, Color(0.95, 0.25, 0.50), 18)
+	var cel := ensure_cel_canvas(host)
+	var c := target.get_global_rect().get_center()
+	if cel != null:
+		cel.add_jagged_lightning(c + Vector2(-240, -90), c + Vector2(240, 90), Color(0.98, 0.22, 0.48), 18.0, 42.0)
+		cel.add_jagged_lightning(c + Vector2(240, -90), c + Vector2(-240, 90), Color(0.98, 0.22, 0.48), 18.0, 42.0)
+		cel.spawn_shatter_shards(c, 16, Color(0.98, 0.22, 0.48), 1.0)
 
 
 static func _play_block_positive(host: Control, target: Control) -> void:
@@ -1703,7 +2139,9 @@ static func _play_block_positive(host: Control, target: Control) -> void:
 		return
 	_flash_rect(host, target, Color(0.10, 0.78, 0.98, 0.52))
 	_ring(host, target, UiTheme.SHIELD)
-	_burst(host, target, Color(1.0, 0.88, 0.25), 18)
+	var cel := ensure_cel_canvas(host)
+	if cel != null:
+		cel.spawn_shatter_shards(target.get_global_rect().get_center(), 14, Color(1.0, 0.88, 0.25), 0.95)
 
 
 static func _play_blocked_rebound(host: Control, target: Control) -> void:
@@ -1711,13 +2149,12 @@ static func _play_blocked_rebound(host: Control, target: Control) -> void:
 		return
 	_flash_rect(host, target, Color(0.45, 0.48, 0.55, 0.50))
 	var base := target.position
-	var recoil_y := 28.0 if target.global_position.y > 700.0 else -28.0
+	var recoil_y := 32.0 if target.global_position.y > 700.0 else -32.0
 	var tw := target.create_tween()
 	tw.tween_property(target, "position", base + Vector2(0, recoil_y), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(target, "position", base + Vector2(-12, 0), 0.05)
-	tw.tween_property(target, "position", base + Vector2(12, 0), 0.05)
+	tw.tween_property(target, "position", base + Vector2(-16, 0), 0.05)
+	tw.tween_property(target, "position", base + Vector2(16, 0), 0.05)
 	tw.tween_property(target, "position", base, 0.08)
-	_burst(host, target, Color(0.75, 0.78, 0.84), 14)
 
 
 static func play_reject_feedback(btn: Control) -> void:

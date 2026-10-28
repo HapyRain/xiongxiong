@@ -82,6 +82,15 @@ run_netwindow_check / run_roundloop_check / run_nav_check / run_ui_check
 | 新 `battle_fx.gd` parse error：`var tw := card.create_tween()` 类型无法推断 | 显式 `var tw: Tween`；8 个 Godot 自检 803 条断言 + Python 镜像全绿 |
 | 真实贴图落盘后 `.godot/imported` 仍是旧占位缓存 | `& $g --headless --path . --import` 重导；窗口截图复验 menu/main/solo/lobby 天台背景全部透出、双层技能盘与对撞战卡用真实原画 |
 
+**2026-10-29（v3.3 不规则动态特效 + 屏幕后处理并入）**
+
+| 问题 | 修法 |
+|---|---|
+| v3.3 交付包 `other/v3.3` 并入 | `battle_fx.gd` 特效引擎重写（109KB）：废除全部 `draw_arc/draw_circle`，改锯齿多边形/折线闪电/裂痕树/崩飞碎晶；新增 `POST_FX_SHADER_CODE` + `StagePostFxRect`（BackBufferCopy）做径向模糊/色差/冲击波/黑白顿帧，限高 1320；2 张 `vfx_*_cutin` 换新 |
+| 交付包仍缺 8 张专属 vfx 贴图（清单声称有） | zip 与文件夹内均无：`vfx_xiaoyang_ram` / `vfx_dayang_ram` / `vfx_zhongji_ult` / `vfx_baoqi_burst` / `vfx_bao_meteor` / `vfx_qi_tornado` / `vfx_crack_small` / `vfx_crack_huge`；现「缺图静默降级」（程序化特效照常，专属立绘/陨石不可见），补同名 PNG 即自动生效 |
+| 新 `battle_fx.gd` 又带 `var tw := card.create_tween()` 推断错 | 重新显式 `var tw: Tween`；fighter 立绘回退也一并保留 |
+| v3.3 红线无回归守护 | `run_ui_check` 新增 3 条：`StagePostFxRect` 就位且限高 1320（main/net_battle 各 1）、`battle_fx` 源码无 `draw_arc(`/`draw_circle(`（删实现即红）；8 自检 806 断言 + Python 镜像全绿 |
+
 **2026-10-17（`c106e21`）**
 
 | 问题 | 修法 |

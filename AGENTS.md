@@ -39,7 +39,7 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 另有一个 Python 规则镜像测试：`python tests/test_rules_v2.py`（Python 3.8 可跑，155 条；控制台 cp936 中文乱码时设 `$env:PYTHONIOENCODING='utf-8'`）。
 
-**当前基线：8/8 全绿 + Python 镜像全绿**（2026-10-29 v3.2 三渲二贴图/动效实装后复验；8 个 Godot 自检 **803 条断言**）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 155 条、每小局判分/12 分终场/平局保底/快照防篡改。
+**当前基线：8/8 全绿 + Python 镜像全绿**（2026-10-29 v3.3 不规则动态特效 + 屏幕后处理着色器并入后复验；8 个 Godot 自检 **806 条断言**）。v2 回归：对撞矩阵每一类、CD/封盾/劝降、双镜像 155 条、每小局判分/12 分终场/平局保底/快照防篡改。
 **断言数量不是验收标准，"能失败"才是**：加/改断言时先问一句「把对应实现删掉，它会不会红」。删掉 `_check_winner` 或把心跳窗口退回 1× 间隔，`run_rules_check` / `run_seal_check` 必须变红。
 
 建议顺序：先 `run_rules_check`（最快，纯逻辑）→ 按改动范围挑对应的 → 最后 `run_nav_check`（最重，会起双端联机+人机接管）。
@@ -120,8 +120,9 @@ Godot 4.7 移动端 1v1 回合对战 Demo（攒/波/防），GDScript，未上�
 
 - **v3「1080P 三渲二」已合入（`other/v3.0` 模型产出，review 后并入）**：视口 390×820→**1080×1920**（竖版不变）；`CelStageCanvas` 全屏三渲二特效 + 炉石烧绳 `BurningRopeBar` + 漫画拟声大字替代胶囊飘字 + 三层音频兜底（裸 WAV→ResourceLoader→PCM 合成）。已修其遗留问题：`battle_fx.gd` 的 `//` 语法编译错、战报「敌」文案违规、`quality_settings` 原子写/`fps_cap` 键回退。
 - **v3.2 贴图/动效实装已并入（`xiongxiong_v3_1080p_cel_upgrade (newlest)`）**：19 张真实三渲二贴图落盘（`stage_bg_cel.png` 3.9MB、双头像、14 张 128×128 技能图标、2 张 vfx 特写）；`UiTheme.add_stage_background` 自动隐藏纯色 `Bg` 并把 `StageBgTex`/`StageTint` 插到 `Margin` 之前，新增 `skill_card_style` 战术技能卡样式；对撞战卡 + `CelStageCanvas` 60FPS 常驻法阵/点选即时爆发/节拍脉冲（`BattleFx.play_skill_select_vfx` / `play_beat_pulse`）。**交付包仍缺 `fighter_me_stage.png` / `fighter_opp_stage.png`（清单声称有、实际不存在）**：战卡已回退同源头像原画，`run_ui_check` 新增断言锁住；另修 `var tw := card.create_tween()` 无法推断类型的 parse error（显式 `var tw: Tween`）。
+- **v3.3 不规则动态特效 + 屏幕后处理已并入（`other/v3.3`，2026-10-29）**：`battle_fx.gd` 特效引擎重写——**全面废除 `draw_arc/draw_circle`**，改用不规则锯齿多边形 / 中点位移折线闪电 / 分叉裂痕树 / 带重力崩飞碎晶；新增 `POST_FX_SHADER_CODE` + `StagePostFxRect`（`BackBufferCopy` + `hint_screen_texture`）实现径向模糊、RGB 色差、空气冲击波、黑白顿帧，**硬限高 `y ≤ 1320`** 不糊底部技能栏；按招式拆分专属演出（小羊/大羊冲撞、包子火陨、爆气/终极压轴）。**交付包仍缺 8 张专属 vfx 贴图**（`vfx_xiaoyang_ram` / `vfx_dayang_ram` / `vfx_zhongji_ult` / `vfx_baoqi_burst` / `vfx_bao_meteor` / `vfx_qi_tornado` / `vfx_crack_small` / `vfx_crack_huge`，zip 内亦无）：现为「缺图静默降级」——程序化闪电/裂痕/碎晶/后处理照常播放，专属立绘与陨石不可见；美术按同名补 8 张 PNG 即自动生效。`run_ui_check` 新增 3 条断言（后处理层限高 ×2、`battle_fx` 无规则圆圈源码扫描）。
 
-- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（157 条）；**8 个自检 803 条断言全绿**。
+- **v2 规则已落地**：`scripts/rules/*` 按 `docs/rules/game-rules-v2.md` 重写（血4/盾3/气10、12 分制、11 技能 + 劝降、对撞矩阵、六步结算管线）；判分/终场/兜底出招在 `BattleState`，按分解锁、12 分终场、**平局保底（第 3 次起各 +1，防无限拖）**；双镜像 `scripts/rules/*` ↔ `tests/test_rules_v2.py`（157 条）；**8 个自检 806 条断言全绿**。
 - **UI 已重构（`16b3df3`）**：竖屏**双层技能盘**——底部 3 主键【防御】【攒气】【包子】（包子连点 `BAO1→BAO2→BAO3→循环`，受当前气约束）+ 课间模式 2×4 进阶槽 8 格（按 1–8 分解锁）；classic 模式只显 3 主键。技能名统一 **2 字别名**（`GameRules.action_short_name`，硬约束 `length()==2`），耗气/CD/解锁门槛走独立角标子节点，**不往 `Button.text` 里拼接**；「元气潮玩对决风」色板（`scripts/ui/ui_theme.gd`）。全界面已**无 `【占位】` 残留**，单机/联机均为真实血气盾 HUD（`me_*` / `opp_*`）。
 - 本轮**初版全功能**：经典/课间双模式（规则预设）、单人难度、技能精通、联机房间/搜索/准备/5s 倒计时/离开回落、返回路由与二次确认、第 8 个 UI 冒烟自检（`run_ui_check`）。
 - `main` 头部 **`16b3df3`**：合并 UI 重构迭代（双层技能盘 / 新色板 / 去占位）+ 修聚光灯连接泄漏。上一版 `1253f10` = review 修复批次（ENet 身份劫持/陌生对端 DoS、重放闸补全、双镜像 ㉖ 对称、restore 防篡改、模式外动作消毒、lobby 守卫三件套、UI 信号卫生/返回键清理等，29 文件）+ 重新导出 APK。
